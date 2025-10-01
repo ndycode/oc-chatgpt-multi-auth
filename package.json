@@ -8,7 +8,7 @@
   "author": "Numman Ali",
   "repository": {
     "type": "git",
-    "url": "https://github.com/numman/opencode-openai-codex-auth.git"
+    "url": "https://github.com/numman-ali/opencode-openai-codex-auth.git"
   },
   "keywords": [
     "opencode",
@@ -22,9 +22,9 @@
     "chatgpt-plus",
     "chatgpt-pro"
   ],
-  "homepage": "https://github.com/numman/opencode-openai-codex-auth#readme",
+  "homepage": "https://github.com/numman-ali/opencode-openai-codex-auth#readme",
   "bugs": {
-    "url": "https://github.com/numman/opencode-openai-codex-auth/issues"
+    "url": "https://github.com/numman-ali/opencode-openai-codex-auth/issues"
   },
   "files": [
     "index.mjs",
