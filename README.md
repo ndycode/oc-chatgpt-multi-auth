@@ -15,43 +15,42 @@ This plugin enables opencode to use OpenAI's Codex backend via ChatGPT Plus/Pro 
 
 ## Installation
 
-### From npm (Recommended)
+### Quick Start
 
-```bash
-npm install opencode-openai-codex-auth
-```
+**No npm install needed!** opencode automatically installs plugins when you add them to your config.
 
-Add the plugin to your `opencode.json`:
+1. **Add plugin to your opencode configuration**:
+
+   Edit your `opencode.json` file (create it if it doesn't exist):
+
+   **Global config**: `~/.config/opencode/opencode.json`
+   **Project config**: `<project>/.opencode.json`
+
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugin": [
+       "opencode-openai-codex-auth"
+     ],
+     "model": "openai/gpt-5-codex"
+   }
+   ```
+
+2. **That's it!** opencode will auto-install the plugin on first run.
+
+> **New to opencode?** Learn more:
+> - [Configuration Guide](https://opencode.ai/docs/config/)
+> - [Plugin Documentation](https://opencode.ai/docs/plugins/)
+
+### Alternative: Local Development
+
+For testing or development, you can use a local file path:
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "opencode-openai-codex-auth"
-  ],
-  "model": "openai/gpt-5-codex"
-}
-```
-
-### From source
-
-1. Clone this repository:
-
-```bash
-git clone https://github.com/numman/opencode-openai-codex-auth.git
-cd opencode-openai-codex-auth
-npm install
-```
-
-2. Add the plugin to your `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
   "plugin": [
     "file:///absolute/path/to/opencode-openai-codex-auth"
-  ],
-  "model": "openai/gpt-5-codex"
+  ]
 }
 ```
 
