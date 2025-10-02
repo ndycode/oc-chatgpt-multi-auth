@@ -5,6 +5,9 @@
 
 This plugin enables opencode to use OpenAI's Codex backend via ChatGPT Plus/Pro OAuth authentication, allowing you to use your ChatGPT subscription instead of OpenAI Platform API credits.
 
+> **Found this useful?** 
+Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates and more projects!
+
 ## Features
 
 - ✅ ChatGPT Plus/Pro OAuth authentication
