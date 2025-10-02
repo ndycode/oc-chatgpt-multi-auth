@@ -87,9 +87,22 @@ console.log("Test 5: Lightweight model (gpt-5-nano)");
 const nanoReasoning = getReasoningConfig("gpt-5-nano", {});
 console.log("Nano reasoning:", nanoReasoning);
 console.log("Expected: effort='minimal' (lightweight default), summary='auto'");
-console.log("✓ Pass:", 
+console.log("✓ Pass:",
 	nanoReasoning.effort === "minimal" &&
 	nanoReasoning.summary === "auto"
+);
+console.log("\n");
+
+// Test 6: Normalize "minimal" to "low" for gpt-5-codex
+console.log("Test 6: Normalize minimal→low for gpt-5-codex (Codex CLI doesn't support minimal)");
+const codexMinimalConfig = { reasoningEffort: "minimal" };
+const codexMinimalReasoning = getReasoningConfig("gpt-5-codex", codexMinimalConfig);
+console.log("Config:", codexMinimalConfig);
+console.log("Reasoning result:", codexMinimalReasoning);
+console.log("Expected: effort='low' (normalized from minimal), summary='auto'");
+console.log("✓ Pass:",
+	codexMinimalReasoning.effort === "low" &&
+	codexMinimalReasoning.summary === "auto"
 );
 
 console.log("\n=== All Tests Complete ===");
