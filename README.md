@@ -130,16 +130,56 @@ The plugin:
 - **400 Bad Request**: Check console output for specific error details
 - **403 Forbidden**: Subscription may be expired or invalid
 
+### Plugin Issues
+
+If you encounter issues with the latest version, you can pin to a specific stable release:
+
+```json
+{
+  "plugin": [
+    "opencode-openai-codex-auth@1.0.2"
+  ]
+}
+```
+
+Check [releases](https://github.com/numman-ali/opencode-openai-codex-auth/releases) for available versions and their release notes.
+
+## Debugging
+
+### Enable Request Logging
+
+For debugging purposes, you can enable detailed request logging to inspect what's being sent to the Codex API:
+
+```bash
+ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "your prompt"
+```
+
+Logs are saved to `~/.opencode/logs/codex-plugin/` with detailed information about:
+- Original request from opencode
+- Transformed request sent to Codex
+- Response status and headers
+- Error details (if any)
+
+Each request generates 3-4 JSON files:
+- `request-N-before-transform.json` - Original request
+- `request-N-after-transform.json` - Transformed request
+- `request-N-response.json` - Response metadata
+- `request-N-error-response.json` - Error details (if failed)
+
+**Note**: Logging is disabled by default to avoid cluttering your disk. Only enable it when debugging issues.
+
 ## Project Structure
 
 ```
 opencode-openai-codex-auth/
-├── index.mjs              # Main plugin entry point
+├── index.mjs                    # Main plugin entry point
 ├── lib/
-│   ├── auth.mjs          # OAuth authentication logic
-│   ├── codex.mjs         # Codex instructions & tool remapping
-│   ├── server.mjs        # Local OAuth callback server
-│   └── codex-instructions.md  # Bundled Codex instructions (fallback)
+│   ├── auth.mjs                # OAuth authentication logic
+│   ├── codex.mjs               # Codex instructions & tool remapping
+│   ├── server.mjs              # Local OAuth callback server
+│   ├── logger.mjs              # Request logging (debug mode)
+│   ├── request-transformer.mjs # Request body transformations
+│   └── response-handler.mjs    # SSE to JSON conversion
 ├── package.json
 ├── README.md
 └── LICENSE
@@ -147,10 +187,13 @@ opencode-openai-codex-auth/
 
 ### Module Overview
 
-- **index.mjs**: Main plugin export and request transformation
+- **index.mjs**: Main plugin export and request orchestration
 - **lib/auth.mjs**: OAuth flow, PKCE, token exchange, JWT decoding
 - **lib/codex.mjs**: Fetches/caches Codex instructions from GitHub, tool remapping
 - **lib/server.mjs**: Local HTTP server for OAuth callback handling
+- **lib/logger.mjs**: Debug logging functionality (controlled by environment variable)
+- **lib/request-transformer.mjs**: Request body transformations (model normalization, tool remapping, reasoning config)
+- **lib/response-handler.mjs**: Response handling (SSE to JSON conversion for generateText())
 
 ## Credits
 

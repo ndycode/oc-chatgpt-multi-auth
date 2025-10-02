@@ -6,8 +6,11 @@ import {
 	refreshAccessToken,
 	REDIRECT_URI,
 } from "./lib/auth.mjs";
-import { getCodexInstructions, TOOL_REMAP_MESSAGE } from "./lib/codex.mjs";
+import { getCodexInstructions } from "./lib/codex.mjs";
 import { startLocalOAuthServer } from "./lib/server.mjs";
+import { logRequest } from "./lib/logger.mjs";
+import { transformRequestBody } from "./lib/request-transformer.mjs";
+import { convertSseToJson, ensureContentType } from "./lib/response-handler.mjs";
 
 /**
  * @type {import('@opencode-ai/plugin').Plugin}
@@ -95,68 +98,40 @@ export async function OpenAIAuthPlugin({ client }) {
 						// Rewrite /responses to /codex/responses for Codex backend
 						url = url.replace("/responses", "/codex/responses");
 
+						// Track body for later use
+						let body;
+
 						// Parse and modify request body
 						if (init?.body) {
 							try {
-								const body = JSON.parse(init.body);
+								body = JSON.parse(init.body);
+								const originalModel = body.model;
 
-								// Normalize model name - Codex only supports gpt-5 and gpt-5-codex
-								if (body.model) {
-									if (body.model.includes("codex")) {
-										// Any codex variant → gpt-5-codex
-										body.model = "gpt-5-codex";
-									} else if (body.model.includes("gpt-5")) {
-										// gpt-5 variants → gpt-5 (keep user's choice)
-										body.model = "gpt-5";
-									} else {
-										// Default fallback for unsupported models
-										body.model = "gpt-5";
-									}
-								}
+								// Log original request
+								logRequest("before-transform", {
+									url,
+									originalModel,
+									model: body.model,
+									hasTools: !!body.tools,
+									hasInput: !!body.input,
+									inputLength: body.input?.length,
+									body,
+								});
 
-								// Codex requires these fields
-								body.store = false;
-								body.stream = true;
-								body.instructions = CODEX_INSTRUCTIONS;
+								// Transform request body for Codex API
+								body = transformRequestBody(body, CODEX_INSTRUCTIONS);
 
-								// Remove items that reference stored conversation history
-								// When store=false, previous items aren't persisted, so filter them out
-								if (body.input && Array.isArray(body.input)) {
-									body.input = body.input.filter((item) => {
-										// Keep items without IDs (new messages)
-										if (!item.id) return true;
-										// Remove items with response/result IDs (rs_*)
-										if (item.id?.startsWith("rs_")) return false;
-										return true;
-									});
-
-									// Insert tool remapping message as first user input
-									body.input.unshift({
-										type: "message",
-										role: "user",
-										content: [
-											{
-												type: "input_text",
-												text: TOOL_REMAP_MESSAGE,
-											},
-										],
-									});
-								}
-
-								// Fix reasoning parameters for Codex - hardcoded to high
-								if (!body.reasoning) {
-									body.reasoning = {};
-								}
-								body.reasoning.effort = "high";
-								body.reasoning.summary = "detailed";
-								if (!body.text) {
-									body.text = {};
-								}
-								body.text.verbosity = "medium";
-
-								// Remove unsupported parameters
-								body.max_output_tokens = undefined;
-								body.max_completion_tokens = undefined;
+								// Log transformed request
+								logRequest("after-transform", {
+									url,
+									originalModel,
+									normalizedModel: body.model,
+									hasTools: !!body.tools,
+									hasInput: !!body.input,
+									inputLength: body.input?.length,
+									reasoning: body.reasoning,
+									body,
+								});
 
 								init.body = JSON.stringify(body);
 							} catch (e) {
@@ -181,6 +156,14 @@ export async function OpenAIAuthPlugin({ client }) {
 							headers,
 						});
 
+						// Log response status
+						logRequest("response", {
+							status: response.status,
+							ok: response.ok,
+							statusText: response.statusText,
+							headers: Object.fromEntries(response.headers.entries()),
+						});
+
 						// Log errors
 						if (!response.ok) {
 							const text = await response.text();
@@ -188,6 +171,10 @@ export async function OpenAIAuthPlugin({ client }) {
 								`[openai-codex-plugin] ${response.status} error:`,
 								text,
 							);
+							logRequest("error-response", {
+								status: response.status,
+								error: text,
+							});
 							// Return a new response with the error text so the SDK can parse it
 							return new Response(text, {
 								status: response.status,
@@ -196,7 +183,21 @@ export async function OpenAIAuthPlugin({ client }) {
 							});
 						}
 
-						return response;
+						// Ensure response has content-type header
+						const responseHeaders = ensureContentType(response.headers);
+
+						// For non-tool requests (compact/summarize), convert streaming SSE to JSON
+						// generateText() expects a non-streaming JSON response, not SSE
+						if (body?.tools === undefined) {
+							return await convertSseToJson(response, responseHeaders);
+						}
+
+						// For tool requests, return stream as-is (streamText handles SSE)
+						return new Response(response.body, {
+							status: response.status,
+							statusText: response.statusText,
+							headers: responseHeaders,
+						});
 					},
 				};
 			},
