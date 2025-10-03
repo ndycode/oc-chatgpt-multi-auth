@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 // Logging configuration
-const LOGGING_ENABLED = process.env.ENABLE_PLUGIN_REQUEST_LOGGING === "1";
+export const LOGGING_ENABLED = process.env.ENABLE_PLUGIN_REQUEST_LOGGING === "1";
 const LOG_DIR = join(homedir(), ".opencode", "logs", "codex-plugin");
 
 // Log startup message about logging state
@@ -15,10 +15,10 @@ let requestCounter = 0;
 
 /**
  * Log request data to file (only when LOGGING_ENABLED is true)
- * @param {string} stage - The stage of the request (e.g., "before-transform", "after-transform")
- * @param {object} data - The data to log
+ * @param stage - The stage of the request (e.g., "before-transform", "after-transform")
+ * @param data - The data to log
  */
-export function logRequest(stage, data) {
+export function logRequest(stage: string, data: Record<string, unknown>): void {
 	// Only log if explicitly enabled via environment variable
 	if (!LOGGING_ENABLED) return;
 
@@ -48,8 +48,7 @@ export function logRequest(stage, data) {
 		);
 		console.log(`[openai-codex-plugin] Logged ${stage} to ${filename}`);
 	} catch (e) {
-		console.error("[openai-codex-plugin] Failed to write log:", e.message);
+		const error = e as Error;
+		console.error("[openai-codex-plugin] Failed to write log:", error.message);
 	}
 }
-
-export { LOGGING_ENABLED };

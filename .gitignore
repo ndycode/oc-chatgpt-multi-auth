@@ -4,4 +4,4 @@ pnpm-lock.yaml
 package-lock.json
 dist/
 .DS_Store
-
+.history/

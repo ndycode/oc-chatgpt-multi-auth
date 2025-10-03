@@ -1,11 +1,12 @@
-import { TOOL_REMAP_MESSAGE } from "./codex.mjs";
+import { TOOL_REMAP_MESSAGE } from "./codex.js";
+import type { UserConfig, ConfigOptions, ReasoningConfig, RequestBody, InputItem } from "./types.js";
 
 /**
  * Normalize model name to Codex-supported variants
- * @param {string} model - Original model name
- * @returns {string} Normalized model name
+ * @param model - Original model name
+ * @returns Normalized model name
  */
-export function normalizeModel(model) {
+export function normalizeModel(model: string | undefined): string {
 	if (!model) return "gpt-5";
 
 	if (model.includes("codex")) {
@@ -21,11 +22,11 @@ export function normalizeModel(model) {
 /**
  * Extract configuration for a specific model
  * Merges global options with model-specific options (model-specific takes precedence)
- * @param {string} modelName - Model name (e.g., "gpt-5-codex")
- * @param {object} userConfig - Full user configuration object
- * @returns {object} Merged configuration for this model
+ * @param modelName - Model name (e.g., "gpt-5-codex")
+ * @param userConfig - Full user configuration object
+ * @returns Merged configuration for this model
  */
-export function getModelConfig(modelName, userConfig = {}) {
+export function getModelConfig(modelName: string, userConfig: UserConfig = { global: {}, models: {} }): ConfigOptions {
 	const globalOptions = userConfig.global || {};
 	const modelOptions = userConfig.models?.[modelName]?.options || {};
 
@@ -41,17 +42,17 @@ export function getModelConfig(modelName, userConfig = {}) {
  * - opencode explicitly excludes gpt-5-codex from automatic reasoning configuration
  * - Codex CLI has been thoroughly tested against this backend
  *
- * @param {string} originalModel - Original model name before normalization
- * @param {object} userConfig - User configuration object
- * @returns {object} Reasoning configuration
+ * @param originalModel - Original model name before normalization
+ * @param userConfig - User configuration object
+ * @returns Reasoning configuration
  */
-export function getReasoningConfig(originalModel, userConfig = {}) {
+export function getReasoningConfig(originalModel: string | undefined, userConfig: ConfigOptions = {}): ReasoningConfig {
 	const isLightweight =
 		originalModel?.includes("nano") || originalModel?.includes("mini");
 	const isCodex = originalModel?.includes("codex");
 
 	// Default based on model type (Codex CLI defaults)
-	const defaultEffort = isLightweight ? "minimal" : "medium";
+	const defaultEffort: "minimal" | "low" | "medium" | "high" = isLightweight ? "minimal" : "medium";
 
 	// Get user-requested effort
 	let effort = userConfig.reasoningEffort || defaultEffort;
@@ -71,10 +72,10 @@ export function getReasoningConfig(originalModel, userConfig = {}) {
 
 /**
  * Filter input array to remove stored conversation history references
- * @param {Array} input - Original input array
- * @returns {Array} Filtered input array
+ * @param input - Original input array
+ * @returns Filtered input array
  */
-export function filterInput(input) {
+export function filterInput(input: InputItem[] | undefined): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
 
 	return input.filter((item) => {
@@ -88,14 +89,14 @@ export function filterInput(input) {
 
 /**
  * Add tool remapping message to input if tools are present
- * @param {Array} input - Input array
- * @param {boolean} hasTools - Whether tools are present in request
- * @returns {Array} Input array with tool remap message prepended if needed
+ * @param input - Input array
+ * @param hasTools - Whether tools are present in request
+ * @returns Input array with tool remap message prepended if needed
  */
-export function addToolRemapMessage(input, hasTools) {
+export function addToolRemapMessage(input: InputItem[] | undefined, hasTools: boolean): InputItem[] | undefined {
 	if (!hasTools || !Array.isArray(input)) return input;
 
-	const toolRemapMessage = {
+	const toolRemapMessage: InputItem = {
 		type: "message",
 		role: "developer",
 		content: [
@@ -117,12 +118,16 @@ export function addToolRemapMessage(input, hasTools) {
  * - opencode excludes gpt-5-codex from reasoning configuration
  * - This plugin uses store=false (stateless), requiring encrypted reasoning content
  *
- * @param {object} body - Original request body
- * @param {string} codexInstructions - Codex system instructions
- * @param {object} userConfig - User configuration from loader
- * @returns {object} Transformed request body
+ * @param body - Original request body
+ * @param codexInstructions - Codex system instructions
+ * @param userConfig - User configuration from loader
+ * @returns Transformed request body
  */
-export function transformRequestBody(body, codexInstructions, userConfig = {}) {
+export function transformRequestBody(
+	body: RequestBody,
+	codexInstructions: string,
+	userConfig: UserConfig = { global: {}, models: {} }
+): RequestBody {
 	const originalModel = body.model;
 	const normalizedModel = normalizeModel(body.model);
 

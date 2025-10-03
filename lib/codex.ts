@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import type { GitHubRelease, CacheMetadata } from "./types.js";
 
 // Codex instructions constants
 const GITHUB_API_RELEASES = "https://api.github.com/repos/openai/codex/releases/latest";
@@ -14,12 +15,12 @@ const __dirname = dirname(__filename);
 
 /**
  * Get the latest release tag from GitHub
- * @returns {Promise<string>} Release tag name (e.g., "rust-v0.43.0")
+ * @returns Release tag name (e.g., "rust-v0.43.0")
  */
-async function getLatestReleaseTag() {
+async function getLatestReleaseTag(): Promise<string> {
 	const response = await fetch(GITHUB_API_RELEASES);
 	if (!response.ok) throw new Error(`Failed to fetch latest release: ${response.status}`);
-	const data = await response.json();
+	const data = (await response.json()) as GitHubRelease;
 	return data.tag_name;
 }
 
@@ -27,19 +28,19 @@ async function getLatestReleaseTag() {
  * Fetch Codex instructions from GitHub with ETag-based caching
  * Uses HTTP conditional requests to efficiently check for updates
  * Always fetches from the latest release tag, not main branch
- * @returns {Promise<string>} Codex instructions
+ * @returns Codex instructions
  */
-export async function getCodexInstructions() {
+export async function getCodexInstructions(): Promise<string> {
 	try {
 		// Get the latest release tag
 		const latestTag = await getLatestReleaseTag();
 		const CODEX_INSTRUCTIONS_URL = `https://raw.githubusercontent.com/openai/codex/${latestTag}/codex-rs/core/gpt_5_codex_prompt.md`;
 
 		// Load cached metadata (includes ETag and tag)
-		let cachedETag = null;
-		let cachedTag = null;
+		let cachedETag: string | null = null;
+		let cachedTag: string | null = null;
 		if (existsSync(CACHE_METADATA_FILE)) {
-			const metadata = JSON.parse(readFileSync(CACHE_METADATA_FILE, "utf8"));
+			const metadata = JSON.parse(readFileSync(CACHE_METADATA_FILE, "utf8")) as CacheMetadata;
 			cachedETag = metadata.etag;
 			cachedTag = metadata.tag;
 		}
@@ -50,7 +51,7 @@ export async function getCodexInstructions() {
 		}
 
 		// Make conditional request with If-None-Match header
-		const headers = {};
+		const headers: Record<string, string> = {};
 		if (cachedETag) {
 			headers["If-None-Match"] = cachedETag;
 		}
@@ -84,7 +85,7 @@ export async function getCodexInstructions() {
 					tag: latestTag,
 					lastChecked: Date.now(),
 					url: CODEX_INSTRUCTIONS_URL,
-				}),
+				} satisfies CacheMetadata),
 				"utf8",
 			);
 
@@ -93,9 +94,10 @@ export async function getCodexInstructions() {
 
 		throw new Error(`HTTP ${response.status}`);
 	} catch (error) {
+		const err = error as Error;
 		console.error(
 			"[openai-codex-plugin] Failed to fetch instructions from GitHub:",
-			error.message,
+			err.message,
 		);
 
 		// Try to use cached version even if stale
