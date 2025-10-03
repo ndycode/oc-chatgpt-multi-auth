@@ -1,17 +1,18 @@
-import { logRequest, LOGGING_ENABLED } from "./logger.mjs";
+import { logRequest, LOGGING_ENABLED } from "./logger.js";
+import type { SSEEventData } from "./types.js";
 
 /**
  * Parse SSE stream to extract final response
- * @param {string} sseText - Complete SSE stream text
- * @returns {object|null} Final response object or null if not found
+ * @param sseText - Complete SSE stream text
+ * @returns Final response object or null if not found
  */
-function parseSseStream(sseText) {
+function parseSseStream(sseText: string): unknown | null {
 	const lines = sseText.split('\n');
 
 	for (const line of lines) {
 		if (line.startsWith('data: ')) {
 			try {
-				const data = JSON.parse(line.substring(6));
+				const data = JSON.parse(line.substring(6)) as SSEEventData;
 
 				// Look for response.done event with final data
 				if (data.type === 'response.done' || data.type === 'response.completed') {
@@ -28,11 +29,14 @@ function parseSseStream(sseText) {
 
 /**
  * Convert SSE stream response to JSON for generateText()
- * @param {Response} response - Fetch response with SSE stream
- * @param {Headers} headers - Response headers
- * @returns {Promise<Response>} Response with JSON body
+ * @param response - Fetch response with SSE stream
+ * @param headers - Response headers
+ * @returns Response with JSON body
  */
-export async function convertSseToJson(response, headers) {
+export async function convertSseToJson(response: Response, headers: Headers): Promise<Response> {
+	if (!response.body) {
+		throw new Error('[openai-codex-plugin] Response has no body');
+	}
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let fullText = '';
@@ -83,10 +87,10 @@ export async function convertSseToJson(response, headers) {
 
 /**
  * Ensure response has content-type header
- * @param {Headers} headers - Response headers
- * @returns {Headers} Headers with content-type set
+ * @param headers - Response headers
+ * @returns Headers with content-type set
  */
-export function ensureContentType(headers) {
+export function ensureContentType(headers: Headers): Headers {
 	const responseHeaders = new Headers(headers);
 
 	if (!responseHeaders.has('content-type')) {

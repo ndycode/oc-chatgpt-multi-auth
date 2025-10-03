@@ -1,5 +1,6 @@
 import { generatePKCE } from "@openauthjs/openauth/pkce";
 import { randomBytes } from "node:crypto";
+import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "./types.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -10,18 +11,18 @@ export const SCOPE = "openid profile email offline_access";
 
 /**
  * Generate a random state value for OAuth flow
- * @returns {string} Random hex string
+ * @returns Random hex string
  */
-export function createState() {
+export function createState(): string {
 	return randomBytes(16).toString("hex");
 }
 
 /**
  * Parse authorization code and state from user input
- * @param {string} input - User input (URL, code#state, or just code)
- * @returns {{code?: string, state?: string}} Parsed authorization data
+ * @param input - User input (URL, code#state, or just code)
+ * @returns Parsed authorization data
  */
-export function parseAuthorizationInput(input) {
+export function parseAuthorizationInput(input: string): ParsedAuthInput {
 	const value = (input || "").trim();
 	if (!value) return {};
 
@@ -49,16 +50,16 @@ export function parseAuthorizationInput(input) {
 
 /**
  * Exchange authorization code for access and refresh tokens
- * @param {string} code - Authorization code from OAuth flow
- * @param {string} verifier - PKCE verifier
- * @param {string} [redirectUri] - OAuth redirect URI
- * @returns {Promise<{type: "success", access: string, refresh: string, expires: number} | {type: "failed"}>}
+ * @param code - Authorization code from OAuth flow
+ * @param verifier - PKCE verifier
+ * @param redirectUri - OAuth redirect URI
+ * @returns Token result
  */
 export async function exchangeAuthorizationCode(
-	code,
-	verifier,
-	redirectUri = REDIRECT_URI,
-) {
+	code: string,
+	verifier: string,
+	redirectUri: string = REDIRECT_URI,
+): Promise<TokenResult> {
 	const res = await fetch(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -75,7 +76,11 @@ export async function exchangeAuthorizationCode(
 		console.error("[openai-codex-plugin] code->token failed:", res.status, text);
 		return { type: "failed" };
 	}
-	const json = await res.json();
+	const json = (await res.json()) as {
+		access_token?: string;
+		refresh_token?: string;
+		expires_in?: number;
+	};
 	if (
 		!json?.access_token ||
 		!json?.refresh_token ||
@@ -94,16 +99,16 @@ export async function exchangeAuthorizationCode(
 
 /**
  * Decode a JWT token to extract payload
- * @param {string} token - JWT token to decode
- * @returns {any} Decoded payload or null if invalid
+ * @param token - JWT token to decode
+ * @returns Decoded payload or null if invalid
  */
-export function decodeJWT(token) {
+export function decodeJWT(token: string): JWTPayload | null {
 	try {
 		const parts = token.split(".");
 		if (parts.length !== 3) return null;
 		const payload = parts[1];
 		const decoded = Buffer.from(payload, "base64").toString("utf-8");
-		return JSON.parse(decoded);
+		return JSON.parse(decoded) as JWTPayload;
 	} catch {
 		return null;
 	}
@@ -111,10 +116,10 @@ export function decodeJWT(token) {
 
 /**
  * Refresh access token using refresh token
- * @param {string} refreshToken - Refresh token
- * @returns {Promise<{type: "success", access: string, refresh: string, expires: number} | {type: "failed"}>}
+ * @param refreshToken - Refresh token
+ * @returns Token result
  */
-export async function refreshAccessToken(refreshToken) {
+export async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
 	try {
 		const response = await fetch(TOKEN_URL, {
 			method: "POST",
@@ -136,7 +141,11 @@ export async function refreshAccessToken(refreshToken) {
 			return { type: "failed" };
 		}
 
-		const json = await response.json();
+		const json = (await response.json()) as {
+			access_token?: string;
+			refresh_token?: string;
+			expires_in?: number;
+		};
 		if (
 			!json?.access_token ||
 			!json?.refresh_token ||
@@ -156,17 +165,18 @@ export async function refreshAccessToken(refreshToken) {
 			expires: Date.now() + json.expires_in * 1000,
 		};
 	} catch (error) {
-		console.error("[openai-codex-plugin] Token refresh error:", error);
+		const err = error as Error;
+		console.error("[openai-codex-plugin] Token refresh error:", err);
 		return { type: "failed" };
 	}
 }
 
 /**
  * Create OAuth authorization flow
- * @returns {Promise<{pkce: any, state: string, url: string}>}
+ * @returns Authorization flow details
  */
-export async function createAuthorizationFlow() {
-	const pkce = await generatePKCE();
+export async function createAuthorizationFlow(): Promise<AuthorizationFlow> {
+	const pkce = (await generatePKCE()) as PKCEPair;
 	const state = createState();
 
 	const url = new URL(AUTHORIZE_URL);
