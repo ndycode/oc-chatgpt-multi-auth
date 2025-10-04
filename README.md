@@ -16,10 +16,10 @@ Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates an
 - ✅ **Auto-refreshing tokens** - Handles token expiration automatically
 - ✅ **Smart auto-updating Codex instructions** - Tracks latest stable release with ETag caching
 - ✅ **Full tool support** - write, edit, bash, grep, glob, and more
-- ✅ **CODEX_MODE** - Codex-OpenCode bridge prompt for CLI parity (enabled by default)
+- ✅ **CODEX_MODE** - Codex-OpenCode bridge prompt with Task tool & MCP awareness (enabled by default)
 - ✅ **Automatic tool remapping** - Codex tools → opencode tools
 - ✅ **Configurable reasoning** - Control effort, summary verbosity, and text output
-- ✅ **Type-safe & tested** - Strict TypeScript with 123 comprehensive tests
+- ✅ **Type-safe & tested** - Strict TypeScript with 129 comprehensive tests
 - ✅ **Modular architecture** - Easy to maintain and extend
 
 ## Installation
@@ -156,9 +156,12 @@ For a simpler setup (uses plugin defaults: medium reasoning, auto summaries):
 
 2. **That's it!** opencode will auto-install the plugin on first run.
 
-   > **Note on Updates**: Sometimes opencode does NOT automatically update plugins to new versions. To update:
-   > - Pin to a specific version: `"opencode-openai-codex-auth@1.0.4"` and change the number when updating
-   > - Or clear the plugin cache: `rm -rf ~/.cache/opencode/node_modules/opencode-openai-codex-auth`
+   > **Note on Updates**: opencode does NOT automatically update plugins. To force a fresh install of the latest version:
+   > ```bash
+   > # Remove cached plugin entry and folder
+   > sed -i.bak '/"opencode-openai-codex-auth"/d' ~/.cache/opencode/package.json && rm -rf ~/.cache/opencode/node_modules/opencode-openai-codex-auth
+   > ```
+   > Then run `opencode` - it will reinstall the latest version.
    >
    > Check [releases](https://github.com/numman-ali/opencode-openai-codex-auth/releases) for the latest version.
 
@@ -226,6 +229,52 @@ When using [`config/full-opencode.json`](./config/full-opencode.json), you get t
 | **gpt-5-nano** | Minimal | Maximum speed |
 
 All accessed via your ChatGPT Plus/Pro subscription.
+
+### Using Model Variants in Custom Commands & Agents
+
+When using model aliases in **custom command frontmatter** or **agent configurations**, you **must include the provider prefix** (`openai/`):
+
+#### ✅ Correct - Custom Command Example
+
+```yaml
+---
+description: Create a git commit message
+agent: build
+model: openai/GPT 5 Codex Low (ChatGPT Subscription)
+---
+
+Create a commit message for the staged changes
+```
+
+#### ❌ Incorrect - Missing Provider Prefix
+
+```yaml
+---
+description: Create a git commit message
+agent: build
+model: GPT 5 Codex Low (ChatGPT Subscription)  # ❌ Will fail - missing "openai/"
+---
+```
+
+#### ✅ Correct - Agent Configuration Example
+
+```json
+{
+  "agent": {
+    "commit": {
+      "model": "openai/GPT 5 Codex Low (ChatGPT Subscription)",
+      "prompt": "You are a git commit message expert..."
+    }
+  }
+}
+```
+
+**Why?** The `--model` CLI flag, command frontmatter, and agent configs all use the same model resolution format: `provider/model`. Model aliases defined in your config are indexed under the provider namespace.
+
+**Alternative**: Instead of specifying the model in each command, you can:
+1. Set a default model in your agent configuration
+2. Use the agent's model setting instead of specifying per-command
+3. Rely on the global default model in your opencode config
 
 ### Plugin Defaults
 
@@ -371,8 +420,8 @@ The plugin implements a 7-step fetch flow in TypeScript:
    - Model normalization (`gpt-5-codex` variants → `gpt-5-codex`, `gpt-5` variants → `gpt-5`)
    - Injects Codex instructions from latest [openai/codex](https://github.com/openai/codex) release
    - Applies reasoning configuration (effort, summary, verbosity)
-   - Adds Codex-OpenCode bridge prompt (CODEX_MODE=true, default) or tool remap message (CODEX_MODE=false)
-   - Filters OpenCode system prompts when in CODEX_MODE
+   - Adds Codex-OpenCode bridge prompt with Task tool & MCP awareness (CODEX_MODE=true, default) or tool remap message (CODEX_MODE=false)
+   - Filters OpenCode system prompts when in CODEX_MODE (verified against cached OpenCode prompt for accuracy)
    - Filters conversation history (removes stored IDs for stateless operation)
 4. **Headers**: Adds OAuth token and ChatGPT account ID headers
 5. **Request Execution**: Sends to Codex backend API
@@ -383,10 +432,10 @@ The plugin implements a 7-step fetch flow in TypeScript:
 
 - **Modular Design**: 10 focused helper functions, each < 40 lines
 - **Type-Safe**: Strict TypeScript with comprehensive type definitions
-- **Tested**: 123 tests covering all functionality including CODEX_MODE
+- **Tested**: 129 tests covering all functionality including CODEX_MODE
 - **Zero Dependencies**: Only uses @openauthjs/openauth
 - **Codex Instructions**: ETag-cached from GitHub, auto-updates on new releases
-- **CODEX_MODE**: Configurable bridge prompt for Codex CLI parity (enabled by default)
+- **CODEX_MODE**: Configurable bridge prompt for Codex CLI parity with Task tool & MCP awareness (enabled by default)
 - **Stateless Operation**: Uses `store: false` with encrypted reasoning content for multi-turn conversations
 
 ## Limitations
@@ -405,13 +454,36 @@ The plugin implements a 7-step fetch flow in TypeScript:
 
 - Verify plugin is loaded in `opencode.json`
 - Check that model is set to `openai/gpt-5-codex`
-- Check `~/.opencode/cache/` for cached instructions (auto-downloads from GitHub)
+- Check `~/.opencode/cache/` for cached instructions and OpenCode prompts (auto-downloads from GitHub)
 
 ### Request Errors
 
 - **401 Unauthorized**: Token expired, run `opencode auth login` again
 - **400 Bad Request**: Check console output for specific error details
 - **403 Forbidden**: Subscription may be expired or invalid
+
+### Model Not Found in Custom Commands/Agents
+
+If you get a "model not found" error when using custom commands or agents with model aliases:
+
+**Problem**: Model aliases in command frontmatter or agent configs require the provider prefix.
+
+```yaml
+# ❌ This will fail
+model: GPT 5 Codex Low (ChatGPT Subscription)
+
+# ✅ This works
+model: openai/GPT 5 Codex Low (ChatGPT Subscription)
+```
+
+**Why?** The `--model` CLI flag, custom commands, and agent configurations all use the `provider/model` format. Bare aliases (without `openai/`) are not automatically resolved to the provider namespace.
+
+**Solution**: Always include the provider prefix when using model aliases in:
+- Custom command frontmatter (`model: openai/...`)
+- Agent configurations (`"model": "openai/..."`)
+- CLI `--model` flag (`--model=openai/...`)
+
+See [Using Model Variants in Custom Commands & Agents](#using-model-variants-in-custom-commands--agents) for detailed examples.
 
 ### Plugin Issues
 
@@ -457,22 +529,28 @@ Each request generates 3-4 JSON files:
 opencode-openai-codex-auth/
 ├── index.ts                     # Main plugin entry point
 ├── lib/
-│   ├── auth.ts                 # OAuth authentication logic
-│   ├── codex.ts                # Codex instructions & tool remapping
-│   ├── server.ts               # Local OAuth callback server
-│   ├── browser.ts              # Platform-specific browser opening
-│   ├── logger.ts               # Request logging (debug mode)
-│   ├── request-transformer.ts  # Request body transformations
-│   ├── response-handler.ts     # SSE to JSON conversion
-│   ├── fetch-helpers.ts        # Focused helper functions
-│   ├── constants.ts            # All magic values and URLs
-│   └── types.ts                # TypeScript type definitions
+│   ├── auth/                    # OAuth authentication modules
+│   │   ├── auth.ts             # OAuth flow, PKCE, token exchange
+│   │   ├── server.ts           # Local OAuth callback server
+│   │   └── browser.ts          # Platform-specific browser opening
+│   ├── prompts/                 # Prompt management modules
+│   │   ├── codex.ts            # Codex instructions fetching/caching
+│   │   ├── opencode-codex.ts   # OpenCode prompt verification cache
+│   │   └── codex-opencode-bridge.ts # Bridge prompt with Task/MCP awareness
+│   ├── request/                 # Request handling modules
+│   │   ├── request-transformer.ts # Request body transformations
+│   │   ├── response-handler.ts    # SSE to JSON conversion
+│   │   └── fetch-helpers.ts       # 10 focused helper functions
+│   ├── config.ts                # Plugin configuration & CODEX_MODE
+│   ├── logger.ts                # Request logging (debug mode)
+│   ├── constants.ts             # All magic values and URLs
+│   └── types.ts                 # TypeScript type definitions
 ├── config/
-│   ├── full-opencode.json      # Complete config with all variants
-│   ├── minimal-opencode.json   # Minimal config example
-│   └── README.md               # Configuration documentation
-├── test/                        # Comprehensive test suite (93 tests)
-├── AGENTS.md                    # AI agent maintenance guide
+│   ├── full-opencode.json       # Complete config with all variants
+│   ├── minimal-opencode.json    # Minimal config example
+│   └── README.md                # Configuration documentation
+├── test/                         # Comprehensive test suite (129 tests)
+├── AGENTS.md                     # Agent coding guidance
 ├── package.json
 ├── README.md
 └── LICENSE
@@ -481,14 +559,17 @@ opencode-openai-codex-auth/
 ### Module Overview
 
 - **index.ts**: Main plugin export and fetch() orchestration (7-step flow)
-- **lib/auth.ts**: OAuth flow, PKCE, token exchange, JWT decoding
-- **lib/codex.ts**: Fetches/caches Codex instructions from GitHub, tool remapping
-- **lib/server.ts**: Local HTTP server for OAuth callback handling
-- **lib/browser.ts**: Platform detection and browser opening
+- **lib/auth/auth.ts**: OAuth flow, PKCE, token exchange, JWT decoding
+- **lib/auth/server.ts**: Local HTTP server for OAuth callback handling
+- **lib/auth/browser.ts**: Platform detection and browser opening
+- **lib/prompts/codex.ts**: Fetches/caches Codex instructions from GitHub, tool remapping
+- **lib/prompts/opencode-codex.ts**: Fetches/caches OpenCode system prompts for verification
+- **lib/prompts/codex-opencode-bridge.ts**: Bridge prompt with Task tool & MCP awareness
+- **lib/request/request-transformer.ts**: Request transformations (model normalization, reasoning config, prompt filtering)
+- **lib/request/response-handler.ts**: Response handling (SSE to JSON conversion)
+- **lib/request/fetch-helpers.ts**: 10 focused helper functions for main fetch flow
+- **lib/config.ts**: Plugin configuration loading and CODEX_MODE determination
 - **lib/logger.ts**: Debug logging (controlled by environment variable)
-- **lib/request-transformer.ts**: Request transformations (model normalization, reasoning config)
-- **lib/response-handler.ts**: Response handling (SSE to JSON conversion)
-- **lib/fetch-helpers.ts**: 10 focused helper functions for main fetch flow
 - **lib/constants.ts**: Centralized constants, URLs, error messages
 - **lib/types.ts**: TypeScript type definitions
 
