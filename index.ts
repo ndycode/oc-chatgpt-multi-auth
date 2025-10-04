@@ -127,7 +127,7 @@ export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						const url = rewriteUrlForCodex(originalUrl);
 
 						// Step 3: Transform request body with Codex instructions
-						const transformation = transformRequestForCodex(init, url, CODEX_INSTRUCTIONS, userConfig, codexMode);
+						const transformation = await transformRequestForCodex(init, url, CODEX_INSTRUCTIONS, userConfig, codexMode);
 						const hasTools = transformation?.body.tools !== undefined;
 						const requestInit = transformation?.updatedInit ?? init;
 

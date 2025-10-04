@@ -1,6 +1,13 @@
 import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
 import { CODEX_OPENCODE_BRIDGE } from "../prompts/codex-opencode-bridge.js";
-import type { UserConfig, ConfigOptions, ReasoningConfig, RequestBody, InputItem } from "../types.js";
+import { getOpenCodeCodexPrompt } from "../prompts/opencode-codex.js";
+import type {
+	UserConfig,
+	ConfigOptions,
+	ReasoningConfig,
+	RequestBody,
+	InputItem,
+} from "../types.js";
 
 /**
  * Normalize model name to Codex-supported variants
@@ -27,7 +34,10 @@ export function normalizeModel(model: string | undefined): string {
  * @param userConfig - Full user configuration object
  * @returns Merged configuration for this model
  */
-export function getModelConfig(modelName: string, userConfig: UserConfig = { global: {}, models: {} }): ConfigOptions {
+export function getModelConfig(
+	modelName: string,
+	userConfig: UserConfig = { global: {}, models: {} },
+): ConfigOptions {
 	const globalOptions = userConfig.global || {};
 	const modelOptions = userConfig.models?.[modelName]?.options || {};
 
@@ -47,13 +57,18 @@ export function getModelConfig(modelName: string, userConfig: UserConfig = { glo
  * @param userConfig - User configuration object
  * @returns Reasoning configuration
  */
-export function getReasoningConfig(originalModel: string | undefined, userConfig: ConfigOptions = {}): ReasoningConfig {
+export function getReasoningConfig(
+	originalModel: string | undefined,
+	userConfig: ConfigOptions = {},
+): ReasoningConfig {
 	const isLightweight =
 		originalModel?.includes("nano") || originalModel?.includes("mini");
 	const isCodex = originalModel?.includes("codex");
 
 	// Default based on model type (Codex CLI defaults)
-	const defaultEffort: "minimal" | "low" | "medium" | "high" = isLightweight ? "minimal" : "medium";
+	const defaultEffort: "minimal" | "low" | "medium" | "high" = isLightweight
+		? "minimal"
+		: "medium";
 
 	// Get user-requested effort
 	let effort = userConfig.reasoningEffort || defaultEffort;
@@ -76,7 +91,9 @@ export function getReasoningConfig(originalModel: string | undefined, userConfig
  * @param input - Original input array
  * @returns Filtered input array
  */
-export function filterInput(input: InputItem[] | undefined): InputItem[] | undefined {
+export function filterInput(
+	input: InputItem[] | undefined,
+): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
 
 	return input.filter((item) => {
@@ -90,26 +107,52 @@ export function filterInput(input: InputItem[] | undefined): InputItem[] | undef
 
 /**
  * Check if an input item is the OpenCode system prompt
+ * Uses cached OpenCode codex.txt for verification with fallback to text matching
  * @param item - Input item to check
+ * @param cachedPrompt - Cached OpenCode codex.txt content
  * @returns True if this is the OpenCode system prompt
  */
-export function isOpenCodeSystemPrompt(item: InputItem): boolean {
+export function isOpenCodeSystemPrompt(
+	item: InputItem,
+	cachedPrompt: string | null,
+): boolean {
 	const isSystemRole = item.role === "developer" || item.role === "system";
 	if (!isSystemRole) return false;
 
-	// Check string content
-	if (typeof item.content === "string") {
-		return item.content.startsWith("You are a coding agent running in");
+	const getContentText = (item: InputItem): string => {
+		if (typeof item.content === "string") {
+			return item.content;
+		}
+		if (Array.isArray(item.content)) {
+			return item.content
+				.filter((c) => c.type === "input_text" && c.text)
+				.map((c) => c.text)
+				.join("\n");
+		}
+		return "";
+	};
+
+	const contentText = getContentText(item);
+	if (!contentText) return false;
+
+	// Primary check: Compare against cached OpenCode prompt
+	if (cachedPrompt) {
+		// Exact match (trim whitespace for comparison)
+		if (contentText.trim() === cachedPrompt.trim()) {
+			return true;
+		}
+
+		// Partial match: Check if first 200 chars match (handles minor variations)
+		const contentPrefix = contentText.trim().substring(0, 200);
+		const cachedPrefix = cachedPrompt.trim().substring(0, 200);
+		if (contentPrefix === cachedPrefix) {
+			return true;
+		}
 	}
 
-	// Check array content
-	if (Array.isArray(item.content)) {
-		return item.content.some(
-			(c) => c.type === "input_text" && c.text?.startsWith("You are a coding agent running in")
-		);
-	}
-
-	return false;
+	// Fallback check: Known OpenCode prompt signature (for safety)
+	// This catches the prompt even if cache fails
+	return contentText.startsWith("You are a coding agent running in");
 }
 
 /**
@@ -118,14 +161,25 @@ export function isOpenCodeSystemPrompt(item: InputItem): boolean {
  * @param input - Input array
  * @returns Input array without OpenCode system prompts
  */
-export function filterOpenCodeSystemPrompts(input: InputItem[] | undefined): InputItem[] | undefined {
+export async function filterOpenCodeSystemPrompts(
+	input: InputItem[] | undefined,
+): Promise<InputItem[] | undefined> {
 	if (!Array.isArray(input)) return input;
+
+	// Fetch cached OpenCode prompt for verification
+	let cachedPrompt: string | null = null;
+	try {
+		cachedPrompt = await getOpenCodeCodexPrompt();
+	} catch {
+		// If fetch fails, fallback to text-based detection only
+		// This is safe because we still have the "starts with" check
+	}
 
 	return input.filter((item) => {
 		// Keep user messages
 		if (item.role === "user") return true;
 		// Filter out OpenCode system prompts
-		return !isOpenCodeSystemPrompt(item);
+		return !isOpenCodeSystemPrompt(item, cachedPrompt);
 	});
 }
 
@@ -135,7 +189,10 @@ export function filterOpenCodeSystemPrompts(input: InputItem[] | undefined): Inp
  * @param hasTools - Whether tools are present in request
  * @returns Input array with bridge message prepended if needed
  */
-export function addCodexBridgeMessage(input: InputItem[] | undefined, hasTools: boolean): InputItem[] | undefined {
+export function addCodexBridgeMessage(
+	input: InputItem[] | undefined,
+	hasTools: boolean,
+): InputItem[] | undefined {
 	if (!hasTools || !Array.isArray(input)) return input;
 
 	const bridgeMessage: InputItem = {
@@ -158,7 +215,10 @@ export function addCodexBridgeMessage(input: InputItem[] | undefined, hasTools: 
  * @param hasTools - Whether tools are present in request
  * @returns Input array with tool remap message prepended if needed
  */
-export function addToolRemapMessage(input: InputItem[] | undefined, hasTools: boolean): InputItem[] | undefined {
+export function addToolRemapMessage(
+	input: InputItem[] | undefined,
+	hasTools: boolean,
+): InputItem[] | undefined {
 	if (!hasTools || !Array.isArray(input)) return input;
 
 	const toolRemapMessage: InputItem = {
@@ -189,12 +249,12 @@ export function addToolRemapMessage(input: InputItem[] | undefined, hasTools: bo
  * @param codexMode - Enable CODEX_MODE (bridge prompt instead of tool remap) - defaults to true
  * @returns Transformed request body
  */
-export function transformRequestBody(
+export async function transformRequestBody(
 	body: RequestBody,
 	codexInstructions: string,
 	userConfig: UserConfig = { global: {}, models: {} },
-	codexMode: boolean = true
-): RequestBody {
+	codexMode = true,
+): Promise<RequestBody> {
 	const originalModel = body.model;
 	const normalizedModel = normalizeModel(body.model);
 
@@ -215,7 +275,7 @@ export function transformRequestBody(
 
 		if (codexMode) {
 			// CODEX_MODE: Remove OpenCode system prompt, add bridge prompt
-			body.input = filterOpenCodeSystemPrompts(body.input);
+			body.input = await filterOpenCodeSystemPrompts(body.input);
 			body.input = addCodexBridgeMessage(body.input, !!body.tools);
 		} else {
 			// DEFAULT MODE: Keep original behavior with tool remap message

@@ -26,11 +26,7 @@ import {
  * @returns True if token is expired or invalid
  */
 export function shouldRefreshToken(auth: Auth): boolean {
-	return (
-		auth.type !== "oauth" ||
-		!auth.access ||
-		auth.expires < Date.now()
-	);
+	return auth.type !== "oauth" || !auth.access || auth.expires < Date.now();
 }
 
 /**
@@ -41,8 +37,10 @@ export function shouldRefreshToken(auth: Auth): boolean {
  */
 export async function refreshAndUpdateToken(
 	currentAuth: Auth,
-	client: OpencodeClient
-): Promise<{ success: true; auth: Auth } | { success: false; response: Response }> {
+	client: OpencodeClient,
+): Promise<
+	{ success: true; auth: Auth } | { success: false; response: Response }
+> {
 	const refreshToken = currentAuth.type === "oauth" ? currentAuth.refresh : "";
 	const refreshResult = await refreshAccessToken(refreshToken);
 
@@ -52,7 +50,7 @@ export async function refreshAndUpdateToken(
 			success: false,
 			response: new Response(
 				JSON.stringify({ error: "Token refresh failed" }),
-				{ status: HTTP_STATUS.UNAUTHORIZED }
+				{ status: HTTP_STATUS.UNAUTHORIZED },
 			),
 		};
 	}
@@ -107,13 +105,13 @@ export function rewriteUrlForCodex(url: string): string {
  * @param codexMode - Enable CODEX_MODE (bridge prompt instead of tool remap)
  * @returns Transformed body and updated init, or undefined if no body
  */
-export function transformRequestForCodex(
+export async function transformRequestForCodex(
 	init: RequestInit | undefined,
 	url: string,
 	codexInstructions: string,
 	userConfig: UserConfig,
-	codexMode: boolean = true
-): { body: RequestBody; updatedInit: RequestInit } | undefined {
+	codexMode = true,
+): Promise<{ body: RequestBody; updatedInit: RequestInit } | undefined> {
 	if (!init?.body) return undefined;
 
 	try {
@@ -133,7 +131,12 @@ export function transformRequestForCodex(
 		});
 
 		// Transform request body
-		const transformedBody = transformRequestBody(body, codexInstructions, userConfig, codexMode);
+		const transformedBody = await transformRequestBody(
+			body,
+			codexInstructions,
+			userConfig,
+			codexMode,
+		);
 
 		// Log transformed request
 		logRequest(LOG_STAGES.AFTER_TRANSFORM, {
@@ -169,7 +172,7 @@ export function transformRequestForCodex(
 export function createCodexHeaders(
 	init: RequestInit | undefined,
 	accountId: string,
-	accessToken: string
+	accessToken: string,
 ): Headers {
 	const headers = new Headers(init?.headers ?? {});
 	headers.delete("x-api-key"); // Remove any existing API key
@@ -186,7 +189,9 @@ export function createCodexHeaders(
  * @param response - Error response from API
  * @returns Response with error details
  */
-export async function handleErrorResponse(response: Response): Promise<Response> {
+export async function handleErrorResponse(
+	response: Response,
+): Promise<Response> {
 	const text = await response.text();
 	console.error(`[${PLUGIN_NAME}] ${response.status} error:`, text);
 
@@ -211,7 +216,7 @@ export async function handleErrorResponse(response: Response): Promise<Response>
  */
 export async function handleSuccessResponse(
 	response: Response,
-	hasTools: boolean
+	hasTools: boolean,
 ): Promise<Response> {
 	const responseHeaders = ensureContentType(response.headers);
 

@@ -85,6 +85,20 @@ If ANY answer is NO → STOP and correct before proceeding.
 **Testing:**
 - If tests exist: Start specific to your changes, then broader validation
 
+## Advanced Tools
+
+**Task Tool (Sub-Agents):**
+- Specialized agents are available via the Task tool
+- Check the Task tool description for current agent types and their capabilities
+- Useful for complex analysis, specialized workflows, or tasks requiring isolated context
+- The agent list is dynamically generated - refer to tool schema for available agents
+
+**MCP Tools:**
+- Model Context Protocol servers provide additional capabilities
+- MCP tools are prefixed: \`mcp__<server-name>__<tool-name>\`
+- Check your available tools for MCP integrations
+- Use when the tool's functionality matches your task needs
+
 ## What Remains from Codex
 
 Sandbox policies, approval mechanisms, final answer formatting, git commit protocols, and file reference formats all follow Codex instructions.`;
@@ -98,12 +112,14 @@ export interface CodexOpenCodeBridgeMeta {
 }
 
 export const CODEX_OPENCODE_BRIDGE_META: CodexOpenCodeBridgeMeta = {
-	estimatedTokens: 450,
-	reductionVsCurrent: "90%",
-	reductionVsToolRemap: "20%",
+	estimatedTokens: 550,
+	reductionVsCurrent: "88%",
+	reductionVsToolRemap: "10%",
 	protects: [
 		"Tool name confusion (apply_patch/update_plan)",
 		"Missing tool awareness",
+		"Task tool / sub-agent awareness",
+		"MCP tool awareness",
 		"Premature yielding to user",
 		"Over-modification of existing code",
 		"Environment confusion",
