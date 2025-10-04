@@ -158,8 +158,8 @@ For a simpler setup (uses plugin defaults: medium reasoning, auto summaries):
 
    > **Note on Updates**: opencode does NOT automatically update plugins. To force a fresh install of the latest version:
    > ```bash
-   > # Remove cached plugin entry and folder
-   > sed -i.bak '/"opencode-openai-codex-auth"/d' ~/.cache/opencode/package.json && rm -rf ~/.cache/opencode/node_modules/opencode-openai-codex-auth
+   > # Remove cached plugin entry and folder (runs in subshell to avoid directory issues)
+   > (cd ~ && sed -i.bak '/"opencode-openai-codex-auth"/d' .cache/opencode/package.json && rm -rf .cache/opencode/node_modules/opencode-openai-codex-auth)
    > ```
    > Then run `opencode` - it will reinstall the latest version.
    >
