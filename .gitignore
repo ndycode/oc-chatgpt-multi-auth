@@ -6,3 +6,4 @@ dist/
 .history/
 opencode.json
 .opencode/
+tmp

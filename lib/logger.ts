@@ -4,11 +4,15 @@ import { homedir } from "node:os";
 
 // Logging configuration
 export const LOGGING_ENABLED = process.env.ENABLE_PLUGIN_REQUEST_LOGGING === "1";
+export const DEBUG_ENABLED = process.env.DEBUG_CODEX_PLUGIN === "1" || LOGGING_ENABLED;
 const LOG_DIR = join(homedir(), ".opencode", "logs", "codex-plugin");
 
 // Log startup message about logging state
 if (LOGGING_ENABLED) {
 	console.log("[openai-codex-plugin] Request logging ENABLED - logs will be saved to:", LOG_DIR);
+}
+if (DEBUG_ENABLED && !LOGGING_ENABLED) {
+	console.log("[openai-codex-plugin] Debug logging ENABLED");
 }
 
 let requestCounter = 0;
@@ -50,5 +54,33 @@ export function logRequest(stage: string, data: Record<string, unknown>): void {
 	} catch (e) {
 		const error = e as Error;
 		console.error("[openai-codex-plugin] Failed to write log:", error.message);
+	}
+}
+
+/**
+ * Log debug information (only when DEBUG_ENABLED is true)
+ * @param message - Debug message
+ * @param data - Optional data to log
+ */
+export function logDebug(message: string, data?: unknown): void {
+	if (!DEBUG_ENABLED) return;
+
+	if (data !== undefined) {
+		console.log(`[openai-codex-plugin] ${message}`, data);
+	} else {
+		console.log(`[openai-codex-plugin] ${message}`);
+	}
+}
+
+/**
+ * Log warning (always enabled for important issues)
+ * @param message - Warning message
+ * @param data - Optional data to log
+ */
+export function logWarn(message: string, data?: unknown): void {
+	if (data !== undefined) {
+		console.warn(`[openai-codex-plugin] ${message}`, data);
+	} else {
+		console.warn(`[openai-codex-plugin] ${message}`);
 	}
 }

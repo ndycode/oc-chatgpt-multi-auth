@@ -14,56 +14,56 @@
         ]
       },
       "models": {
-        "GPT 5 Codex Low (ChatGPT Subscription)": {
-          "id": "gpt-5-codex",
+        "gpt-5-codex-low": {
+          "name": "GPT 5 Codex Low (OAuth)",
           "options": {
             "reasoningEffort": "low",
             "reasoningSummary": "auto",
             "textVerbosity": "medium"
           }
         },
-        "GPT 5 Codex Medium (ChatGPT Subscription)": {
-          "id": "gpt-5-codex",
+        "gpt-5-codex-medium": {
+          "name": "GPT 5 Codex Medium (OAuth)",
           "options": {
             "reasoningEffort": "medium",
             "reasoningSummary": "auto",
             "textVerbosity": "medium"
           }
         },
-        "GPT 5 Codex High (ChatGPT Subscription)": {
-          "id": "gpt-5-codex",
+        "gpt-5-codex-high": {
+          "name": "GPT 5 Codex High (OAuth)",
           "options": {
             "reasoningEffort": "high",
             "reasoningSummary": "detailed",
             "textVerbosity": "medium"
           }
         },
-        "GPT 5 Minimal (ChatGPT Subscription)": {
-          "id": "gpt-5",
+        "gpt-5-minimal": {
+          "name": "GPT 5 Minimal (OAuth)",
           "options": {
             "reasoningEffort": "minimal",
             "reasoningSummary": "auto",
             "textVerbosity": "low"
           }
         },
-        "GPT 5 Low (ChatGPT Subscription)": {
-          "id": "gpt-5",
+        "gpt-5-low": {
+          "name": "GPT 5 Low (OAuth)",
           "options": {
             "reasoningEffort": "low",
             "reasoningSummary": "auto",
             "textVerbosity": "low"
           }
         },
-        "GPT 5 Medium (ChatGPT Subscription)": {
-          "id": "gpt-5",
+        "gpt-5-medium": {
+          "name": "GPT 5 Medium (OAuth)",
           "options": {
             "reasoningEffort": "medium",
             "reasoningSummary": "auto",
             "textVerbosity": "medium"
           }
         },
-        "GPT 5 High (ChatGPT Subscription)": {
-          "id": "gpt-5",
+        "gpt-5-high": {
+          "name": "GPT 5 High (OAuth)",
           "options": {
             "reasoningEffort": "high",
             "reasoningSummary": "detailed",
@@ -71,6 +71,7 @@
           }
         },
         "gpt-5-mini": {
+          "name": "GPT 5 Mini (OAuth)",
           "options": {
             "reasoningEffort": "low",
             "reasoningSummary": "auto",
@@ -78,6 +79,7 @@
           }
         },
         "gpt-5-nano": {
+          "name": "GPT 5 Nano (OAuth)",
           "options": {
             "reasoningEffort": "minimal",
             "reasoningSummary": "auto",

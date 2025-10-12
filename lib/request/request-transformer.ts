@@ -1,6 +1,7 @@
 import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
 import { CODEX_OPENCODE_BRIDGE } from "../prompts/codex-opencode-bridge.js";
 import { getOpenCodeCodexPrompt } from "../prompts/opencode-codex.js";
+import { logDebug, logWarn } from "../logger.js";
 import type {
 	UserConfig,
 	ConfigOptions,
@@ -17,10 +18,12 @@ import type {
 export function normalizeModel(model: string | undefined): string {
 	if (!model) return "gpt-5";
 
-	if (model.includes("codex")) {
+	// Case-insensitive check for "codex" anywhere in the model name
+	if (model.toLowerCase().includes("codex")) {
 		return "gpt-5-codex";
 	}
-	if (model.includes("gpt-5")) {
+	// Case-insensitive check for "gpt-5" or "gpt 5" (with space)
+	if (model.toLowerCase().includes("gpt-5") || model.toLowerCase().includes("gpt 5")) {
 		return "gpt-5";
 	}
 
@@ -87,22 +90,48 @@ export function getReasoningConfig(
 }
 
 /**
- * Filter input array to remove stored conversation history references
- * @param input - Original input array
- * @returns Filtered input array
+ * Filter input array for stateless Codex API (store: false)
+ *
+ * Two transformations needed:
+ * 1. Remove AI SDK-specific items (not supported by Codex API)
+ * 2. Strip IDs from all remaining items (stateless mode)
+ *
+ * AI SDK constructs to REMOVE (not in OpenAI Responses API spec):
+ * - type: "item_reference" - AI SDK uses this for server-side state lookup
+ *
+ * Items to KEEP (strip IDs):
+ * - type: "message" - Conversation messages (provides context to LLM)
+ * - type: "function_call" - Tool calls from conversation
+ * - type: "function_call_output" - Tool results from conversation
+ *
+ * Context is maintained through:
+ * - Full message history (without IDs)
+ * - reasoning.encrypted_content (for reasoning continuity)
+ *
+ * @param input - Original input array from OpenCode/AI SDK
+ * @returns Filtered input array compatible with Codex API
  */
 export function filterInput(
 	input: InputItem[] | undefined,
 ): InputItem[] | undefined {
 	if (!Array.isArray(input)) return input;
 
-	return input.filter((item) => {
-		// Keep items without IDs (new messages)
-		if (!item.id) return true;
-		// Remove items with response/result IDs (rs_*)
-		if (item.id?.startsWith("rs_")) return false;
-		return true;
-	});
+	return input
+		.filter((item) => {
+			// Remove AI SDK constructs not supported by Codex API
+			if (item.type === "item_reference") {
+				return false; // AI SDK only - references server state
+			}
+			return true; // Keep all other items
+		})
+		.map((item) => {
+			// Strip IDs from all items (Codex API stateless mode)
+			if (item.id) {
+				const { id, ...itemWithoutId } = item;
+				return itemWithoutId as InputItem;
+			}
+			return item;
+		});
 }
 
 /**
@@ -258,20 +287,43 @@ export async function transformRequestBody(
 	const originalModel = body.model;
 	const normalizedModel = normalizeModel(body.model);
 
-	// Get model-specific configuration (merges global + per-model options)
-	const modelConfig = getModelConfig(normalizedModel, userConfig);
+	// Get model-specific configuration using ORIGINAL model name (config key)
+	// This allows per-model options like "gpt-5-codex-low" to work correctly
+	const lookupModel = originalModel || normalizedModel;
+	const modelConfig = getModelConfig(lookupModel, userConfig);
 
-	// Normalize model name
+	// Debug: Log which config was resolved
+	logDebug(`Model config lookup: "${lookupModel}" → normalized to "${normalizedModel}" for API`, {
+		hasModelSpecificConfig: !!userConfig.models?.[lookupModel],
+		resolvedConfig: modelConfig,
+	});
+
+	// Normalize model name for API call
 	body.model = normalizedModel;
 
 	// Codex required fields
+	// ChatGPT backend REQUIRES store=false (confirmed via testing)
 	body.store = false;
 	body.stream = true;
 	body.instructions = codexInstructions;
 
 	// Filter and transform input
 	if (body.input && Array.isArray(body.input)) {
+		// Debug: Log original input message IDs before filtering
+		const originalIds = body.input.filter(item => item.id).map(item => item.id);
+		if (originalIds.length > 0) {
+			logDebug(`Filtering ${originalIds.length} message IDs from input:`, originalIds);
+		}
+
 		body.input = filterInput(body.input);
+
+		// Debug: Verify all IDs were removed
+		const remainingIds = (body.input || []).filter(item => item.id).map(item => item.id);
+		if (remainingIds.length > 0) {
+			logWarn(`WARNING: ${remainingIds.length} IDs still present after filtering:`, remainingIds);
+		} else if (originalIds.length > 0) {
+			logDebug(`Successfully removed all ${originalIds.length} message IDs`);
+		}
 
 		if (codexMode) {
 			// CODEX_MODE: Remove OpenCode system prompt, add bridge prompt

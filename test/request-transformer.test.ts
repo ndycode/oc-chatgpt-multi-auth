@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
 	normalizeModel,
+	getModelConfig,
 	filterInput,
 	addToolRemapMessage,
 	isOpenCodeSystemPrompt,
@@ -40,37 +41,248 @@ describe('Request Transformer Module', () => {
 		it('should return gpt-5 for undefined', async () => {
 			expect(normalizeModel(undefined)).toBe('gpt-5');
 		});
+
+		// NEW: Codex CLI preset name tests
+		describe('Codex CLI preset names', () => {
+			it('should normalize all gpt-5-codex presets to gpt-5-codex', async () => {
+				expect(normalizeModel('gpt-5-codex-low')).toBe('gpt-5-codex');
+				expect(normalizeModel('gpt-5-codex-medium')).toBe('gpt-5-codex');
+				expect(normalizeModel('gpt-5-codex-high')).toBe('gpt-5-codex');
+			});
+
+			it('should normalize all gpt-5 presets to gpt-5', async () => {
+				expect(normalizeModel('gpt-5-minimal')).toBe('gpt-5');
+				expect(normalizeModel('gpt-5-low')).toBe('gpt-5');
+				expect(normalizeModel('gpt-5-medium')).toBe('gpt-5');
+				expect(normalizeModel('gpt-5-high')).toBe('gpt-5');
+			});
+
+			it('should prioritize codex over gpt-5 in model name', async () => {
+				// Model name contains BOTH "codex" and "gpt-5"
+				// Should return "gpt-5-codex" (codex checked first)
+				expect(normalizeModel('gpt-5-codex-low')).toBe('gpt-5-codex');
+				expect(normalizeModel('my-gpt-5-codex-model')).toBe('gpt-5-codex');
+			});
+		});
+
+		// NEW: Edge case tests
+		describe('Edge cases', () => {
+			it('should handle uppercase model names', async () => {
+				expect(normalizeModel('GPT-5-CODEX')).toBe('gpt-5-codex');
+				expect(normalizeModel('GPT-5-HIGH')).toBe('gpt-5');
+			});
+
+			it('should handle mixed case', async () => {
+				expect(normalizeModel('Gpt-5-Codex-Low')).toBe('gpt-5-codex');
+				expect(normalizeModel('GpT-5-MeDiUm')).toBe('gpt-5');
+			});
+
+			it('should handle special characters', async () => {
+				expect(normalizeModel('my_gpt-5_codex')).toBe('gpt-5-codex');
+				expect(normalizeModel('gpt.5.high')).toBe('gpt-5');
+			});
+
+			it('should handle old verbose names', async () => {
+				expect(normalizeModel('GPT 5 Codex Low (ChatGPT Subscription)')).toBe('gpt-5-codex');
+				expect(normalizeModel('GPT 5 High (ChatGPT Subscription)')).toBe('gpt-5');
+			});
+
+			it('should handle empty string', async () => {
+				expect(normalizeModel('')).toBe('gpt-5');
+			});
+		});
+	});
+
+	describe('getModelConfig', () => {
+		describe('Per-model options (Bug Fix Verification)', () => {
+			it('should find per-model options using config key', async () => {
+				const userConfig: UserConfig = {
+					global: { reasoningEffort: 'medium' },
+					models: {
+						'gpt-5-codex-low': {
+							options: { reasoningEffort: 'low', textVerbosity: 'low' }
+						}
+					}
+				};
+
+				const result = getModelConfig('gpt-5-codex-low', userConfig);
+				expect(result.reasoningEffort).toBe('low');
+				expect(result.textVerbosity).toBe('low');
+			});
+
+			it('should merge global and per-model options (per-model wins)', async () => {
+				const userConfig: UserConfig = {
+					global: {
+						reasoningEffort: 'medium',
+						textVerbosity: 'medium',
+						include: ['reasoning.encrypted_content']
+					},
+					models: {
+						'gpt-5-codex-high': {
+							options: { reasoningEffort: 'high' }  // Override only effort
+						}
+					}
+				};
+
+				const result = getModelConfig('gpt-5-codex-high', userConfig);
+				expect(result.reasoningEffort).toBe('high');  // From per-model
+				expect(result.textVerbosity).toBe('medium');  // From global
+				expect(result.include).toEqual(['reasoning.encrypted_content']);  // From global
+			});
+
+			it('should return global options when model not in config', async () => {
+				const userConfig: UserConfig = {
+					global: { reasoningEffort: 'medium' },
+					models: {
+						'gpt-5-codex-low': { options: { reasoningEffort: 'low' } }
+					}
+				};
+
+				// Looking up different model
+				const result = getModelConfig('gpt-5-codex', userConfig);
+				expect(result.reasoningEffort).toBe('medium');  // Global only
+			});
+
+			it('should handle empty config', async () => {
+				const result = getModelConfig('gpt-5-codex', { global: {}, models: {} });
+				expect(result).toEqual({});
+			});
+
+			it('should handle missing models object', async () => {
+				const userConfig: UserConfig = {
+					global: { reasoningEffort: 'low' },
+					models: undefined as any
+				};
+				const result = getModelConfig('gpt-5', userConfig);
+				expect(result.reasoningEffort).toBe('low');
+			});
+		});
+
+		describe('Backwards compatibility', () => {
+			it('should work with old verbose config keys', async () => {
+				const userConfig: UserConfig = {
+					global: {},
+					models: {
+						'GPT 5 Codex Low (ChatGPT Subscription)': {
+							options: { reasoningEffort: 'low' }
+						}
+					}
+				};
+
+				const result = getModelConfig('GPT 5 Codex Low (ChatGPT Subscription)', userConfig);
+				expect(result.reasoningEffort).toBe('low');
+			});
+
+			it('should work with old configs that have id field', async () => {
+				const userConfig: UserConfig = {
+					global: {},
+					models: {
+						'gpt-5-codex-low': {
+							id: 'gpt-5-codex',  // id field present but should be ignored
+							options: { reasoningEffort: 'low' }
+						}
+					}
+				};
+
+				const result = getModelConfig('gpt-5-codex-low', userConfig);
+				expect(result.reasoningEffort).toBe('low');
+			});
+		});
+
+		describe('Default models (no custom config)', () => {
+			it('should return global options for default gpt-5-codex', async () => {
+				const userConfig: UserConfig = {
+					global: { reasoningEffort: 'high' },
+					models: {}
+				};
+
+				const result = getModelConfig('gpt-5-codex', userConfig);
+				expect(result.reasoningEffort).toBe('high');
+			});
+
+			it('should return empty when no config at all', async () => {
+				const result = getModelConfig('gpt-5', undefined);
+				expect(result).toEqual({});
+			});
+		});
 	});
 
 	describe('filterInput', () => {
-		it('should keep items without IDs', async () => {
+		it('should keep items without IDs unchanged', async () => {
 			const input: InputItem[] = [
 				{ type: 'message', role: 'user', content: 'hello' },
 			];
 			const result = filterInput(input);
 			expect(result).toEqual(input);
+			expect(result![0]).not.toHaveProperty('id');
 		});
 
-		it('should remove items with rs_ IDs', async () => {
+		it('should remove ALL message IDs (rs_, msg_, etc.) for store:false compatibility', async () => {
 			const input: InputItem[] = [
-				{ id: 'rs_123', type: 'message', role: 'user', content: 'hello' },
+				{ id: 'rs_123', type: 'message', role: 'assistant', content: 'hello' },
 				{ id: 'msg_456', type: 'message', role: 'user', content: 'world' },
+				{ id: 'assistant_789', type: 'message', role: 'assistant', content: 'test' },
 			];
 			const result = filterInput(input);
-			expect(result).toHaveLength(1);
-			expect(result![0].id).toBe('msg_456');
+
+			// All items should remain (no filtering), but ALL IDs removed
+			expect(result).toHaveLength(3);
+			expect(result![0]).not.toHaveProperty('id');
+			expect(result![1]).not.toHaveProperty('id');
+			expect(result![2]).not.toHaveProperty('id');
+			expect(result![0].content).toBe('hello');
+			expect(result![1].content).toBe('world');
+			expect(result![2].content).toBe('test');
 		});
 
-		it('should handle mixed items', async () => {
+		it('should strip ID field but preserve all other properties', async () => {
+			const input: InputItem[] = [
+				{
+					id: 'msg_123',
+					type: 'message',
+					role: 'user',
+					content: 'test',
+					metadata: { some: 'data' }
+				},
+			];
+			const result = filterInput(input);
+
+			expect(result).toHaveLength(1);
+			expect(result![0]).not.toHaveProperty('id');
+			expect(result![0].type).toBe('message');
+			expect(result![0].role).toBe('user');
+			expect(result![0].content).toBe('test');
+			expect(result![0]).toHaveProperty('metadata');
+		});
+
+		it('should handle mixed items with and without IDs', async () => {
 			const input: InputItem[] = [
 				{ type: 'message', role: 'user', content: '1' },
 				{ id: 'rs_stored', type: 'message', role: 'assistant', content: '2' },
 				{ id: 'msg_123', type: 'message', role: 'user', content: '3' },
 			];
 			const result = filterInput(input);
-			expect(result).toHaveLength(2);
+
+			// All items kept, IDs removed from items that had them
+			expect(result).toHaveLength(3);
+			expect(result![0]).not.toHaveProperty('id');
+			expect(result![1]).not.toHaveProperty('id');
+			expect(result![2]).not.toHaveProperty('id');
 			expect(result![0].content).toBe('1');
-			expect(result![1].content).toBe('3');
+			expect(result![1].content).toBe('2');
+			expect(result![2].content).toBe('3');
+		});
+
+		it('should handle custom ID formats (future-proof)', async () => {
+			const input: InputItem[] = [
+				{ id: 'custom_id_format', type: 'message', role: 'user', content: 'test' },
+				{ id: 'another-format-123', type: 'message', role: 'user', content: 'test2' },
+			];
+			const result = filterInput(input);
+
+			expect(result).toHaveLength(2);
+			expect(result![0]).not.toHaveProperty('id');
+			expect(result![1]).not.toHaveProperty('id');
 		});
 
 		it('should return undefined for undefined input', async () => {
@@ -80,6 +292,12 @@ describe('Request Transformer Module', () => {
 		it('should return non-array input as-is', async () => {
 			const notArray = { notAnArray: true };
 			expect(filterInput(notArray as any)).toBe(notArray);
+		});
+
+		it('should handle empty array', async () => {
+			const input: InputItem[] = [];
+			const result = filterInput(input);
+			expect(result).toEqual([]);
 		});
 	});
 
@@ -410,7 +628,7 @@ describe('Request Transformer Module', () => {
 			expect(result.include).toEqual(['custom_field', 'reasoning.encrypted_content']);
 		});
 
-		it('should filter input array', async () => {
+		it('should remove IDs from input array (keep all items, strip IDs)', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5',
 				input: [
@@ -419,8 +637,13 @@ describe('Request Transformer Module', () => {
 				],
 			};
 			const result = await transformRequestBody(body, codexInstructions);
-			expect(result.input).toHaveLength(1);
-			expect(result.input![0].content).toBe('new');
+
+			// All items kept, IDs removed
+			expect(result.input).toHaveLength(2);
+			expect(result.input![0]).not.toHaveProperty('id');
+			expect(result.input![1]).not.toHaveProperty('id');
+			expect(result.input![0].content).toBe('old');
+			expect(result.input![1].content).toBe('new');
 		});
 
 		it('should add tool remap message when tools present', async () => {
@@ -584,6 +807,216 @@ describe('Request Transformer Module', () => {
 				// Should use bridge message (codexMode=true by default)
 				expect(result.input![0].role).toBe('developer');
 				expect((result.input![0].content as any)[0].text).toContain('Codex Running in OpenCode');
+			});
+		});
+
+		// NEW: Integration tests for all config scenarios
+		describe('Integration: Complete Config Scenarios', () => {
+			describe('Scenario 1: Default models (no custom config)', () => {
+				it('should handle gpt-5-codex with global options only', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex',
+						input: []
+					};
+					const userConfig: UserConfig = {
+						global: { reasoningEffort: 'high' },
+						models: {}
+					};
+
+					const result = await transformRequestBody(body, codexInstructions, userConfig);
+
+					expect(result.model).toBe('gpt-5-codex');  // Not changed
+					expect(result.reasoning?.effort).toBe('high');  // From global
+					expect(result.store).toBe(false);
+				});
+
+				it('should handle gpt-5-mini normalizing to gpt-5', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-mini',
+						input: []
+					};
+
+					const result = await transformRequestBody(body, codexInstructions);
+
+					expect(result.model).toBe('gpt-5');  // Normalized
+					expect(result.reasoning?.effort).toBe('minimal');  // Lightweight default
+				});
+			});
+
+			describe('Scenario 2: Custom preset names (new style)', () => {
+				const userConfig: UserConfig = {
+					global: { reasoningEffort: 'medium', include: ['reasoning.encrypted_content'] },
+					models: {
+						'gpt-5-codex-low': {
+							options: { reasoningEffort: 'low' }
+						},
+						'gpt-5-codex-high': {
+							options: { reasoningEffort: 'high', reasoningSummary: 'detailed' }
+						}
+					}
+				};
+
+				it('should apply per-model options for gpt-5-codex-low', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex-low',
+						input: []
+					};
+
+					const result = await transformRequestBody(body, codexInstructions, userConfig);
+
+					expect(result.model).toBe('gpt-5-codex');  // Normalized
+					expect(result.reasoning?.effort).toBe('low');  // From per-model
+					expect(result.include).toEqual(['reasoning.encrypted_content']);  // From global
+				});
+
+				it('should apply per-model options for gpt-5-codex-high', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex-high',
+						input: []
+					};
+
+					const result = await transformRequestBody(body, codexInstructions, userConfig);
+
+					expect(result.model).toBe('gpt-5-codex');  // Normalized
+					expect(result.reasoning?.effort).toBe('high');  // From per-model
+					expect(result.reasoning?.summary).toBe('detailed');  // From per-model
+				});
+
+				it('should use global options for default gpt-5-codex', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex',
+						input: []
+					};
+
+					const result = await transformRequestBody(body, codexInstructions, userConfig);
+
+					expect(result.model).toBe('gpt-5-codex');  // Not changed
+					expect(result.reasoning?.effort).toBe('medium');  // From global (no per-model)
+				});
+			});
+
+			describe('Scenario 3: Backwards compatibility (old verbose names)', () => {
+				const userConfig: UserConfig = {
+					global: {},
+					models: {
+						'GPT 5 Codex Low (ChatGPT Subscription)': {
+							options: { reasoningEffort: 'low', textVerbosity: 'low' }
+						}
+					}
+				};
+
+				it('should find and apply old config format', async () => {
+					const body: RequestBody = {
+						model: 'GPT 5 Codex Low (ChatGPT Subscription)',
+						input: []
+					};
+
+					const result = await transformRequestBody(body, codexInstructions, userConfig);
+
+					expect(result.model).toBe('gpt-5-codex');  // Normalized
+					expect(result.reasoning?.effort).toBe('low');  // From per-model (old format)
+					expect(result.text?.verbosity).toBe('low');
+				});
+			});
+
+			describe('Scenario 4: Mixed default + custom models', () => {
+				const userConfig: UserConfig = {
+					global: { reasoningEffort: 'medium' },
+					models: {
+						'gpt-5-codex-low': {
+							options: { reasoningEffort: 'low' }
+						}
+					}
+				};
+
+				it('should use per-model for custom variant', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex-low',
+						input: []
+					};
+
+					const result = await transformRequestBody(body, codexInstructions, userConfig);
+
+					expect(result.reasoning?.effort).toBe('low');  // Per-model
+				});
+
+				it('should use global for default model', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5',
+						input: []
+					};
+
+					const result = await transformRequestBody(body, codexInstructions, userConfig);
+
+					expect(result.reasoning?.effort).toBe('medium');  // Global
+				});
+			});
+
+			describe('Scenario 5: Message ID filtering with multi-turn', () => {
+				it('should remove ALL IDs in multi-turn conversation', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex',
+						input: [
+							{ id: 'msg_turn1', type: 'message', role: 'user', content: 'first' },
+							{ id: 'rs_response1', type: 'message', role: 'assistant', content: 'response' },
+							{ id: 'msg_turn2', type: 'message', role: 'user', content: 'second' },
+							{ id: 'assistant_123', type: 'message', role: 'assistant', content: 'reply' },
+						]
+					};
+
+					const result = await transformRequestBody(body, codexInstructions);
+
+					// All items kept, ALL IDs removed
+					expect(result.input).toHaveLength(4);
+					expect(result.input!.every(item => !item.id)).toBe(true);
+					expect(result.store).toBe(false);  // Stateless mode
+					expect(result.include).toEqual(['reasoning.encrypted_content']);
+				});
+			});
+
+			describe('Scenario 6: Complete end-to-end transformation', () => {
+				it('should handle full transformation: custom model + IDs + tools', async () => {
+					const userConfig: UserConfig = {
+						global: { include: ['reasoning.encrypted_content'] },
+						models: {
+							'gpt-5-codex-low': {
+								options: {
+									reasoningEffort: 'low',
+									textVerbosity: 'low',
+									reasoningSummary: 'auto'
+								}
+							}
+						}
+					};
+
+					const body: RequestBody = {
+						model: 'gpt-5-codex-low',
+						input: [
+							{ id: 'msg_1', type: 'message', role: 'user', content: 'test' },
+							{ id: 'rs_2', type: 'message', role: 'assistant', content: 'reply' }
+						],
+						tools: [{ name: 'edit' }]
+					};
+
+					const result = await transformRequestBody(body, codexInstructions, userConfig);
+
+					// Model normalized
+					expect(result.model).toBe('gpt-5-codex');
+
+					// IDs removed
+					expect(result.input!.every(item => !item.id)).toBe(true);
+
+					// Per-model options applied
+					expect(result.reasoning?.effort).toBe('low');
+					expect(result.reasoning?.summary).toBe('auto');
+					expect(result.text?.verbosity).toBe('low');
+
+					// Codex fields set
+					expect(result.store).toBe(false);
+					expect(result.stream).toBe(true);
+					expect(result.instructions).toBe(codexInstructions);
+					expect(result.include).toEqual(['reasoning.encrypted_content']);
+				});
 			});
 		});
 	});
