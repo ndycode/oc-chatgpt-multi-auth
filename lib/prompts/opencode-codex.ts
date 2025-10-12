@@ -17,11 +17,15 @@ const CACHE_META_FILE = join(CACHE_DIR, "opencode-codex-meta.json");
 
 interface CacheMeta {
 	etag: string;
-	lastFetch: string;
+	lastFetch?: string; // Legacy field for backwards compatibility
+	lastChecked: number; // Timestamp for rate limit protection
 }
 
 /**
  * Fetch OpenCode's codex.txt prompt with ETag-based caching
+ * Uses HTTP conditional requests to efficiently check for updates
+ *
+ * Rate limit protection: Only checks GitHub if cache is older than 15 minutes
  * @returns The codex.txt content
  */
 export async function getOpenCodeCodexPrompt(): Promise<string> {
@@ -37,6 +41,12 @@ export async function getOpenCodeCodexPrompt(): Promise<string> {
 		cachedMeta = JSON.parse(metaContent);
 	} catch {
 		// Cache doesn't exist or is invalid, will fetch fresh
+	}
+
+	// Rate limit protection: If cache is less than 15 minutes old, use it
+	const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+	if (cachedMeta?.lastChecked && (Date.now() - cachedMeta.lastChecked) < CACHE_TTL_MS && cachedContent) {
+		return cachedContent;
 	}
 
 	// Fetch from GitHub with conditional request
@@ -58,14 +68,15 @@ export async function getOpenCodeCodexPrompt(): Promise<string> {
 			const content = await response.text();
 			const etag = response.headers.get("etag") || "";
 
-			// Save to cache
+			// Save to cache with timestamp
 			await writeFile(CACHE_FILE, content, "utf-8");
 			await writeFile(
 				CACHE_META_FILE,
 				JSON.stringify(
 					{
 						etag,
-						lastFetch: new Date().toISOString(),
+						lastFetch: new Date().toISOString(), // Keep for backwards compat
+						lastChecked: Date.now(),
 					} satisfies CacheMeta,
 					null,
 					2

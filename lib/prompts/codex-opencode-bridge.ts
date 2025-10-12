@@ -38,7 +38,7 @@ You are running Codex through OpenCode, an open-source terminal coding assistant
 **Search/Discovery:**
 - \`grep\`   - Search file contents
 - \`glob\`   - Find files by pattern
-- \`ls\`     - List directories (use relative paths)
+- \`list\`   - List directories (requires absolute paths)
 
 **Execution:**
 - \`bash\`   - Run shell commands
@@ -56,7 +56,8 @@ Base instruction says:    You MUST use instead:
 apply_patch           →   edit
 update_plan           →   todowrite
 read_plan             →   todoread
-absolute paths        →   relative paths
+
+**Path Usage:** Follow each tool's schema—use absolute paths where required (e.g., \`read\`, \`edit\`, \`write\`, \`list\`) and relative paths only when the tool allows them.
 
 ## Verification Checklist
 
@@ -64,7 +65,7 @@ Before file/plan modifications:
 1. Am I using "edit" NOT "apply_patch"?
 2. Am I using "todowrite" NOT "update_plan"?
 3. Is this tool in the approved list above?
-4. Am I using relative paths?
+4. Am I following each tool's path requirements?
 
 If ANY answer is NO → STOP and correct before proceeding.
 
@@ -80,7 +81,7 @@ If ANY answer is NO → STOP and correct before proceeding.
 
 **Code Approach:**
 - New projects: Be ambitious and creative
-- Existing codebases: Surgical precision - modify only what's requested
+- Existing codebases: Surgical precision - modify only what's requested unless explicitly instructed to do otherwise
 
 **Testing:**
 - If tests exist: Start specific to your changes, then broader validation
@@ -101,7 +102,7 @@ If ANY answer is NO → STOP and correct before proceeding.
 
 ## What Remains from Codex
 
-Sandbox policies, approval mechanisms, final answer formatting, git commit protocols, and file reference formats all follow Codex instructions.`;
+Sandbox policies, approval mechanisms, final answer formatting, git commit protocols, and file reference formats all follow Codex instructions. In approval policy "never", never request escalations.`;
 
 export interface CodexOpenCodeBridgeMeta {
 	estimatedTokens: number;

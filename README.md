@@ -1,12 +1,34 @@
 # OpenAI ChatGPT OAuth Plugin for opencode
 
 [![npm version](https://img.shields.io/npm/v/opencode-openai-codex-auth.svg)](https://www.npmjs.com/package/opencode-openai-codex-auth)
+[![Tests](https://github.com/numman-ali/opencode-openai-codex-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/numman-ali/opencode-openai-codex-auth/actions)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-openai-codex-auth.svg)](https://www.npmjs.com/package/opencode-openai-codex-auth)
 
 This plugin enables opencode to use OpenAI's Codex backend via ChatGPT Plus/Pro OAuth authentication, allowing you to use your ChatGPT subscription instead of OpenAI Platform API credits.
 
-> **Found this useful?** 
+> **Found this useful?**
 Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates and more projects!
+
+## ⚠️ Terms of Service & Usage Notice
+
+**Important:** This plugin is designed for **personal development use only** with your own ChatGPT Plus/Pro subscription. By using this tool, you agree to:
+
+- ✅ Use only for individual productivity and coding assistance
+- ✅ Respect OpenAI's rate limits and usage policies
+- ✅ Not use to power commercial services or resell access
+- ✅ Comply with [OpenAI's Terms of Use](https://openai.com/policies/terms-of-use/) and [Usage Policies](https://openai.com/policies/usage-policies/)
+
+**This tool uses OpenAI's official OAuth authentication** (the same method as OpenAI's official Codex CLI). However, users are responsible for ensuring their usage complies with OpenAI's terms.
+
+### ⚠️ Not Suitable For:
+- Commercial API resale or white-labeling
+- High-volume automated extraction beyond personal use
+- Applications serving multiple users with one subscription
+- Any use that violates OpenAI's acceptable use policies
+
+**For production applications or commercial use, use the [OpenAI Platform API](https://platform.openai.com/) with proper API keys.**
+
+---
 
 ## Features
 
@@ -19,7 +41,7 @@ Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates an
 - ✅ **CODEX_MODE** - Codex-OpenCode bridge prompt with Task tool & MCP awareness (enabled by default)
 - ✅ **Automatic tool remapping** - Codex tools → opencode tools
 - ✅ **Configurable reasoning** - Control effort, summary verbosity, and text output
-- ✅ **Type-safe & tested** - Strict TypeScript with 129 comprehensive tests
+- ✅ **Type-safe & tested** - Strict TypeScript with 159 unit tests + 14 integration tests
 - ✅ **Modular architecture** - Easy to maintain and extend
 
 ## Installation
@@ -50,56 +72,56 @@ For the complete experience with all reasoning variants matching the official Co
         ]
       },
       "models": {
-        "GPT 5 Codex Low (ChatGPT Subscription)": {
-          "id": "gpt-5-codex",
+        "gpt-5-codex-low": {
+          "name": "GPT 5 Codex Low (OAuth)",
           "options": {
             "reasoningEffort": "low",
             "reasoningSummary": "auto",
             "textVerbosity": "medium"
           }
         },
-        "GPT 5 Codex Medium (ChatGPT Subscription)": {
-          "id": "gpt-5-codex",
+        "gpt-5-codex-medium": {
+          "name": "GPT 5 Codex Medium (OAuth)",
           "options": {
             "reasoningEffort": "medium",
             "reasoningSummary": "auto",
             "textVerbosity": "medium"
           }
         },
-        "GPT 5 Codex High (ChatGPT Subscription)": {
-          "id": "gpt-5-codex",
+        "gpt-5-codex-high": {
+          "name": "GPT 5 Codex High (OAuth)",
           "options": {
             "reasoningEffort": "high",
             "reasoningSummary": "detailed",
             "textVerbosity": "medium"
           }
         },
-        "GPT 5 Minimal (ChatGPT Subscription)": {
-          "id": "gpt-5",
+        "gpt-5-minimal": {
+          "name": "GPT 5 Minimal (OAuth)",
           "options": {
             "reasoningEffort": "minimal",
             "reasoningSummary": "auto",
             "textVerbosity": "low"
           }
         },
-        "GPT 5 Low (ChatGPT Subscription)": {
-          "id": "gpt-5",
+        "gpt-5-low": {
+          "name": "GPT 5 Low (OAuth)",
           "options": {
             "reasoningEffort": "low",
             "reasoningSummary": "auto",
             "textVerbosity": "low"
           }
         },
-        "GPT 5 Medium (ChatGPT Subscription)": {
-          "id": "gpt-5",
+        "gpt-5-medium": {
+          "name": "GPT 5 Medium (OAuth)",
           "options": {
             "reasoningEffort": "medium",
             "reasoningSummary": "auto",
             "textVerbosity": "medium"
           }
         },
-        "GPT 5 High (ChatGPT Subscription)": {
-          "id": "gpt-5",
+        "gpt-5-high": {
+          "name": "GPT 5 High (OAuth)",
           "options": {
             "reasoningEffort": "high",
             "reasoningSummary": "detailed",
@@ -107,6 +129,7 @@ For the complete experience with all reasoning variants matching the official Co
           }
         },
         "gpt-5-mini": {
+          "name": "GPT 5 Mini (OAuth)",
           "options": {
             "reasoningEffort": "low",
             "reasoningSummary": "auto",
@@ -114,6 +137,7 @@ For the complete experience with all reasoning variants matching the official Co
           }
         },
         "gpt-5-nano": {
+          "name": "GPT 5 Nano (OAuth)",
           "options": {
             "reasoningEffort": "minimal",
             "reasoningSummary": "auto",
@@ -130,13 +154,11 @@ For the complete experience with all reasoning variants matching the official Co
    **Project config**: `<project>/.opencode.json`
 
    This gives you 9 model variants with different reasoning levels:
-   - **GPT 5 Codex** (Low/Medium/High)
-   - **GPT 5** (Minimal/Low/Medium/High)
-   - **gpt-5-mini** and **gpt-5-nano** (these are to support the default opencode model selector)
+   - **gpt-5-codex** (low/medium/high) - Code-optimized reasoning
+   - **gpt-5** (minimal/low/medium/high) - General-purpose reasoning
+   - **gpt-5-mini** and **gpt-5-nano** - Lightweight variants
 
-   All appear in the opencode model selector with optimal settings for each reasoning level.
-
-   > **Optional**: You can remove `(ChatGPT Subscription)` from model names if you prefer cleaner labels in the model selector.
+   All appear in the opencode model selector as "GPT 5 Codex Low (OAuth)", "GPT 5 High (OAuth)", etc.
 
 #### Alternative: Minimal Configuration
 
@@ -156,43 +178,35 @@ For a simpler setup (uses plugin defaults: medium reasoning, auto summaries):
 
 2. **That's it!** opencode will auto-install the plugin on first run.
 
-   > **Note on Updates**: opencode does NOT automatically update plugins. To force a fresh install of the latest version:
-   > ```bash
-   > # Remove cached plugin entry and folder (runs in subshell to avoid directory issues)
-   > (cd ~ && sed -i.bak '/"opencode-openai-codex-auth"/d' .cache/opencode/package.json && rm -rf .cache/opencode/node_modules/opencode-openai-codex-auth)
-   > ```
-   > Then run `opencode` - it will reinstall the latest version.
-   >
-   > Check [releases](https://github.com/numman-ali/opencode-openai-codex-auth/releases) for the latest version.
-
-> **New to opencode?** Learn more:
-> - [Configuration Guide](https://opencode.ai/docs/config/)
-> - [Plugin Documentation](https://opencode.ai/docs/plugins/)
-
-### Alternative: Local Development
-
-For testing or development, you can use a local file path:
-
-```json
-{
-  "plugin": [
-    "file:///absolute/path/to/opencode-openai-codex-auth"
-  ]
-}
-```
+> **New to opencode?** Learn more at [opencode.ai](https://opencode.ai)
 
 ## Authentication
-
-Login with ChatGPT OAuth:
 
 ```bash
 opencode auth login
 ```
 
-Select "OpenAI" and choose:
-- **"ChatGPT Plus/Pro (Codex Subscription)"** - Opens browser automatically for OAuth flow
+Select "OpenAI" → "ChatGPT Plus/Pro (Codex Subscription)"
 
-> **Important**: Make sure the official Codex CLI is not running during first login, as both use port 1455 for OAuth callback. After initial authentication, this won't be an issue.
+> **⚠️ First-time setup**: Stop Codex CLI if running (both use port 1455)
+
+---
+
+## Updating the Plugin
+
+**⚠️ Important**: OpenCode does NOT auto-update plugins.
+
+To install the latest version:
+
+```bash
+# Clear plugin cache
+(cd ~ && sed -i.bak '/"opencode-openai-codex-auth"/d' .cache/opencode/package.json && rm -rf .cache/opencode/node_modules/opencode-openai-codex-auth)
+
+# Restart OpenCode - it will reinstall latest version
+opencode
+```
+
+Check [releases](https://github.com/numman-ali/opencode-openai-codex-auth/releases) for version history.
 
 ## Usage
 
@@ -200,12 +214,12 @@ If using the full configuration, select from the model picker in opencode, or sp
 
 ```bash
 # Use different reasoning levels for gpt-5-codex
-opencode run "simple task" --model="openai/GPT 5 Codex Low (ChatGPT Subscription)"
-opencode run "complex task" --model="openai/GPT 5 Codex High (ChatGPT Subscription)"
+opencode run "simple task" --model=openai/gpt-5-codex-low
+opencode run "complex task" --model=openai/gpt-5-codex-high
 
 # Use different reasoning levels for gpt-5
-opencode run "quick question" --model="openai/GPT 5 Minimal (ChatGPT Subscription)"
-opencode run "deep analysis" --model="openai/GPT 5 High (ChatGPT Subscription)"
+opencode run "quick question" --model=openai/gpt-5-minimal
+opencode run "deep analysis" --model=openai/gpt-5-high
 
 # Or with minimal config (uses defaults)
 opencode run "create a hello world file" --model=openai/gpt-5-codex
@@ -216,65 +230,36 @@ opencode run "solve this complex problem" --model=openai/gpt-5
 
 When using [`config/full-opencode.json`](./config/full-opencode.json), you get these pre-configured variants:
 
-| Model Variant | Reasoning Effort | Best For |
-|---------------|-----------------|----------|
-| **GPT 5 Codex Low** | Low | Fast code generation |
-| **GPT 5 Codex Medium** | Medium | Balanced code tasks |
-| **GPT 5 Codex High** | High | Complex code & tools |
-| **GPT 5 Minimal** | Minimal | Quick answers, simple tasks |
-| **GPT 5 Low** | Low | Faster responses with light reasoning |
-| **GPT 5 Medium** | Medium | Balanced general-purpose tasks |
-| **GPT 5 High** | High | Deep reasoning, complex problems |
-| **gpt-5-mini** | Low | Lightweight tasks |
-| **gpt-5-nano** | Minimal | Maximum speed |
+| CLI Model ID | TUI Display Name | Reasoning Effort | Best For |
+|--------------|------------------|-----------------|----------|
+| `gpt-5-codex-low` | GPT 5 Codex Low (OAuth) | Low | Fast code generation |
+| `gpt-5-codex-medium` | GPT 5 Codex Medium (OAuth) | Medium | Balanced code tasks |
+| `gpt-5-codex-high` | GPT 5 Codex High (OAuth) | High | Complex code & tools |
+| `gpt-5-minimal` | GPT 5 Minimal (OAuth) | Minimal | Quick answers, simple tasks |
+| `gpt-5-low` | GPT 5 Low (OAuth) | Low | Faster responses with light reasoning |
+| `gpt-5-medium` | GPT 5 Medium (OAuth) | Medium | Balanced general-purpose tasks |
+| `gpt-5-high` | GPT 5 High (OAuth) | High | Deep reasoning, complex problems |
+| `gpt-5-mini` | GPT 5 Mini (OAuth) | Low | Lightweight tasks |
+| `gpt-5-nano` | GPT 5 Nano (OAuth) | Minimal | Maximum speed |
+
+**Usage**: `--model=openai/<CLI Model ID>` (e.g., `--model=openai/gpt-5-codex-low`)
+**Display**: TUI shows the friendly name (e.g., "GPT 5 Codex Low (OAuth)")
 
 All accessed via your ChatGPT Plus/Pro subscription.
 
-### Using Model Variants in Custom Commands & Agents
+### Using in Custom Commands
 
-When using model aliases in **custom command frontmatter** or **agent configurations**, you **must include the provider prefix** (`openai/`):
-
-#### ✅ Correct - Custom Command Example
+**Important**: Always include the `openai/` prefix:
 
 ```yaml
----
-description: Create a git commit message
-agent: build
-model: openai/GPT 5 Codex Low (ChatGPT Subscription)
----
+# ✅ Correct
+model: openai/gpt-5-codex-low
 
-Create a commit message for the staged changes
+# ❌ Wrong - will fail
+model: gpt-5-codex-low
 ```
 
-#### ❌ Incorrect - Missing Provider Prefix
-
-```yaml
----
-description: Create a git commit message
-agent: build
-model: GPT 5 Codex Low (ChatGPT Subscription)  # ❌ Will fail - missing "openai/"
----
-```
-
-#### ✅ Correct - Agent Configuration Example
-
-```json
-{
-  "agent": {
-    "commit": {
-      "model": "openai/GPT 5 Codex Low (ChatGPT Subscription)",
-      "prompt": "You are a git commit message expert..."
-    }
-  }
-}
-```
-
-**Why?** The `--model` CLI flag, command frontmatter, and agent configs all use the same model resolution format: `provider/model`. Model aliases defined in your config are indexed under the provider namespace.
-
-**Alternative**: Instead of specifying the model in each command, you can:
-1. Set a default model in your agent configuration
-2. Use the agent's model setting instead of specifying per-command
-3. Rely on the global default model in your opencode config
+See [Configuration Guide](https://numman-ali.github.io/opencode-openai-codex-auth/configuration) for advanced usage.
 
 ### Plugin Defaults
 
@@ -353,14 +338,14 @@ Create your own named variants in the model selector:
   "provider": {
     "openai": {
       "models": {
-        "My Fast Codex": {
-          "id": "gpt-5-codex",
+        "codex-fast": {
+          "name": "My Fast Codex",
           "options": {
             "reasoningEffort": "low"
           }
         },
-        "My Smart GPT-5": {
-          "id": "gpt-5",
+        "gpt-5-smart": {
+          "name": "My Smart GPT-5",
           "options": {
             "reasoningEffort": "high",
             "textVerbosity": "high"
@@ -372,214 +357,155 @@ Create your own named variants in the model selector:
 }
 ```
 
-The `id` field determines which base model is used (`gpt-5-codex` or `gpt-5`), and the name is what appears in the model selector.
+**Config key** (e.g., `codex-fast`) is used in CLI: `--model=openai/codex-fast`
+**`name` field** (e.g., `"My Fast Codex"`) appears in model selector
+**Model type** is auto-detected from the key (contains "codex" → gpt-5-codex, else → gpt-5)
 
-### Configuration Files
+### Advanced Configuration
 
-This repository includes ready-to-use configuration examples:
+For advanced options, custom presets, and troubleshooting:
 
-- **[`config/full-opencode.json`](./config/full-opencode.json)** - Complete configuration with 9 model variants (recommended)
-- **[`config/minimal-opencode.json`](./config/minimal-opencode.json)** - Minimal configuration for basic usage
-- **[`config/README.md`](./config/README.md)** - Detailed configuration documentation
+**📖 [Configuration Guide](https://numman-ali.github.io/opencode-openai-codex-auth/configuration)** - Complete reference with examples
 
-Copy the appropriate file to your opencode configuration location and customize as needed.
+## Rate Limits & Responsible Use
 
-### Plugin Configuration
+This plugin respects the same rate limits enforced by OpenAI's official Codex CLI:
 
-The plugin supports configuration via `~/.opencode/openai-codex-auth-config.json`:
+- **Rate limits are determined by your ChatGPT subscription tier** (Plus/Pro)
+- **Limits are enforced server-side** through OAuth tokens
+- **The plugin does NOT and CANNOT bypass** OpenAI's rate limits
 
-```json
-{
-  "codexMode": true
-}
-```
+### Best Practices:
+- ✅ Use for individual coding tasks, not bulk processing
+- ✅ Avoid rapid-fire automated requests
+- ✅ Monitor your usage to stay within subscription limits
+- ✅ Consider the OpenAI Platform API for higher-volume needs
+- ❌ Do not use for commercial services without proper API access
+- ❌ Do not share authentication tokens or credentials
 
-#### CODEX_MODE Setting
+**Note:** Excessive usage or violations of OpenAI's terms may result in temporary throttling or account review by OpenAI.
 
-- **`codexMode: true`** (default) - Uses Codex-OpenCode bridge prompt for better Codex CLI parity
-- **`codexMode: false`** - Uses tool remap message (legacy mode)
+---
 
-**Priority order**: `CODEX_MODE` environment variable > config file > default (true)
+## Requirements
 
-**Examples**:
-```bash
-# Override config file with environment variable
-CODEX_MODE=0 opencode run "task"  # Disable CODEX_MODE temporarily
-CODEX_MODE=1 opencode run "task"  # Enable CODEX_MODE temporarily
-```
-
-> **Note**: CODEX_MODE is enabled by default for optimal Codex CLI compatibility. Only disable if you experience issues with the bridge prompt.
-
-## How It Works
-
-The plugin implements a 7-step fetch flow in TypeScript:
-
-1. **Token Management**: Checks and refreshes OAuth tokens if needed
-2. **URL Rewriting**: Transforms requests to `https://chatgpt.com/backend-api/codex/responses`
-3. **Request Transformation**:
-   - Model normalization (`gpt-5-codex` variants → `gpt-5-codex`, `gpt-5` variants → `gpt-5`)
-   - Injects Codex instructions from latest [openai/codex](https://github.com/openai/codex) release
-   - Applies reasoning configuration (effort, summary, verbosity)
-   - Adds Codex-OpenCode bridge prompt with Task tool & MCP awareness (CODEX_MODE=true, default) or tool remap message (CODEX_MODE=false)
-   - Filters OpenCode system prompts when in CODEX_MODE (verified against cached OpenCode prompt for accuracy)
-   - Filters conversation history (removes stored IDs for stateless operation)
-4. **Headers**: Adds OAuth token and ChatGPT account ID headers
-5. **Request Execution**: Sends to Codex backend API
-6. **Response Logging**: Optional debug logging (when `ENABLE_PLUGIN_REQUEST_LOGGING=1`)
-7. **Response Handling**: Converts SSE to JSON or returns error details
-
-### Key Features
-
-- **Modular Design**: 10 focused helper functions, each < 40 lines
-- **Type-Safe**: Strict TypeScript with comprehensive type definitions
-- **Tested**: 129 tests covering all functionality including CODEX_MODE
-- **Zero Dependencies**: Only uses @openauthjs/openauth
-- **Codex Instructions**: ETag-cached from GitHub, auto-updates on new releases
-- **CODEX_MODE**: Configurable bridge prompt for Codex CLI parity with Task tool & MCP awareness (enabled by default)
-- **Stateless Operation**: Uses `store: false` with encrypted reasoning content for multi-turn conversations
-
-## Limitations
-
-- **ChatGPT Plus/Pro required**: Must have an active ChatGPT Plus or Pro subscription
+- **ChatGPT Plus or Pro subscription** (required)
+- **OpenCode** installed ([opencode.ai](https://opencode.ai))
 
 ## Troubleshooting
 
-### Authentication Issues
+**Common Issues:**
 
-- Ensure you have an active ChatGPT Plus or Pro subscription
-- Try re-logging in with `opencode auth login`
-- Check browser console during OAuth flow if auto-login fails
+- **401 Unauthorized**: Run `opencode auth login` again
+- **Model not found**: Add `openai/` prefix (e.g., `--model=openai/gpt-5-codex-low`)
+- **"Item not found" errors**: Update to latest plugin version
 
-### Tool Execution Issues
+**Full troubleshooting guide**: [docs/troubleshooting.md](https://numman-ali.github.io/opencode-openai-codex-auth/troubleshooting)
 
-- Verify plugin is loaded in `opencode.json`
-- Check that model is set to `openai/gpt-5-codex`
-- Check `~/.opencode/cache/` for cached instructions and OpenCode prompts (auto-downloads from GitHub)
+## Debug Mode
 
-### Request Errors
+Enable detailed logging:
 
-- **401 Unauthorized**: Token expired, run `opencode auth login` again
-- **400 Bad Request**: Check console output for specific error details
-- **403 Forbidden**: Subscription may be expired or invalid
-
-### Model Not Found in Custom Commands/Agents
-
-If you get a "model not found" error when using custom commands or agents with model aliases:
-
-**Problem**: Model aliases in command frontmatter or agent configs require the provider prefix.
-
-```yaml
-# ❌ This will fail
-model: GPT 5 Codex Low (ChatGPT Subscription)
-
-# ✅ This works
-model: openai/GPT 5 Codex Low (ChatGPT Subscription)
+```bash
+DEBUG_CODEX_PLUGIN=1 opencode run "your prompt"
 ```
 
-**Why?** The `--model` CLI flag, custom commands, and agent configurations all use the `provider/model` format. Bare aliases (without `openai/`) are not automatically resolved to the provider namespace.
-
-**Solution**: Always include the provider prefix when using model aliases in:
-- Custom command frontmatter (`model: openai/...`)
-- Agent configurations (`"model": "openai/..."`)
-- CLI `--model` flag (`--model=openai/...`)
-
-See [Using Model Variants in Custom Commands & Agents](#using-model-variants-in-custom-commands--agents) for detailed examples.
-
-### Plugin Issues
-
-If you encounter issues with the latest version, you can pin to a specific stable release:
-
-```json
-{
-  "plugin": [
-    "opencode-openai-codex-auth@1.0.2"
-  ]
-}
-```
-
-Check [releases](https://github.com/numman-ali/opencode-openai-codex-auth/releases) for available versions and their release notes.
-
-## Debugging
-
-### Enable Request Logging
-
-For debugging purposes, you can enable detailed request logging to inspect what's being sent to the Codex API:
+For full request/response logs:
 
 ```bash
 ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "your prompt"
 ```
 
-Logs are saved to `~/.opencode/logs/codex-plugin/` with detailed information about:
-- Original request from opencode
-- Transformed request sent to Codex
-- Response status and headers
-- Error details (if any)
+Logs saved to: `~/.opencode/logs/codex-plugin/`
 
-Each request generates 3-4 JSON files:
-- `request-N-before-transform.json` - Original request
-- `request-N-after-transform.json` - Transformed request
-- `request-N-response.json` - Response metadata
-- `request-N-error-response.json` - Error details (if failed)
+See [Troubleshooting Guide](https://numman-ali.github.io/opencode-openai-codex-auth/troubleshooting) for details.
 
-**Note**: Logging is disabled by default to avoid cluttering your disk. Only enable it when debugging issues.
+## Frequently Asked Questions
 
-## Project Structure
+### Is this against OpenAI's Terms of Service?
 
-```
-opencode-openai-codex-auth/
-├── index.ts                     # Main plugin entry point
-├── lib/
-│   ├── auth/                    # OAuth authentication modules
-│   │   ├── auth.ts             # OAuth flow, PKCE, token exchange
-│   │   ├── server.ts           # Local OAuth callback server
-│   │   └── browser.ts          # Platform-specific browser opening
-│   ├── prompts/                 # Prompt management modules
-│   │   ├── codex.ts            # Codex instructions fetching/caching
-│   │   ├── opencode-codex.ts   # OpenCode prompt verification cache
-│   │   └── codex-opencode-bridge.ts # Bridge prompt with Task/MCP awareness
-│   ├── request/                 # Request handling modules
-│   │   ├── request-transformer.ts # Request body transformations
-│   │   ├── response-handler.ts    # SSE to JSON conversion
-│   │   └── fetch-helpers.ts       # 10 focused helper functions
-│   ├── config.ts                # Plugin configuration & CODEX_MODE
-│   ├── logger.ts                # Request logging (debug mode)
-│   ├── constants.ts             # All magic values and URLs
-│   └── types.ts                 # TypeScript type definitions
-├── config/
-│   ├── full-opencode.json       # Complete config with all variants
-│   ├── minimal-opencode.json    # Minimal config example
-│   └── README.md                # Configuration documentation
-├── test/                         # Comprehensive test suite (129 tests)
-├── AGENTS.md                     # Agent coding guidance
-├── package.json
-├── README.md
-└── LICENSE
-```
+This plugin uses **OpenAI's official OAuth authentication** (the same method as their official Codex CLI). It's designed for personal coding assistance with your own ChatGPT subscription.
 
-### Module Overview
+However, **users are responsible for ensuring their usage complies with OpenAI's Terms of Use**. This means:
+- Personal use for your own development
+- Respecting rate limits
+- Not reselling access or powering commercial services
+- Following OpenAI's acceptable use policies
 
-- **index.ts**: Main plugin export and fetch() orchestration (7-step flow)
-- **lib/auth/auth.ts**: OAuth flow, PKCE, token exchange, JWT decoding
-- **lib/auth/server.ts**: Local HTTP server for OAuth callback handling
-- **lib/auth/browser.ts**: Platform detection and browser opening
-- **lib/prompts/codex.ts**: Fetches/caches Codex instructions from GitHub, tool remapping
-- **lib/prompts/opencode-codex.ts**: Fetches/caches OpenCode system prompts for verification
-- **lib/prompts/codex-opencode-bridge.ts**: Bridge prompt with Task tool & MCP awareness
-- **lib/request/request-transformer.ts**: Request transformations (model normalization, reasoning config, prompt filtering)
-- **lib/request/response-handler.ts**: Response handling (SSE to JSON conversion)
-- **lib/request/fetch-helpers.ts**: 10 focused helper functions for main fetch flow
-- **lib/config.ts**: Plugin configuration loading and CODEX_MODE determination
-- **lib/logger.ts**: Debug logging (controlled by environment variable)
-- **lib/constants.ts**: Centralized constants, URLs, error messages
-- **lib/types.ts**: TypeScript type definitions
+### Can I use this for my commercial application?
 
-## Credits
+**No.** This plugin is intended for **personal development only**.
+
+For commercial applications, production systems, or services serving multiple users, you must obtain proper API access through the [OpenAI Platform API](https://platform.openai.com/).
+
+### Will my account get banned?
+
+Using OAuth authentication for personal coding assistance aligns with OpenAI's official Codex CLI use case. However, violating OpenAI's terms could result in account action:
+
+**Safe use:**
+- Personal coding assistance
+- Individual productivity
+- Legitimate development work
+- Respecting rate limits
+
+**Risky use:**
+- Commercial resale of access
+- Powering multi-user services
+- High-volume automated extraction
+- Violating OpenAI's usage policies
+
+### What's the difference between this and scraping session tokens?
+
+**Critical distinction:**
+- ✅ **This plugin:** Uses official OAuth authentication through OpenAI's authorization server
+- ❌ **Session scraping:** Extracts cookies/tokens from browsers (clearly violates TOS)
+
+OAuth is a **proper, supported authentication method**. Session token scraping and reverse-engineering private APIs are explicitly prohibited by OpenAI's terms.
+
+### Can I use this to avoid paying for the OpenAI API?
+
+**This is not a "free API alternative."**
+
+This plugin allows you to use your **existing ChatGPT subscription** for terminal-based coding assistance (the same use case as OpenAI's official Codex CLI).
+
+If you need API access for applications, automation, or commercial use, you should purchase proper API access from OpenAI Platform.
+
+### Is this affiliated with OpenAI?
+
+**No.** This is an independent open-source project. It uses OpenAI's publicly available OAuth authentication system but is not endorsed, sponsored, or affiliated with OpenAI.
+
+ChatGPT, GPT-5, and Codex are trademarks of OpenAI.
+
+---
+
+## Credits & Attribution
+
+This plugin implements OAuth authentication for OpenAI's Codex backend, using the same authentication flow as:
+- [OpenAI's official Codex CLI](https://github.com/openai/codex)
+- OpenAI's OAuth authorization server (https://chatgpt.com/oauth)
+
+### Acknowledgments
 
 Based on research and working implementations from:
 - [ben-vargas/ai-sdk-provider-chatgpt-oauth](https://github.com/ben-vargas/ai-sdk-provider-chatgpt-oauth)
 - [ben-vargas/ai-opencode-chatgpt-auth](https://github.com/ben-vargas/ai-opencode-chatgpt-auth)
 - [openai/codex](https://github.com/openai/codex) OAuth flow
 - [sst/opencode](https://github.com/sst/opencode)
+
+### Trademark Notice
+
+**Not affiliated with OpenAI.** ChatGPT, GPT-5, GPT-4, GPT-3, Codex, and OpenAI are trademarks of OpenAI, L.L.C. This is an independent open-source project and is not endorsed by, sponsored by, or affiliated with OpenAI.
+
+---
+
+## Documentation
+
+**📖 Documentation:**
+- [Installation](#installation) - Get started in 2 minutes
+- [Configuration](#configuration) - Customize your setup
+- [Troubleshooting](#troubleshooting) - Common issues
+- [GitHub Pages Docs](https://numman-ali.github.io/opencode-openai-codex-auth/) - Extended guides
+- [Developer Docs](https://numman-ali.github.io/opencode-openai-codex-auth/development/ARCHITECTURE) - Technical deep dive
 
 ## License
 

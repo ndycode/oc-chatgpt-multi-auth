@@ -28,22 +28,33 @@ async function getLatestReleaseTag(): Promise<string> {
  * Fetch Codex instructions from GitHub with ETag-based caching
  * Uses HTTP conditional requests to efficiently check for updates
  * Always fetches from the latest release tag, not main branch
+ *
+ * Rate limit protection: Only checks GitHub if cache is older than 15 minutes
  * @returns Codex instructions
  */
 export async function getCodexInstructions(): Promise<string> {
 	try {
-		// Get the latest release tag
-		const latestTag = await getLatestReleaseTag();
-		const CODEX_INSTRUCTIONS_URL = `https://raw.githubusercontent.com/openai/codex/${latestTag}/codex-rs/core/gpt_5_codex_prompt.md`;
-
-		// Load cached metadata (includes ETag and tag)
+		// Load cached metadata (includes ETag, tag, and lastChecked timestamp)
 		let cachedETag: string | null = null;
 		let cachedTag: string | null = null;
+		let cachedTimestamp: number | null = null;
+
 		if (existsSync(CACHE_METADATA_FILE)) {
 			const metadata = JSON.parse(readFileSync(CACHE_METADATA_FILE, "utf8")) as CacheMetadata;
 			cachedETag = metadata.etag;
 			cachedTag = metadata.tag;
+			cachedTimestamp = metadata.lastChecked;
 		}
+
+		// Rate limit protection: If cache is less than 15 minutes old, use it
+		const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+		if (cachedTimestamp && (Date.now() - cachedTimestamp) < CACHE_TTL_MS && existsSync(CACHE_FILE)) {
+			return readFileSync(CACHE_FILE, "utf8");
+		}
+
+		// Get the latest release tag (only if cache is stale or missing)
+		const latestTag = await getLatestReleaseTag();
+		const CODEX_INSTRUCTIONS_URL = `https://raw.githubusercontent.com/openai/codex/${latestTag}/codex-rs/core/gpt_5_codex_prompt.md`;
 
 		// If tag changed, we need to fetch new instructions
 		if (cachedTag !== latestTag) {
