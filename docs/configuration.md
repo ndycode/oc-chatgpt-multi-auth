@@ -57,9 +57,17 @@ Controls computational effort for reasoning.
 - `medium` - Balanced (default)
 - `high` - Maximum code quality
 
+**GPT-5.1-Codex-Max Values:**
+- `none` - No dedicated reasoning phase
+- `low` - Light reasoning
+- `medium` - Balanced
+- `high` - Deep reasoning (default for this family)
+- `xhigh` - Extra depth for long-horizon tasks
+
 **Notes**:
-- `minimal` auto-converts to `low` for gpt-5-codex (API limitation)
-- `gpt-5-codex-mini*` and `gpt-5.1-codex-mini*` only support `medium` or `high`; lower settings are clamped to `medium`
+- `minimal` auto-converts to `low` for Codex models
+- `gpt-5-codex-mini*` and `gpt-5.1-codex-mini*` only support `medium` or `high`; lower settings are clamped to `medium` and `xhigh` downgrades to `high`
+- Codex Max supports `none` and `xhigh` and defaults to `high` when not specified
 
 **Example:**
 ```json
@@ -76,7 +84,10 @@ Controls reasoning summary verbosity.
 
 **Values:**
 - `auto` - Automatically adapts (default)
+- `concise` - Short summaries
 - `detailed` - Verbose summaries
+- `off` - Disable reasoning summary (Codex Max supports)
+- `on` - Force enable summary (Codex Max supports)
 
 **Example:**
 ```json
@@ -96,8 +107,8 @@ Controls output length.
 - `medium` - Balanced (default)
 - `high` - Verbose
 
-**GPT-5-Codex:**
-- `medium` only (API limitation)
+**GPT-5-Codex / Codex Max:**
+- `medium` or `high` (Codex Max defaults to `medium`)
 
 **Example:**
 ```json
