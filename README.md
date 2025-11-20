@@ -455,7 +455,7 @@ These defaults match the official Codex CLI behavior and can be customized (see 
 ### ⚠️ REQUIRED: Use Pre-Configured File
 
 **YOU MUST use [`config/full-opencode.json`](./config/full-opencode.json)** - this is the only officially supported configuration:
-- 10 pre-configured GPT 5.1 model variants with verified settings
+- 13 pre-configured GPT 5.1 model variants with verified settings
 - Optimal configuration for each reasoning level
 - All variants visible in the opencode model selector
 - Required metadata for OpenCode features to work properly
