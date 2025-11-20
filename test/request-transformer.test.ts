@@ -796,6 +796,34 @@ describe('Request Transformer Module', () => {
 			expect(result.reasoning?.summary).toBe('detailed');
 		});
 
+		it('should downgrade xhigh to high for non-max codex', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.1-codex-high',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { reasoningEffort: 'xhigh' },
+				models: {},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.model).toBe('gpt-5.1-codex');
+			expect(result.reasoning?.effort).toBe('high');
+		});
+
+		it('should downgrade xhigh to high for non-max general models', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.1-high',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { reasoningEffort: 'xhigh' },
+				models: {},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.model).toBe('gpt-5.1');
+			expect(result.reasoning?.effort).toBe('high');
+		});
+
 		it('should preserve minimal for non-codex models', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5',
@@ -815,7 +843,7 @@ describe('Request Transformer Module', () => {
 				input: [],
 			};
 			const result = await transformRequestBody(body, codexInstructions);
-			expect(result.reasoning?.effort).toBe('minimal');
+			expect(result.reasoning?.effort).toBe('medium');
 		});
 
 		describe('CODEX_MODE parameter', () => {
@@ -945,7 +973,7 @@ describe('Request Transformer Module', () => {
 					const result = await transformRequestBody(body, codexInstructions);
 
 					expect(result.model).toBe('gpt-5');  // Normalized
-					expect(result.reasoning?.effort).toBe('minimal');  // Lightweight default
+					expect(result.reasoning?.effort).toBe('medium');  // Default for normalized gpt-5
 				});
 			});
 

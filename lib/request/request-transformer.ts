@@ -121,23 +121,23 @@ export function getModelConfig(
  * @returns Reasoning configuration
  */
 export function getReasoningConfig(
-	originalModel: string | undefined,
+	modelName: string | undefined,
 	userConfig: ConfigOptions = {},
 ): ReasoningConfig {
-	const normalizedOriginal = originalModel?.toLowerCase() ?? "";
+	const normalizedName = modelName?.toLowerCase() ?? "";
 	const isCodexMax =
-		normalizedOriginal.includes("codex-max") ||
-		normalizedOriginal.includes("codex max");
+		normalizedName.includes("codex-max") ||
+		normalizedName.includes("codex max");
 	const isCodexMini =
-		normalizedOriginal.includes("codex-mini") ||
-		normalizedOriginal.includes("codex mini") ||
-		normalizedOriginal.includes("codex_mini") ||
-		normalizedOriginal.includes("codex-mini-latest");
-	const isCodex = normalizedOriginal.includes("codex") && !isCodexMini;
+		normalizedName.includes("codex-mini") ||
+		normalizedName.includes("codex mini") ||
+		normalizedName.includes("codex_mini") ||
+		normalizedName.includes("codex-mini-latest");
+	const isCodex = normalizedName.includes("codex") && !isCodexMini;
 	const isLightweight =
 		!isCodexMini &&
-		(normalizedOriginal.includes("nano") ||
-			normalizedOriginal.includes("mini"));
+		(normalizedName.includes("nano") ||
+			normalizedName.includes("mini"));
 
 	// Default based on model type (Codex CLI defaults)
 	const defaultEffort: ReasoningConfig["effort"] = isCodexMini
@@ -161,6 +161,11 @@ export function getReasoningConfig(
 		if (effort !== "high" && effort !== "medium") {
 			effort = "medium";
 		}
+	}
+
+	// For all non-Codex-Max models, downgrade unsupported xhigh to high
+	if (!isCodexMax && effort === "xhigh") {
+		effort = "high";
 	}
 
 	// Normalize "minimal" to "low" for Codex families
@@ -437,8 +442,8 @@ export async function transformRequestBody(
 		}
 	}
 
-	// Configure reasoning (use model-specific config)
-	const reasoningConfig = getReasoningConfig(originalModel, modelConfig);
+	// Configure reasoning (use normalized model family + model-specific config)
+	const reasoningConfig = getReasoningConfig(normalizedModel, modelConfig);
 	body.reasoning = {
 		...body.reasoning,
 		...reasoningConfig,
