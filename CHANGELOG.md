@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Dates use the ISO forma
 
 ## [3.3.0] - 2025-11-19
 ### Added
-- GPT 5.1 Codex Max support: normalization, per-model defaults, and new presets (`gpt-5.1-codex-max`, `gpt-5.1-codex-max-xhigh`) with expanded output window and `xhigh` reasoning.
+- GPT 5.1 Codex Max support: normalization, per-model defaults, and new presets (`gpt-5.1-codex-max`, `gpt-5.1-codex-max-xhigh`) with extended reasoning options (including `none`/`xhigh`) while keeping the 272k context / 128k output limits.
 - Typing and config support for new reasoning options (`none`/`xhigh`, summary `off`/`on`) plus updated test matrix entries.
 
 ### Changed

@@ -22,7 +22,7 @@ cp config/full-opencode.json ~/.config/opencode/opencode.json
 **What's included:**
 - All supported GPT 5.1 variants: gpt-5.1, gpt-5.1-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini
 - Proper reasoning effort settings for each variant (including new `xhigh` for Codex Max)
-- Context limits (272k context / 128k output for core Codex; Codex Max allows larger outputs)
+- Context limits (272k context / 128k output for all Codex families, including Codex Max)
 - Required options: `store: false`, `include: ["reasoning.encrypted_content"]`
 
 ### ❌ Other Configurations (NOT SUPPORTED)

@@ -394,7 +394,7 @@ CODEX_MODE=1 opencode run "task"  # Temporarily enable
 ## Configuration Files
 
 **Provided Examples:**
-- [config/full-opencode.json](../config/full-opencode.json) - Complete with 8 GPT 5.1 variants
+- [config/full-opencode.json](../config/full-opencode.json) - Complete with 13 GPT 5.1 variants
 
 > **⚠️ REQUIRED:** You MUST use `full-opencode.json` - this is the ONLY officially supported configuration. Minimal configs are NOT supported for GPT 5 models and will fail unpredictably. OpenCode's auto-compaction and usage widgets also require the full config's per-model `limit` metadata.
 

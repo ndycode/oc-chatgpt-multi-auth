@@ -33,7 +33,7 @@ Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates an
 ## Features
 
 - ✅ **ChatGPT Plus/Pro OAuth authentication** - Use your existing subscription
-- ✅ **12 pre-configured GPT 5.1 variants** - GPT 5.1, GPT 5.1 Codex, GPT 5.1 Codex Max, and GPT 5.1 Codex Mini presets for common reasoning levels (including `gpt-5.1-codex-max-low/medium/high/xhigh`)
+- ✅ **13 pre-configured GPT 5.1 variants** - GPT 5.1, GPT 5.1 Codex, GPT 5.1 Codex Max, and GPT 5.1 Codex Mini presets for common reasoning levels (including `gpt-5.1-codex-max` and `gpt-5.1-codex-max-low/medium/high/xhigh`)
 - ⚠️ **GPT 5.1 only** - Older GPT 5.0 models are deprecated and may not work reliably
 - ✅ **Zero external dependencies** - Lightweight with only @openauthjs/openauth
 - ✅ **Auto-refreshing tokens** - Handles token expiration automatically
@@ -134,7 +134,7 @@ Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates an
           "name": "GPT 5.1 Codex Max (OAuth)",
           "limit": {
             "context": 272000,
-            "output": 400000
+            "output": 128000
           },
           "options": {
             "reasoningEffort": "high",
@@ -198,7 +198,7 @@ Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates an
           "name": "GPT 5.1 Codex Max Extra High (OAuth)",
           "limit": {
             "context": 272000,
-            "output": 400000
+            "output": 128000
           },
           "options": {
             "reasoningEffort": "xhigh",
@@ -299,7 +299,7 @@ Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates an
    **Global config**: `~/.config/opencode/opencode.json`
    **Project config**: `<project>/.opencode.json`
 
-   This gives you 12 GPT 5.1 variants with different reasoning levels:
+   This gives you 13 GPT 5.1 variants with different reasoning levels:
    - **gpt-5.1-codex** (low/medium/high) - Latest Codex model presets
    - **gpt-5.1-codex-max** (low/medium/high/xhigh) - Codex Max presets (`gpt-5.1-codex-max-low/medium/high/xhigh`)
    - **gpt-5.1-codex-mini** (medium/high) - Latest Codex mini tier presets
@@ -395,6 +395,7 @@ When using [`config/full-opencode.json`](./config/full-opencode.json), you get t
 | `gpt-5.1-codex-low` | GPT 5.1 Codex Low (OAuth) | Low | Fast code generation |
 | `gpt-5.1-codex-medium` | GPT 5.1 Codex Medium (OAuth) | Medium | Balanced code tasks |
 | `gpt-5.1-codex-high` | GPT 5.1 Codex High (OAuth) | High | Complex code & tools |
+| `gpt-5.1-codex-max` | GPT 5.1 Codex Max (OAuth) | High | Default Codex Max preset with large-context support |
 | `gpt-5.1-codex-max-low` | GPT 5.1 Codex Max Low (OAuth) | Low | Fast exploratory large-context work |
 | `gpt-5.1-codex-max-medium` | GPT 5.1 Codex Max Medium (OAuth) | Medium | Balanced large-context builds |
 | `gpt-5.1-codex-max-high` | GPT 5.1 Codex Max High (OAuth) | High | Long-horizon builds, large refactors |
@@ -410,7 +411,7 @@ When using [`config/full-opencode.json`](./config/full-opencode.json), you get t
 
 > **Note**: All `gpt-5.1-codex-mini*` presets map directly to the `gpt-5.1-codex-mini` slug with standard Codex limits (272k context / 128k output).
 >
-> **Note**: Codex Max presets use the `gpt-5.1-codex-max` slug with 272k input and expanded ~400k output support. Use `gpt-5.1-codex-max-low/medium/high/xhigh` to pick reasoning level (only `-xhigh` uses `xhigh` reasoning).
+> **Note**: Codex Max presets use the `gpt-5.1-codex-max` slug with 272k context and 128k output. Use `gpt-5.1-codex-max-low/medium/high/xhigh` to pick reasoning level (only `-xhigh` uses `xhigh` reasoning).
 
 > **⚠️ Important**: GPT 5 models can be temperamental - some variants may work better than others, some may give errors, and behavior may vary. Stick to the presets above configured in `full-opencode.json` for best results.
 
@@ -482,7 +483,7 @@ If you want to customize settings yourself, you can configure options at provide
 > **Notes**:
 > - `minimal` effort is auto-normalized to `low` for Codex models.
 > - Codex Mini clamps to `medium`/`high`; `xhigh` downgrades to `high`.
-> - Codex Max supports `none`/`xhigh` plus expanded output limits (~400k).
+> - Codex Max supports `none`/`xhigh` plus extended reasoning options while keeping the same 272k context / 128k output limits.
 
 #### Global Configuration Example
 
