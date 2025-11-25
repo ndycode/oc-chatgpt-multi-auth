@@ -4,7 +4,12 @@ All notable changes to this project are documented here. Dates use the ISO forma
 
 ## [4.0.0] - 2025-11-25
 
-**Major release**: Complete prompt engineering overhaul matching official Codex CLI behavior.
+**Major release**: Complete prompt engineering overhaul matching official Codex CLI behavior, with full **GPT-5.1 Codex Max** support.
+
+### Highlights
+- **Full Codex Max support** with dedicated prompt including frontend design guidelines
+- **Model-specific prompts** matching Codex CLI's prompt selection logic
+- **GPT-5.0 → GPT-5.1 migration** as legacy models are phased out
 
 ### Added
 - **Model-specific system prompts**: Plugin now fetches the correct Codex prompt based on model family, matching Codex CLI's `model_family.rs` logic:
