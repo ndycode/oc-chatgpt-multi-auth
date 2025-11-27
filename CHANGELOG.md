@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. Dates use the ISO format (YYYY-MM-DD).
 
+## [4.0.1] - 2025-11-27
+
+**Bugfix release**: Fixes API errors during summary/compaction and GitHub rate limiting.
+
+### Fixed
+- **Orphaned `function_call_output` errors**: Fixed 400 errors during summary/compaction requests when OpenCode sends `item_reference` pointers to server-stored function calls. The plugin now filters out `function_call` and `function_call_output` items when no tools are present in the request.
+- **GitHub API rate limiting**: Added fallback mechanism when fetching Codex instructions from GitHub. If the API returns 403 (rate limit), the plugin now falls back to parsing the HTML releases page.
+
+### Technical Details
+- Root cause: OpenCode's secondary model (gpt-5-nano) uses `item_reference` with `fc_*` IDs to reference stored function calls. Our plugin filters `item_reference` for stateless mode (`store: false`), leaving `function_call_output` orphaned. The Codex API rejects requests with orphaned outputs.
+- Fix: When `hasTools === false`, filter out all `function_call` and `function_call_output` items from the input array.
+- GitHub fallback chain: API endpoint → HTML page → redirect URL parsing → HTML regex parsing.
+
 ## [4.0.0] - 2025-11-25
 
 **Major release**: Complete prompt engineering overhaul matching official Codex CLI behavior, with full **GPT-5.1 Codex Max** support.

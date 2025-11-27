@@ -60,7 +60,7 @@ Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates an
 #### Recommended: Pin the Version
 
 ```json
-"plugin": ["opencode-openai-codex-auth@4.0.0"]
+"plugin": ["opencode-openai-codex-auth@4.0.1"]
 ```
 
 **Why pin versions?** OpenCode uses Bun's lockfile which pins resolved versions. If you use `"opencode-openai-codex-auth"` without a version, it resolves to "latest" once and **never updates** even when new versions are published.
@@ -74,7 +74,7 @@ Simply change the version in your config and restart OpenCode:
 "plugin": ["opencode-openai-codex-auth@3.3.0"]
 
 // To:
-"plugin": ["opencode-openai-codex-auth@4.0.0"]
+"plugin": ["opencode-openai-codex-auth@4.0.1"]
 ```
 
 OpenCode will detect the version mismatch and install the new version automatically.
@@ -108,7 +108,7 @@ Check [releases](https://github.com/numman-ali/opencode-openai-codex-auth/releas
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "opencode-openai-codex-auth@4.0.0"
+    "opencode-openai-codex-auth@4.0.1"
   ],
   "provider": {
     "openai": {
@@ -517,7 +517,7 @@ Apply settings to all models:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-openai-codex-auth@4.0.0"],
+  "plugin": ["opencode-openai-codex-auth@4.0.1"],
   "model": "openai/gpt-5-codex",
   "provider": {
     "openai": {
@@ -537,7 +537,7 @@ Create your own named variants in the model selector:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-openai-codex-auth@4.0.0"],
+  "plugin": ["opencode-openai-codex-auth@4.0.1"],
   "provider": {
     "openai": {
       "models": {
