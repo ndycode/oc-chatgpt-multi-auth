@@ -4,9 +4,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CacheMetadata, GitHubRelease } from "../types.js";
 
-// Codex instructions constants
 const GITHUB_API_RELEASES =
 	"https://api.github.com/repos/openai/codex/releases/latest";
+const GITHUB_HTML_RELEASES =
+	"https://github.com/openai/codex/releases/latest";
 const CACHE_DIR = join(homedir(), ".opencode", "cache");
 
 const __filename = fileURLToPath(import.meta.url);
@@ -61,11 +62,40 @@ export function getModelFamily(normalizedModel: string): ModelFamily {
  * @returns Release tag name (e.g., "rust-v0.43.0")
  */
 async function getLatestReleaseTag(): Promise<string> {
-	const response = await fetch(GITHUB_API_RELEASES);
-	if (!response.ok)
-		throw new Error(`Failed to fetch latest release: ${response.status}`);
-	const data = (await response.json()) as GitHubRelease;
-	return data.tag_name;
+	try {
+		const response = await fetch(GITHUB_API_RELEASES);
+		if (response.ok) {
+			const data = (await response.json()) as GitHubRelease;
+			if (data.tag_name) {
+				return data.tag_name;
+			}
+		}
+	} catch {
+	}
+
+	const htmlResponse = await fetch(GITHUB_HTML_RELEASES);
+	if (!htmlResponse.ok) {
+		throw new Error(
+			`Failed to fetch latest release: ${htmlResponse.status}`,
+		);
+	}
+
+	const finalUrl = htmlResponse.url;
+	if (finalUrl) {
+		const parts = finalUrl.split("/tag/");
+		const last = parts[parts.length - 1];
+		if (last && !last.includes("/")) {
+			return last;
+		}
+	}
+
+	const html = await htmlResponse.text();
+	const match = html.match(/\/openai\/codex\/releases\/tag\/([^"]+)/);
+	if (match && match[1]) {
+		return match[1];
+	}
+
+	throw new Error("Failed to determine latest release tag from GitHub");
 }
 
 /**
