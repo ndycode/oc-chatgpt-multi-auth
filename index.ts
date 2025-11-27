@@ -162,13 +162,17 @@ export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 						// Step 3: Transform request body with model-specific Codex instructions
 						// Instructions are fetched per model family (codex-max, codex, gpt-5.1)
+						// Capture original stream value before transformation
+						// generateText() sends no stream field, streamText() sends stream=true
+						const originalBody = init?.body ? JSON.parse(init.body as string) : {};
+						const isStreaming = originalBody.stream === true;
+
 						const transformation = await transformRequestForCodex(
 							init,
 							url,
 							userConfig,
 							codexMode,
 						);
-						const hasTools = transformation?.body.tools !== undefined;
 						const requestInit = transformation?.updatedInit ?? init;
 
 						// Step 4: Create headers with OAuth and ChatGPT account info
@@ -203,7 +207,7 @@ export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							return await handleErrorResponse(response);
 						}
 
-						return await handleSuccessResponse(response, hasTools);
+						return await handleSuccessResponse(response, isStreaming);
 					},
 				};
 			},

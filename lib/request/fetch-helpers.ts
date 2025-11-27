@@ -279,24 +279,24 @@ export async function handleErrorResponse(
 
 /**
  * Handles successful responses from the Codex API
- * Converts SSE to JSON for non-tool requests
+ * Converts SSE to JSON for non-streaming requests (generateText)
+ * Passes through SSE for streaming requests (streamText)
  * @param response - Success response from API
- * @param hasTools - Whether the request included tools
- * @returns Processed response (SSE→JSON for non-tool, stream for tool requests)
+ * @param isStreaming - Whether this is a streaming request (stream=true in body)
+ * @returns Processed response (SSE→JSON for non-streaming, stream for streaming)
  */
 export async function handleSuccessResponse(
     response: Response,
-    hasTools: boolean,
+    isStreaming: boolean,
 ): Promise<Response> {
     const responseHeaders = ensureContentType(response.headers);
 
-	// For non-tool requests (compact/summarize), convert streaming SSE to JSON
-	// generateText() expects a non-streaming JSON response, not SSE
-	if (!hasTools) {
+	// For non-streaming requests (generateText), convert SSE to JSON
+	if (!isStreaming) {
 		return await convertSseToJson(response, responseHeaders);
 	}
 
-	// For tool requests, return stream as-is (streamText handles SSE)
+	// For streaming requests (streamText), return stream as-is
 	return new Response(response.body, {
 		status: response.status,
 		statusText: response.statusText,

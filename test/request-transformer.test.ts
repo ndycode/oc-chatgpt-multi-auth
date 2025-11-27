@@ -847,13 +847,12 @@ describe('Request Transformer Module', () => {
 			expect(result.reasoning?.effort).toBe('medium');
 		});
 
-		it('should drop function_call items when no tools present', async () => {
+		it('should drop orphaned function_call_output when no tools present', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5-codex',
 				input: [
 					{ type: 'message', role: 'user', content: 'hello' },
-					{ type: 'function_call', role: 'assistant', name: 'write', arguments: '{}' } as any,
-					{ type: 'function_call_output', role: 'assistant', call_id: 'call_1', output: '{}' } as any,
+					{ type: 'function_call_output', role: 'assistant', call_id: 'orphan_call', output: '{}' } as any,
 				],
 			};
 
@@ -862,7 +861,24 @@ describe('Request Transformer Module', () => {
 			expect(result.tools).toBeUndefined();
 			expect(result.input).toHaveLength(1);
 			expect(result.input![0].type).toBe('message');
-			expect(result.input![0].role).toBe('user');
+		});
+
+		it('should keep matched function_call pairs when no tools present (for compaction)', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5-codex',
+				input: [
+					{ type: 'message', role: 'user', content: 'hello' },
+					{ type: 'function_call', call_id: 'call_1', name: 'write', arguments: '{}' } as any,
+					{ type: 'function_call_output', call_id: 'call_1', output: 'success' } as any,
+				],
+			};
+
+			const result = await transformRequestBody(body, codexInstructions);
+
+			expect(result.tools).toBeUndefined();
+			expect(result.input).toHaveLength(3);
+			expect(result.input![1].type).toBe('function_call');
+			expect(result.input![2].type).toBe('function_call_output');
 		});
 
 		describe('CODEX_MODE parameter', () => {

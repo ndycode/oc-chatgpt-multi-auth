@@ -398,6 +398,7 @@ export async function transformRequestBody(
 	// Codex required fields
 	// ChatGPT backend REQUIRES store=false (confirmed via testing)
 	body.store = false;
+	// Always set stream=true for API - response handling detects original intent
 	body.stream = true;
 	body.instructions = codexInstructions;
 
@@ -441,12 +442,22 @@ export async function transformRequestBody(
 			body.input = addToolRemapMessage(body.input, !!body.tools);
 		}
 
+		// Filter orphaned function_call_output items (where function_call was an item_reference that got filtered)
+		// Keep matched pairs for compaction context
 		if (!body.tools && body.input) {
-			body.input = body.input.filter(
-				(item) =>
-					item.type !== "function_call" &&
-					item.type !== "function_call_output",
+			// Collect all call_ids from function_call items
+			const functionCallIds = new Set(
+				body.input
+					.filter((item) => item.type === "function_call" && item.call_id)
+					.map((item) => item.call_id),
 			);
+			// Only filter function_call_output items that don't have a matching function_call
+			body.input = body.input.filter((item) => {
+				if (item.type === "function_call_output") {
+					return functionCallIds.has(item.call_id);
+				}
+				return true;
+			});
 		}
 	}
 

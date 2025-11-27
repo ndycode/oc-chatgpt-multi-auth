@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here. Dates use the ISO format (YYYY-MM-DD).
 
+## [4.0.2] - 2025-11-27
+
+**Bugfix release**: Fixes compaction context loss, agent creation, and SSE/JSON response handling.
+
+### Fixed
+- **Compaction losing context**: v4.0.1 was too aggressive in filtering tool calls - it removed ALL `function_call`/`function_call_output` items when tools weren't present. Now only **orphaned** outputs (without matching calls) are filtered, preserving matched pairs for compaction context.
+- **Agent creation failing**: The `/agent create` command was failing with "Invalid JSON response" because we were returning SSE streams instead of JSON for `generateText()` requests.
+- **SSE/JSON response handling**: Properly detect original request intent - `streamText()` requests get SSE passthrough, `generateText()` requests get SSE→JSON conversion.
+
+### Added
+- **`gpt-5.1-chat-latest` model support**: Added to model map, normalizes to `gpt-5.1`.
+
+### Technical Details
+- Root cause of compaction issue: OpenCode sends `item_reference` with `fc_*` IDs for function calls. We filter these for stateless mode, but v4.0.1 then removed ALL tool items. Now we only remove orphaned `function_call_output` items (where no matching `function_call` exists).
+- Root cause of agent creation issue: We were forcing `stream: true` for all requests and returning SSE for all responses. Now we capture original `stream` value before transformation and convert SSE→JSON only when original request wasn't streaming.
+- The Codex API always receives `stream: true` (required), but response handling is based on original intent.
+
 ## [4.0.1] - 2025-11-27
 
 **Bugfix release**: Fixes API errors during summary/compaction and GitHub rate limiting.

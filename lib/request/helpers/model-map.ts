@@ -43,6 +43,7 @@ export const MODEL_MAP: Record<string, string> = {
 	"gpt-5.1-low": "gpt-5.1",
 	"gpt-5.1-medium": "gpt-5.1",
 	"gpt-5.1-high": "gpt-5.1",
+	"gpt-5.1-chat-latest": "gpt-5.1",
 
 	// ============================================================================
 	// GPT-5 Codex Models (LEGACY - maps to gpt-5.1-codex as gpt-5 is being phased out)
