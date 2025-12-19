@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here. Dates use the ISO format (YYYY-MM-DD).
 
+## [4.2.0] - 2025-12-19
+
+**Feature release**: GPT 5.2 Codex support and prompt alignment with latest Codex CLI.
+
+### Added
+- **GPT 5.2 Codex model family**: Full support for `gpt-5.2-codex` with presets:
+  - `gpt-5.2-codex-low` - Fast GPT 5.2 Codex responses
+  - `gpt-5.2-codex-medium` - Balanced GPT 5.2 Codex tasks
+  - `gpt-5.2-codex-high` - Complex GPT 5.2 Codex reasoning & tools
+  - `gpt-5.2-codex-xhigh` - Deep GPT 5.2 Codex long-horizon work
+- **New model family prompt**: `gpt-5.2-codex_prompt.md` fetched from the latest Codex CLI release with its own cache file.
+- **Test coverage**: Added unit tests for GPT 5.2 Codex normalization, family selection, and reasoning behavior.
+
+### Changed
+- **Prompt selection alignment**: GPT 5.2 general now uses `gpt_5_2_prompt.md` (Codex CLI parity).
+- **Reasoning configuration**: GPT 5.2 Codex supports `xhigh` but does **not** support `"none"`; `"none"` auto-upgrades to `"low"` and `"minimal"` normalizes to `"low"`.
+- **Config presets**: `config/full-opencode.json` now includes 22 pre-configured variants (adds GPT 5.2 Codex).
+- **Docs**: Updated README/AGENTS/config docs to include GPT 5.2 Codex and new model family behavior.
+
 ## [4.1.1] - 2025-12-17
 
 **Minor release**: "none" reasoning effort support, orphaned function_call_output fix, and HTML version update.

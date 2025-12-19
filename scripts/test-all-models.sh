@@ -140,7 +140,7 @@ update_config() {
     case "${config_type}" in
         "full")
             cat "${REPO_DIR}/config/full-opencode.json" > "${OPENCODE_JSON}"
-            echo "✓ Updated opencode.json with full config (GPT 5.1)"
+            echo "✓ Updated opencode.json with full config (GPT 5.x)"
             ;;
         "minimal")
             cat "${REPO_DIR}/config/minimal-opencode.json" > "${OPENCODE_JSON}"
@@ -161,7 +161,7 @@ update_config() {
 }
 
 # ============================================================================
-# Scenario 1: Full Config - GPT 5.1 Model Family
+# Scenario 1: Full Config - GPT 5.x Model Family
 # ============================================================================
 update_config "full"
 
@@ -180,6 +180,12 @@ test_model "gpt-5.2-low"    "gpt-5.2"   "gpt-5.2"  "low"     "auto"     "medium"
 test_model "gpt-5.2-medium" "gpt-5.2"   "gpt-5.2"  "medium"  "auto"     "medium"
 test_model "gpt-5.2-high"   "gpt-5.2"   "gpt-5.2"  "high"    "detailed" "medium"
 test_model "gpt-5.2-xhigh"  "gpt-5.2"   "gpt-5.2"  "xhigh"   "detailed" "medium"
+
+# GPT 5.2 Codex presets
+test_model "gpt-5.2-codex-low"    "gpt-5.2-codex" "gpt-5.2-codex" "low"    "auto"     "medium"
+test_model "gpt-5.2-codex-medium" "gpt-5.2-codex" "gpt-5.2-codex" "medium" "auto"     "medium"
+test_model "gpt-5.2-codex-high"   "gpt-5.2-codex" "gpt-5.2-codex" "high"   "detailed" "medium"
+test_model "gpt-5.2-codex-xhigh"  "gpt-5.2-codex" "gpt-5.2-codex" "xhigh"  "detailed" "medium"
 
 # GPT 5.1 Codex Mini presets (medium/high only)
 test_model "gpt-5.1-codex-mini-medium" "gpt-5.1-codex-mini" "codex"      "medium"  "auto"     "medium"
@@ -234,10 +240,10 @@ echo -e "${GREEN}Passed:       ${PASSED_TESTS}${NC}"
 if [ ${FAILED_TESTS} -gt 0 ]; then
     echo -e "${RED}Failed:       ${FAILED_TESTS}${NC}"
 else
-    echo -e "Failed:       ${FAILED_TESTS}"
+echo -e "Failed:       ${FAILED_TESTS}"
 fi
 echo ""
-echo -e "Results saved to: ${RESULTS_FILE}"
+echo -e "Results saved to: ${RESULTS_FILE} (will be removed)"
 echo ""
 
 # Restore original config
@@ -245,6 +251,9 @@ if [ -f "${REPO_DIR}/config/full-opencode.json" ]; then
     cat "${REPO_DIR}/config/full-opencode.json" > "${OPENCODE_JSON}"
     echo "✓ Restored original full config to opencode.json"
 fi
+
+# Cleanup results file to avoid polluting the repo
+rm -f "${RESULTS_FILE}"
 
 # Exit with appropriate code
 if [ ${FAILED_TESTS} -gt 0 ]; then

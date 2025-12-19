@@ -53,6 +53,12 @@ Controls computational effort for reasoning.
 - `high` - Deep reasoning
 - `xhigh` - Extra depth for long-horizon tasks
 
+**GPT-5.2-Codex Values:**
+- `low` - Fastest for code
+- `medium` - Balanced (default)
+- `high` - Maximum code quality
+- `xhigh` - Extra depth for long-horizon tasks
+
 **GPT-5.1 Values** (per OpenAI API docs and Codex CLI `ReasoningEffort` enum):
 - `none` - No dedicated reasoning phase (disables reasoning)
 - `low` - Light reasoning
@@ -71,9 +77,9 @@ Controls computational effort for reasoning.
 
 **Notes**:
 - `none` is supported for GPT-5.2 and GPT-5.1 (general purpose) per OpenAI API documentation
-- `none` is NOT supported for Codex variants - it auto-converts to `low` for Codex or `medium` for Codex Mini
+- `none` is NOT supported for Codex variants (including GPT-5.2 Codex) - it auto-converts to `low` for Codex/Codex Max or `medium` for Codex Mini
 - `minimal` auto-converts to `low` for Codex models
-- `xhigh` is only supported for GPT-5.2 and GPT-5.1-Codex-Max; other models downgrade to `high`
+- `xhigh` is supported for GPT-5.2, GPT-5.2 Codex, and GPT-5.1-Codex-Max; other models downgrade to `high`
 - Codex Mini only supports `medium` or `high`; lower settings clamp to `medium`
 
 **Example:**
@@ -114,7 +120,7 @@ Controls output length.
 - `medium` - Balanced (default)
 - `high` - Verbose
 
-**GPT-5-Codex / Codex Max:**
+**GPT-5.2-Codex / GPT-5.1-Codex / Codex Max:**
 - `medium` or `high` (Codex Max defaults to `medium`)
 
 **Example:**
@@ -401,7 +407,7 @@ CODEX_MODE=1 opencode run "task"  # Temporarily enable
 ## Configuration Files
 
 **Provided Examples:**
-- [config/full-opencode.json](../config/full-opencode.json) - Complete with 13 GPT 5.1 variants
+- [config/full-opencode.json](../config/full-opencode.json) - Complete with 22 GPT 5.x variants (GPT 5.2, GPT 5.2 Codex, GPT 5.1)
 
 > **⚠️ REQUIRED:** You MUST use `full-opencode.json` - this is the ONLY officially supported configuration. Minimal configs are NOT supported for GPT 5 models and will fail unpredictably. OpenCode's auto-compaction and usage widgets also require the full config's per-model `limit` metadata.
 
@@ -455,7 +461,7 @@ cat ~/.opencode/logs/codex-plugin/request-*-after-transform.json | jq '.reasonin
 
 Old verbose names still work:
 
-**⚠️ IMPORTANT:** Old configs with GPT 5.0 models are deprecated. You MUST migrate to the new `full-opencode.json` with GPT 5.1 models.
+**⚠️ IMPORTANT:** Old configs with GPT 5.0 models are deprecated. You MUST migrate to the new `full-opencode.json` with GPT 5.x models.
 
 **Old config (deprecated):**
 ```json
@@ -495,7 +501,7 @@ Use the official [`config/full-opencode.json`](../config/full-opencode.json) fil
 ```
 
 **Benefits:**
-- GPT 5.1 support (5.0 is deprecated)
+- GPT 5.2/5.1 support (5.0 is deprecated)
 - Proper limit metadata for OpenCode features
 - Verified configuration that works reliably
 

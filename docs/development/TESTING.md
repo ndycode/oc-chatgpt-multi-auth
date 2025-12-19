@@ -574,29 +574,42 @@ opencode
 ### Test: normalizeModel() Coverage
 
 ```typescript
-normalizeModel("gpt-5-codex")          // → "gpt-5-codex" ✅
-normalizeModel("gpt-5-codex-low")      // → "gpt-5-codex" ✅
-normalizeModel("GPT-5-CODEX-HIGH")     // → "gpt-5-codex" ✅
-normalizeModel("gpt-5-codex-mini-high")// → "codex-mini-latest" ✅
-normalizeModel("codex-mini-latest")    // → "codex-mini-latest" ✅
-normalizeModel("gpt-5.1-codex-mini")   // → "gpt-5.1-codex-mini" ✅
-normalizeModel("gpt-5.1-codex")        // → "gpt-5.1-codex" ✅
-normalizeModel("gpt-5.1")              // → "gpt-5.1" ✅
-normalizeModel("my-codex-model")       // → "gpt-5-codex" ✅
-normalizeModel("gpt-5")                // → "gpt-5" ✅
-normalizeModel("gpt-5-mini")           // → "gpt-5" ✅
-normalizeModel("gpt-5-nano")           // → "gpt-5" ✅
-normalizeModel("GPT 5 High")           // → "gpt-5" ✅
-normalizeModel(undefined)              // → "gpt-5" ✅
-normalizeModel("random-model")         // → "gpt-5" ✅ (fallback)
+normalizeModel("gpt-5.2-codex")         // → "gpt-5.2-codex" ✅
+normalizeModel("gpt-5.2-codex-high")    // → "gpt-5.2-codex" ✅
+normalizeModel("gpt-5.2-xhigh")         // → "gpt-5.2" ✅
+normalizeModel("gpt-5.1-codex-max-xhigh")// → "gpt-5.1-codex-max" ✅
+normalizeModel("gpt-5.1-codex-mini-high")// → "gpt-5.1-codex-mini" ✅
+normalizeModel("codex-mini-latest")     // → "gpt-5.1-codex-mini" ✅
+normalizeModel("gpt-5.1-codex")         // → "gpt-5.1-codex" ✅
+normalizeModel("gpt-5.1")               // → "gpt-5.1" ✅
+normalizeModel("my-codex-model")        // → "gpt-5.1-codex" ✅
+normalizeModel("gpt-5")                 // → "gpt-5.1" ✅
+normalizeModel("gpt-5-mini")            // → "gpt-5.1" ✅
+normalizeModel("gpt-5-nano")            // → "gpt-5.1" ✅
+normalizeModel("GPT 5 High")            // → "gpt-5.1" ✅
+normalizeModel(undefined)               // → "gpt-5.1" ✅
+normalizeModel("random-model")          // → "gpt-5.1" ✅ (fallback)
 ```
 
 **Implementation:**
 ```typescript
 export function normalizeModel(model: string | undefined): string {
-  if (!model) return "gpt-5";
-  const normalized = model.toLowerCase();
+  if (!model) return "gpt-5.1";
+  const modelId = model.includes("/") ? model.split("/").pop()! : model;
+  const mappedModel = MODEL_MAP[modelId];
+  if (mappedModel) return mappedModel;
 
+  const normalized = modelId.toLowerCase();
+
+  if (normalized.includes("gpt-5.2-codex") || normalized.includes("gpt 5.2 codex")) {
+    return "gpt-5.2-codex";
+  }
+  if (normalized.includes("gpt-5.2") || normalized.includes("gpt 5.2")) {
+    return "gpt-5.2";
+  }
+  if (normalized.includes("gpt-5.1-codex-max") || normalized.includes("gpt 5.1 codex max")) {
+    return "gpt-5.1-codex-max";
+  }
   if (normalized.includes("gpt-5.1-codex-mini") || normalized.includes("gpt 5.1 codex mini")) {
     return "gpt-5.1-codex-mini";
   }
@@ -614,19 +627,19 @@ export function normalizeModel(model: string | undefined): string {
     return "gpt-5.1";
   }
   if (normalized.includes("codex")) {
-    return "gpt-5-codex";
+    return "gpt-5.1-codex";
   }
   if (normalized.includes("gpt-5") || normalized.includes("gpt 5")) {
-    return "gpt-5";
+    return "gpt-5.1";
   }
-  return "gpt-5";
+  return "gpt-5.1";
 }
 ```
 
 **Why this works:**
 - ✅ Case-insensitive (`.toLowerCase()` + `.includes()`)
 - ✅ Pattern-based (works with any naming)
-- ✅ Safe fallback (unknown models → `gpt-5`)
+- ✅ Safe fallback (unknown models → `gpt-5.1`)
 - ✅ Codex priority with explicit Codex Mini support (`codex-mini*` → `codex-mini-latest`)
 
 ---

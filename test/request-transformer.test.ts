@@ -81,6 +81,15 @@ describe('Request Transformer Module', () => {
 				expect(normalizeModel('openai/gpt-5.1-codex-max-medium')).toBe('gpt-5.1-codex-max');
 			});
 
+			it('should normalize gpt-5.2 codex presets', async () => {
+				expect(normalizeModel('gpt-5.2-codex')).toBe('gpt-5.2-codex');
+				expect(normalizeModel('gpt-5.2-codex-low')).toBe('gpt-5.2-codex');
+				expect(normalizeModel('gpt-5.2-codex-medium')).toBe('gpt-5.2-codex');
+				expect(normalizeModel('gpt-5.2-codex-high')).toBe('gpt-5.2-codex');
+				expect(normalizeModel('gpt-5.2-codex-xhigh')).toBe('gpt-5.2-codex');
+				expect(normalizeModel('openai/gpt-5.2-codex-xhigh')).toBe('gpt-5.2-codex');
+			});
+
 			it('should normalize gpt-5.1 codex and mini slugs', async () => {
 				expect(normalizeModel('gpt-5.1-codex')).toBe('gpt-5.1-codex');
 				expect(normalizeModel('openai/gpt-5.1-codex')).toBe('gpt-5.1-codex');
@@ -778,6 +787,16 @@ describe('Request Transformer Module', () => {
 			expect(result.reasoning?.effort).toBe('high');
 		});
 
+		it('should default gpt-5.2-codex to high effort', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.2-codex',
+				input: [],
+			};
+			const result = await transformRequestBody(body, codexInstructions);
+			expect(result.model).toBe('gpt-5.2-codex');
+			expect(result.reasoning?.effort).toBe('high');
+		});
+
 		it('should preserve xhigh for codex-max when requested', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5.1-codex-max-xhigh',
@@ -793,6 +812,25 @@ describe('Request Transformer Module', () => {
 			};
 			const result = await transformRequestBody(body, codexInstructions, userConfig);
 			expect(result.model).toBe('gpt-5.1-codex-max');
+			expect(result.reasoning?.effort).toBe('xhigh');
+			expect(result.reasoning?.summary).toBe('detailed');
+		});
+
+		it('should preserve xhigh for gpt-5.2-codex when requested', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.2-codex-xhigh',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { reasoningSummary: 'auto' },
+				models: {
+					'gpt-5.2-codex-xhigh': {
+						options: { reasoningEffort: 'xhigh', reasoningSummary: 'detailed' },
+					},
+				},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.model).toBe('gpt-5.2-codex');
 			expect(result.reasoning?.effort).toBe('xhigh');
 			expect(result.reasoning?.summary).toBe('detailed');
 		});
@@ -837,6 +875,34 @@ describe('Request Transformer Module', () => {
 			const result = await transformRequestBody(body, codexInstructions, userConfig);
 			expect(result.model).toBe('gpt-5.2');
 			expect(result.reasoning?.effort).toBe('none');
+		});
+
+		it('should upgrade none to low for GPT-5.2-codex (codex does not support none)', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.2-codex',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { reasoningEffort: 'none' },
+				models: {},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.model).toBe('gpt-5.2-codex');
+			expect(result.reasoning?.effort).toBe('low');
+		});
+
+		it('should normalize minimal to low for gpt-5.2-codex', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.2-codex',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { reasoningEffort: 'minimal' },
+				models: {},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.model).toBe('gpt-5.2-codex');
+			expect(result.reasoning?.effort).toBe('low');
 		});
 
 		it('should preserve none for GPT-5.1 general purpose', async () => {

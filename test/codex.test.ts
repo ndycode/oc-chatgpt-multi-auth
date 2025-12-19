@@ -3,6 +3,24 @@ import { getModelFamily } from "../lib/prompts/codex.js";
 
 describe("Codex Module", () => {
 	describe("getModelFamily", () => {
+		describe("GPT-5.2 Codex family", () => {
+			it("should return gpt-5.2-codex for gpt-5.2-codex", () => {
+				expect(getModelFamily("gpt-5.2-codex")).toBe("gpt-5.2-codex");
+			});
+
+			it("should return gpt-5.2-codex for gpt-5.2-codex-low", () => {
+				expect(getModelFamily("gpt-5.2-codex-low")).toBe("gpt-5.2-codex");
+			});
+
+			it("should return gpt-5.2-codex for gpt-5.2-codex-high", () => {
+				expect(getModelFamily("gpt-5.2-codex-high")).toBe("gpt-5.2-codex");
+			});
+
+			it("should return gpt-5.2-codex for gpt-5.2-codex-xhigh", () => {
+				expect(getModelFamily("gpt-5.2-codex-xhigh")).toBe("gpt-5.2-codex");
+			});
+		});
+
 		describe("Codex Max family", () => {
 			it("should return codex-max for gpt-5.1-codex-max", () => {
 				expect(getModelFamily("gpt-5.1-codex-max")).toBe("codex-max");
@@ -65,7 +83,22 @@ describe("Codex Module", () => {
 			});
 		});
 
+		describe("GPT-5.2 general family", () => {
+			it("should return gpt-5.2 for gpt-5.2", () => {
+				expect(getModelFamily("gpt-5.2")).toBe("gpt-5.2");
+			});
+
+			it("should return gpt-5.2 for gpt-5.2-high", () => {
+				expect(getModelFamily("gpt-5.2-high")).toBe("gpt-5.2");
+			});
+		});
+
 		describe("Priority order", () => {
+			it("should prioritize gpt-5.2-codex over gpt-5.2 general", () => {
+				// "gpt-5.2-codex" also contains the substring "gpt-5.2"
+				expect(getModelFamily("gpt-5.2-codex")).toBe("gpt-5.2-codex");
+			});
+
 			it("should prioritize codex-max over codex", () => {
 				// Model contains both "codex-max" and "codex"
 				expect(getModelFamily("gpt-5.1-codex-max")).toBe("codex-max");

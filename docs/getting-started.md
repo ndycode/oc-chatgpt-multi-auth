@@ -28,7 +28,7 @@ OpenCode automatically installs plugins - no `npm install` needed!
 
 #### ⚠️ REQUIRED: Full Configuration (Only Supported Setup)
 
-**IMPORTANT**: You MUST use the full configuration. This is the ONLY officially supported setup for GPT 5.1 models.
+**IMPORTANT**: You MUST use the full configuration. This is the ONLY officially supported setup for GPT 5.x models.
 
 **Why the full config is required:**
 - GPT 5 models can be temperamental and need proper configuration
@@ -37,6 +37,8 @@ OpenCode automatically installs plugins - no `npm install` needed!
 - This configuration has been tested and verified to work
 
 Add this to `~/.config/opencode/opencode.json`:
+
+**Tip**: The snippet below is a truncated excerpt. For the complete list (including GPT 5.2 and GPT 5.2 Codex presets), copy `config/full-opencode.json` directly.
 
 ```json
 {
@@ -241,17 +243,21 @@ Add this to `~/.config/opencode/opencode.json`:
 ```
 
   **What you get:**
-  - ✅ GPT 5.1 Codex (Low/Medium/High reasoning)
+  - ✅ GPT 5.2 (None/Low/Medium/High/xHigh reasoning)
+  - ✅ GPT 5.2 Codex (Low/Medium/High/xHigh reasoning)
   - ✅ GPT 5.1 Codex Max (Low/Medium/High/xHigh reasoning presets)
+  - ✅ GPT 5.1 Codex (Low/Medium/High reasoning)
   - ✅ GPT 5.1 Codex Mini (Medium/High reasoning)
-  - ✅ GPT 5.1 (Low/Medium/High reasoning)
-  - ✅ 272k context + 128k output window for all GPT 5.1 presets.
+  - ✅ GPT 5.1 (None/Low/Medium/High reasoning)
+  - ✅ 272k context + 128k output window for all GPT 5.x presets.
   - ✅ All visible in OpenCode model selector
   - ✅ Optimal settings for each reasoning level
 
 > **Note**: All `gpt-5.1-codex-mini*` presets use 272k context / 128k output limits.
 >
 > **Note**: Codex Max presets map to the `gpt-5.1-codex-max` slug with 272k context and 128k output. Use `gpt-5.1-codex-max-low/medium/high/xhigh` to pick the reasoning level (only `-xhigh` uses `xhigh` reasoning).
+>
+> **Note**: GPT 5.2 and GPT 5.2 Codex support `xhigh` reasoning. Use explicit reasoning levels (e.g., `gpt-5.2-xhigh`, `gpt-5.2-codex-xhigh`) for precise control.
 
 Prompt caching is enabled out of the box: when OpenCode sends its session identifier as `prompt_cache_key`, the plugin forwards it untouched so multi-turn runs reuse prior work. The CODEX_MODE bridge prompt bundled with the plugin is kept in sync with the latest Codex CLI release, so the OpenCode UI and Codex share the same tool contract. If you hit your ChatGPT subscription limits, the plugin returns a friendly Codex-style message with the 5-hour and weekly usage windows so you know when capacity resets.
 
@@ -299,7 +305,7 @@ opencode run "write hello world to test.txt" --model=openai/gpt-5.1-codex-medium
 opencode
 ```
 
-You'll see all 13 GPT 5.1 variants (Codex, Codex Max, Codex Mini, and GPT 5.1 presets) in the model selector!
+You'll see all 22 GPT 5.x variants (GPT 5.2, GPT 5.2 Codex, Codex Max, Codex, Codex Mini, and GPT 5.1 presets) in the model selector!
 
 ---
 
