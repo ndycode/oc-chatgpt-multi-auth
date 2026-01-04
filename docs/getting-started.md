@@ -16,7 +16,7 @@ For production applications, use the [OpenAI Platform API](https://platform.open
 
 - **OpenCode** installed ([installation guide](https://opencode.ai))
 - **ChatGPT Plus or Pro subscription** (required for Codex access)
-- **Node.js** 18+ (for OpenCode)
+- **Node.js** 20+ (for OpenCode)
 
 ## Installation
 

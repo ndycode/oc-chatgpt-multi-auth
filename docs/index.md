@@ -73,20 +73,10 @@ Re-run the installer to update:
 npx -y opencode-openai-codex-auth@latest
 ```
 
-### Minimal Configuration
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-openai-codex-auth"],
-  "model": "openai/gpt-5-codex"
-}
-```
-
 ### Quick Test
 
 ```bash
-opencode run "write hello world to test.txt" --model=openai/gpt-5-codex
+opencode run "write hello world to test.txt" --model=openai/gpt-5.2 --variant=medium
 ```
 
 ---
