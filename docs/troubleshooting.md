@@ -163,7 +163,7 @@ Items are not persisted when `store` is set to false.
 **Solution:**
 ```bash
 # Update plugin
-(cd ~ && sed -i.bak '/"opencode-openai-codex-auth"/d' .cache/opencode/package.json && rm -rf .cache/opencode/node_modules/opencode-openai-codex-auth)
+npx -y opencode-openai-codex-auth@latest
 
 # Restart OpenCode
 opencode

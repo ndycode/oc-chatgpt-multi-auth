@@ -20,6 +20,24 @@ For production applications, use the [OpenAI Platform API](https://platform.open
 
 ## Installation
 
+### One-Command Install/Update (Recommended)
+
+Works on **Windows, macOS, and Linux**:
+
+```bash
+npx -y opencode-openai-codex-auth@latest
+```
+
+This writes the **global** config at `~/.config/opencode/opencode.json`, backs it up, and clears the OpenCode plugin cache so the latest version installs.
+
+Need legacy config (OpenCode v1.0.209 and below)?
+
+```bash
+npx -y opencode-openai-codex-auth@latest --legacy
+```
+
+---
+
 ### Step 1: Add Plugin to Config
 
 OpenCode automatically installs plugins - no `npm install` needed!
@@ -325,16 +343,16 @@ OpenCode checks multiple config files in order:
 
 ## ⚠️ Updating the Plugin (Important!)
 
-**OpenCode does NOT automatically update plugins.**
-
-When a new version is released, you must manually update:
+OpenCode caches plugins. To install the latest version, just re-run the installer:
 
 ```bash
-# Step 1: Clear plugin cache
-(cd ~ && sed -i.bak '/"opencode-openai-codex-auth"/d' .cache/opencode/package.json && rm -rf .cache/opencode/node_modules/opencode-openai-codex-auth)
+npx -y opencode-openai-codex-auth@latest
+```
 
-# Step 2: Restart OpenCode - it will reinstall the latest version
-opencode
+Legacy OpenCode (v1.0.209 and below):
+
+```bash
+npx -y opencode-openai-codex-auth@latest --legacy
 ```
 
 **When to update:**

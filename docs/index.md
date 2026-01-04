@@ -40,7 +40,19 @@ Explore the engineering depth behind this plugin:
 
 ### Installation
 
-Add to your config, run OpenCode, authenticate:
+One-command install/update (global config):
+
+```bash
+npx -y opencode-openai-codex-auth@latest
+```
+
+Legacy OpenCode (v1.0.209 and below):
+
+```bash
+npx -y opencode-openai-codex-auth@latest --legacy
+```
+
+Then run OpenCode and authenticate:
 
 ```bash
 # 1. Add plugin to ~/.config/opencode/opencode.json
@@ -55,12 +67,10 @@ If the browser callback fails (SSH/WSL/remote), choose **"ChatGPT Plus/Pro (Manu
 
 ### Updating
 
-**⚠️ OpenCode does NOT auto-update plugins**
+Re-run the installer to update:
 
-To get the latest version:
 ```bash
-(cd ~ && sed -i.bak '/"opencode-openai-codex-auth"/d' .cache/opencode/package.json && rm -rf .cache/opencode/node_modules/opencode-openai-codex-auth)
-opencode  # Reinstalls latest
+npx -y opencode-openai-codex-auth@latest
 ```
 
 ### Minimal Configuration

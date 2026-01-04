@@ -52,45 +52,57 @@ Follow me on [X @nummanthinks](https://x.com/nummanthinks) for future updates an
 
 ## Installation
 
-### Quick Start
+### One-Command Install/Update (Recommended)
+
+Works on **Windows, macOS, and Linux** with a single command:
+
+```bash
+npx -y opencode-openai-codex-auth@latest
+```
+
+What it does:
+- Writes the **global** config at `~/.config/opencode/opencode.json`
+- Uses the **modern** variants config by default
+- Ensures the plugin is **unversioned** (uses `latest`)
+- **Backs up** your existing config before changes
+- Clears OpenCode’s plugin cache so the latest version is installed
+
+Need legacy config (OpenCode v1.0.209 and below)?
+```bash
+npx -y opencode-openai-codex-auth@latest --legacy
+```
+
+---
+
+### Manual Install (Advanced)
 
 **No npm install needed!** opencode automatically installs plugins when you add them to your config.
 
-### Plugin Versioning & Updates
-
-**⚠️ Important**: OpenCode does NOT auto-update plugins. You must pin versions for reliable updates.
-
-#### Recommended: Pin the Version
-
 ```json
-"plugin": ["opencode-openai-codex-auth@4.2.0"]
+"plugin": ["opencode-openai-codex-auth"]
 ```
 
-**Why pin versions?** OpenCode uses Bun's lockfile which pins resolved versions. If you use `"opencode-openai-codex-auth"` without a version, it resolves to "latest" once and **never updates** even when new versions are published.
+Copy the config that matches your OpenCode version:
 
-#### Upgrading to a New Version
+```bash
+# Modern (v1.0.210+):
+cp <repo>/config/opencode-modern.json ~/.config/opencode/opencode.json
 
-Simply change the version in your config and restart OpenCode:
-
-```json
-// Change from:
-"plugin": ["opencode-openai-codex-auth@3.3.0"]
-
-// To:
-"plugin": ["opencode-openai-codex-auth@4.2.0"]
+# Legacy (v1.0.209 and below):
+cp <repo>/config/opencode-legacy.json ~/.config/opencode/opencode.json
 ```
 
-OpenCode will detect the version mismatch and install the new version automatically.
-
-#### If You're Stuck on an Old Version
-
-If you previously used an unpinned version, clear the cache:
+Refresh the plugin cache to force a reinstall:
 
 ```bash
 rm -rf ~/.cache/opencode/node_modules ~/.cache/opencode/bun.lock
 ```
 
-Then restart OpenCode with a pinned version in your config.
+**Optional: pin a version** for reproducibility:
+
+```json
+"plugin": ["opencode-openai-codex-auth@4.2.0"]
+```
 
 Check [releases](https://github.com/numman-ali/opencode-openai-codex-auth/releases) for version history.
 
@@ -98,33 +110,19 @@ Check [releases](https://github.com/numman-ali/opencode-openai-codex-auth/releas
 
 ### Agent Instructions (Install / Update)
 
-If you’re using an AI agent (Codex/Claude/etc.) to install or update this plugin on a machine, use these steps:
-
-1. **Use the official repo**: https://github.com/numman-ali/opencode-openai-codex-auth
-2. **Pin the plugin version** in the user’s OpenCode config (`~/.config/opencode/opencode.json` or project `.opencode.json`).
-3. **Replace the config** with the latest `config/opencode-modern.json` (OpenCode v1.0.210+) or `config/opencode-legacy.json` (v1.0.209 and below).
-4. **Refresh the plugin cache** so OpenCode reinstalls the updated version.
-5. **Restart OpenCode**.
+If you’re using an AI agent (Codex/Claude/etc.), **run the one-command installer**:
 
 ```bash
-# 1) Update plugin version (replace <latest> with newest release tag)
-# Example: opencode-openai-codex-auth@4.2.0
-
-# 2) Copy config (choose based on your OpenCode version)
-# opencode --version
-# Modern (v1.0.210+):
-cp <repo>/config/opencode-modern.json ~/.config/opencode/opencode.json
-# Legacy (v1.0.209 and below):
-cp <repo>/config/opencode-legacy.json ~/.config/opencode/opencode.json
-
-# 3) Refresh OpenCode plugin cache
-rm -rf ~/.cache/opencode/node_modules ~/.cache/opencode/bun.lock
-
-# 4) Optional sanity check for GPT-5.2 models
-jq '.provider.openai.models | keys' ~/.config/opencode/opencode.json
+npx -y opencode-openai-codex-auth@latest
 ```
 
-> **Note**: If using a project-local config, replace the target path with `<project>/.opencode.json`.
+Legacy OpenCode (v1.0.209 and below):
+
+```bash
+npx -y opencode-openai-codex-auth@latest --legacy
+```
+
+This updates the **global** config only and clears the plugin cache so OpenCode reinstalls the latest version.
 
 ---
 
@@ -143,7 +141,7 @@ jq '.provider.openai.models | keys' ~/.config/opencode/opencode.json
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-openai-codex-auth@4.2.0"],
+  "plugin": ["opencode-openai-codex-auth"],
   "provider": {
     "openai": {
       "options": {
@@ -376,7 +374,7 @@ Apply settings to all models:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-openai-codex-auth@4.2.0"],
+  "plugin": ["opencode-openai-codex-auth"],
   "model": "openai/gpt-5-codex",
   "provider": {
     "openai": {
@@ -396,7 +394,7 @@ Create your own named variants in the model selector:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-openai-codex-auth@4.2.0"],
+  "plugin": ["opencode-openai-codex-auth"],
   "provider": {
     "openai": {
       "models": {

@@ -78,6 +78,8 @@ Both configs provide:
 
 > **⚠️ Important**: Use the config file appropriate for your OpenCode version. Using the modern config with an older OpenCode version (v1.0.209 or below) will not work correctly.
 
+> **Note**: The config templates use an **unversioned** plugin entry (`opencode-openai-codex-auth`) so the installer can always pull the latest release. If you need reproducibility, pin a specific version manually.
+
 ## Available Models
 
 Both configs provide access to the same model families:
