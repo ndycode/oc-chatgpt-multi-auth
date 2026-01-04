@@ -46,6 +46,7 @@ export interface ReasoningConfig {
  */
 export interface OAuthServerInfo {
 	port: number;
+	ready: boolean;
 	close: () => void;
 	waitForCode: (state: string) => Promise<{ code: string } | null>;
 }

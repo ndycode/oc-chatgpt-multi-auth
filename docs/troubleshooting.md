@@ -67,6 +67,16 @@ lsof -i :1455
 - Stop Codex CLI if running
 - Both use port 1455 for OAuth
 
+### "Invalid Session" or "Authorization session expired"
+
+**Symptoms:**
+- Browser shows: `Your authorization session was not initialized or has expired`
+
+**Solutions:**
+- Re-run `opencode auth login` to generate a fresh URL
+- Open the **"Go to"** URL directly in your browser (don’t use a stale link)
+- If you’re on SSH/WSL/remote, choose **"ChatGPT Plus/Pro (Manual URL Paste)"**
+
 ### "403 Forbidden" Error
 
 **Cause**: ChatGPT subscription issue

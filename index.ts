@@ -75,6 +75,23 @@ import type { UserConfig } from "./lib/types.js";
  * ```
  */
 export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
+	const buildManualOAuthFlow = (pkce: { verifier: string }, url: string) => ({
+		url,
+		method: "code" as const,
+		instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
+		callback: async (input: string) => {
+			const parsed = parseAuthorizationInput(input);
+			if (!parsed.code) {
+				return { type: "failed" as const };
+			}
+			const tokens = await exchangeAuthorizationCode(
+				parsed.code,
+				pkce.verifier,
+				REDIRECT_URI,
+			);
+			return tokens?.type === "success" ? tokens : { type: "failed" as const };
+		},
+	});
 	return {
 		auth: {
 			provider: PROVIDER_ID,
@@ -148,15 +165,9 @@ export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						init?: RequestInit,
 					): Promise<Response> {
 						// Step 1: Check and refresh token if needed
-						const currentAuth = await getAuth();
+						let currentAuth = await getAuth();
 						if (shouldRefreshToken(currentAuth)) {
-							const refreshResult = await refreshAndUpdateToken(
-								currentAuth,
-								client,
-							);
-							if (!refreshResult.success) {
-								return refreshResult.response;
-							}
+							currentAuth = await refreshAndUpdateToken(currentAuth, client);
 						}
 
 						// Step 2: Extract and rewrite URL for Codex backend
@@ -237,6 +248,11 @@ export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						// Attempt to open browser automatically
 						openBrowserUrl(url);
 
+						if (!serverInfo.ready) {
+							serverInfo.close();
+							return buildManualOAuthFlow(pkce, url);
+						}
+
 						return {
 							url,
 							method: "auto" as const,
@@ -266,26 +282,8 @@ export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						label: AUTH_LABELS.OAUTH_MANUAL,
 						type: "oauth" as const,
 						authorize: async () => {
-							const { pkce, state, url } = await createAuthorizationFlow();
-							return {
-								url,
-								method: "code" as const,
-								instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
-								callback: async (input: string) => {
-									const parsed = parseAuthorizationInput(input);
-									if (!parsed.code) {
-										return { type: "failed" as const };
-									}
-									const tokens = await exchangeAuthorizationCode(
-										parsed.code,
-										pkce.verifier,
-										REDIRECT_URI,
-									);
-									return tokens?.type === "success"
-										? tokens
-										: { type: "failed" as const };
-								},
-							};
+							const { pkce, url } = await createAuthorizationFlow();
+							return buildManualOAuthFlow(pkce, url);
 						},
 					},
 					{
