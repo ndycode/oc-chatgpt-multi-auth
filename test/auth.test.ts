@@ -141,6 +141,13 @@ describe('Auth Module', () => {
 			expect(url.searchParams.get('id_token_add_organizations')).toBe('true');
 			expect(url.searchParams.get('codex_cli_simplified_flow')).toBe('true');
 			expect(url.searchParams.get('originator')).toBe('codex_cli_rs');
+			expect(url.searchParams.has('prompt')).toBe(false);
+		});
+
+		it('should include prompt=login when forceNewLogin is true', async () => {
+			const flow = await createAuthorizationFlow({ forceNewLogin: true });
+			const url = new URL(flow.url);
+			expect(url.searchParams.get('prompt')).toBe('login');
 		});
 
 		it('should generate unique flows', async () => {

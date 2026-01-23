@@ -180,11 +180,20 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
 	}
 }
 
+export interface AuthorizationFlowOptions {
+	/**
+	 * Force a fresh login screen instead of using cached browser session.
+	 * Use when adding multiple accounts to ensure different credentials.
+	 */
+	forceNewLogin?: boolean;
+}
+
 /**
  * Create OAuth authorization flow
+ * @param options - Optional configuration for the flow
  * @returns Authorization flow details
  */
-export async function createAuthorizationFlow(): Promise<AuthorizationFlow> {
+export async function createAuthorizationFlow(options?: AuthorizationFlowOptions): Promise<AuthorizationFlow> {
 	const pkce = (await generatePKCE()) as PKCEPair;
 	const state = createState();
 
@@ -199,6 +208,12 @@ export async function createAuthorizationFlow(): Promise<AuthorizationFlow> {
 	url.searchParams.set("id_token_add_organizations", "true");
 	url.searchParams.set("codex_cli_simplified_flow", "true");
 	url.searchParams.set("originator", "codex_cli_rs");
+
+	// Force a fresh login screen when adding multiple accounts
+	// This helps prevent the browser from auto-using an existing session
+	if (options?.forceNewLogin) {
+		url.searchParams.set("prompt", "login");
+	}
 
 	return { pkce, state, url: url.toString() };
 }

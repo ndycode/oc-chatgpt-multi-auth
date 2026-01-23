@@ -162,10 +162,11 @@ export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 );
         };
 
-        const runOAuthFlow = async (
-                useManualMode: boolean,
-        ): Promise<TokenResult> => {
-                const { pkce, state, url } = await createAuthorizationFlow();
+	const runOAuthFlow = async (
+		useManualMode: boolean,
+		forceNewLogin: boolean = false,
+	): Promise<TokenResult> => {
+		const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
                 console.log("\nOAuth URL:\n" + url + "\n");
 
                 if (useManualMode) {
@@ -797,14 +798,40 @@ export const OpenAIAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                                                 }
                                                         }
 
-                                                        while (accounts.length < ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-                                                                console.log(
-                                                                        `\n=== OpenAI OAuth (Account ${
-                                                                                accounts.length + 1
-                                                                        }) ===`,
-                                                                );
-                                                                const result = await runOAuthFlow(useManualMode);
-                                                                if (result.type === "failed") {
+				while (accounts.length < ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+					console.log(
+						`\n=== OpenAI OAuth (Account ${
+							accounts.length + 1
+						}) ===`,
+					);
+
+					const forceNewLogin = accounts.length > 0;
+					const result = await runOAuthFlow(useManualMode, forceNewLogin);
+
+					if (result.type === "success") {
+						const email = extractAccountEmail(result.access);
+						const accountId = extractAccountId(result.access);
+						const label = email || accountId || "Unknown account";
+						console.log(`\n✓ Authenticated as: ${label}\n`);
+
+						const isDuplicate = accounts.some(
+							(acc) =>
+								(accountId && extractAccountId(acc.access) === accountId) ||
+								(email && extractAccountEmail(acc.access) === email),
+						);
+
+						if (isDuplicate) {
+							console.warn(
+								`\n⚠️  WARNING: You authenticated with an account that is already in the list (${label}).`,
+							);
+							console.warn(
+								"This usually happens if you didn't log out or use a different browser profile.",
+							);
+							console.warn("The duplicate will update the existing entry.\n");
+						}
+					}
+
+					if (result.type === "failed") {
                                                                         if (accounts.length === 0) {
                                                                                 return {
                                                                                         url: "",
