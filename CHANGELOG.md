@@ -5,11 +5,18 @@ All notable changes to this project are documented here. Dates use the ISO forma
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+## [4.3.1] - 2026-01-23
+
+### Added
 - `openai-accounts-status --json` for scriptable status output with email/ID labels.
 
 ### Changed
 - Account labels now prefer email and show ID suffix when available; list/status outputs are columnized for readability.
 - Stored account emails are trimmed/lowercased when present.
+- Dependency refresh: @opencode-ai plugin/sdk 1.1.34, hono 4.11.5, vitest 4.0.18, @types/node 25.0.10, @typescript-eslint 8.53.1.
 
 ## [4.3.0] - 2026-01-04
 

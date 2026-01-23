@@ -4,7 +4,6 @@
 [![npm downloads](https://img.shields.io/npm/dw/opencode-openai-codex-auth-multi.svg)](https://www.npmjs.com/package/opencode-openai-codex-auth-multi)
 [![Tests](https://github.com/ndycode/opencode-openai-codex-auth-multi/actions/workflows/ci.yml/badge.svg)](https://github.com/ndycode/opencode-openai-codex-auth-multi/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![X (Twitter)](https://img.shields.io/badge/X-@ndycode-000000?style=flat&logo=x)](https://x.com/ndycode)
 
 Enable OpenCode to authenticate against **OpenAI's Codex backend** via OAuth so you can use ChatGPT Plus/Pro rate limits and access models like `gpt-5.2`, `gpt-5.2-codex`, and `gpt-5.1-codex-max` with your ChatGPT credentials.
 
@@ -54,7 +53,7 @@ Install the opencode-openai-codex-auth-multi plugin and add the OpenAI model def
 **Option B: One-command install**
 
 ```bash
-npx -y opencode-openai-codex-auth-multi@latest
+npx -y opencode-openai-codex-auth-multi@4.3.1
 ```
 
 This writes the config to `~/.config/opencode/opencode.json`, backs up existing config, and clears the plugin cache.
@@ -67,7 +66,7 @@ This writes the config to `~/.config/opencode/opencode.json`, backs up existing 
 
    ```json
    {
-     "plugin": ["opencode-openai-codex-auth-multi@latest"]
+     "plugin": ["opencode-openai-codex-auth-multi@4.3.1"]
    }
    ```
 
@@ -99,7 +98,7 @@ This writes the config to `~/.config/opencode/opencode.json`, backs up existing 
 2. Add the plugin to the `plugin` array:
    ```json
    {
-     "plugin": ["opencode-openai-codex-auth-multi@latest"]
+     "plugin": ["opencode-openai-codex-auth-multi@4.3.1"]
    }
    ```
 
@@ -147,7 +146,7 @@ Add this to your `~/.config/opencode/opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-openai-codex-auth-multi@latest"],
+  "plugin": ["opencode-openai-codex-auth-multi@4.3.1"],
   "provider": {
     "openai": {
       "options": {
@@ -354,7 +353,7 @@ OpenCode uses `~/.config/opencode/` on **all platforms** including Windows.
 **Solutions:**
 1. Update plugin:
    ```bash
-   npx -y opencode-openai-codex-auth-multi@latest
+   npx -y opencode-openai-codex-auth-multi@4.3.1
    ```
 2. Ensure config has:
    ```json
@@ -399,7 +398,7 @@ Works alongside oh-my-opencode. No special configuration needed.
 ```json
 {
   "plugin": [
-    "opencode-openai-codex-auth-multi@latest",
+    "opencode-openai-codex-auth-multi@4.3.1",
     "oh-my-opencode@latest"
   ]
 }
@@ -412,7 +411,7 @@ List this plugin BEFORE DCP:
 ```json
 {
   "plugin": [
-    "opencode-openai-codex-auth-multi@latest",
+    "opencode-openai-codex-auth-multi@4.3.1",
     "@tarquinen/opencode-dcp@latest"
   ]
 }
@@ -457,7 +456,7 @@ For all options, see [docs/configuration.md](docs/configuration.md).
 
 ## Credits
 
-- [numman-ali/opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth) by [@nummanali](https://x.com/nummanali) — Original plugin
+- [numman-ali/opencode-openai-codex-auth](https://github.com/numman-ali/opencode-openai-codex-auth) by [numman-ali](https://github.com/numman-ali) — Original plugin
 - [ndycode](https://github.com/ndycode) — Multi-account support and maintenance
 
 ## License

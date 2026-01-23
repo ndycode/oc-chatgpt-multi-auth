@@ -12,6 +12,8 @@ const mockRl = {
 
 describe("CLI Module", () => {
   beforeEach(() => {
+    mockRl.question.mockReset();
+    mockRl.close.mockReset();
     vi.mocked(createInterface).mockReturnValue(mockRl as any);
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
