@@ -6,6 +6,9 @@ export async function promptAddAnotherAccount(
 ): Promise<boolean> {
   const rl = createInterface({ input, output });
   try {
+    console.log(
+      "\n⚠️  TIP: Use incognito/private browsing or log out of ChatGPT before adding another account.\n",
+    );
     const answer = await rl.question(
       `Add another account? (${currentCount} added) (y/n): `,
     );
