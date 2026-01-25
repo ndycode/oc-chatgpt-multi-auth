@@ -8,6 +8,42 @@ All notable changes to this project are documented here. Dates use the ISO forma
 
 ### Changed
 
+## [4.7.0] - 2026-01-25
+
+**Feature release**: Full session recovery system ported from opencode-antigravity-auth.
+
+### Added
+- **Session Recovery System**: Automatic recovery from common API errors that would previously crash sessions:
+  - `tool_result_missing`: Handles interrupted tool executions (ESC during tool run)
+  - `thinking_block_order`: Fixes corrupted thinking blocks in message history
+  - `thinking_disabled_violation`: Strips thinking blocks when switching to non-thinking models
+- **New Recovery Module** (`lib/recovery/`):
+  - `types.ts` - Type definitions for stored messages, parts, and recovery
+  - `constants.ts` - Storage paths (XDG-compliant) and type sets
+  - `storage.ts` - Filesystem operations for reading/writing OpenCode session data
+  - `index.ts` - Module re-exports
+- **Main Recovery Logic** (`lib/recovery.ts`):
+  - `detectErrorType()` - Identifies recoverable error patterns from API responses
+  - `isRecoverableError()` - Quick check for recovery eligibility
+  - `createSessionRecoveryHook()` - Creates hook for session-level error recovery
+  - Toast notifications during recovery attempts
+- **New Configuration Options**:
+  - `sessionRecovery` (default: `true`) - Enable/disable session recovery
+  - `autoResume` (default: `true`) - Auto-resume session after thinking block recovery
+  - Environment variables: `CODEX_AUTH_SESSION_RECOVERY`, `CODEX_AUTH_AUTO_RESUME`
+- **26 new unit tests** for recovery system (now 405 total tests)
+
+### Changed
+- **Account Label Format**: Changed from `Account N (email)` to `N. email` for cleaner display
+- **Error Response Handling**: `handleErrorResponse()` now returns `errorBody` for recovery detection
+- Enhanced error logging with recoverable error detection in fetch flow
+
+### Technical Details
+- Storage paths follow XDG spec: `~/.local/share/opencode/storage/` (Linux/Mac), `%APPDATA%/opencode/storage/` (Windows)
+- Recovery hook integrates into index.ts loader and detects recoverable errors in fetch response flow
+- Thinking block recovery reads/writes to OpenCode's filesystem-based message storage
+- Tool result recovery injects synthetic `tool_result` parts via session API
+
 ## [4.6.0] - 2026-01-25
 
 **Feature release**: Context overflow handling and missing tool result injection.
