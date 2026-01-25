@@ -28,14 +28,15 @@ export interface ExistingAccountInfo {
 }
 
 function formatAccountLabel(account: ExistingAccountInfo, index: number): string {
+  const num = index + 1;
   if (account.email?.trim()) {
-    return `Account ${index + 1} (${account.email})`;
+    return `${num}. ${account.email}`;
   }
   if (account.accountId?.trim()) {
     const suffix = account.accountId.length > 6 ? account.accountId.slice(-6) : account.accountId;
-    return `Account ${index + 1} (${suffix})`;
+    return `${num}. ${suffix}`;
   }
-  return `Account ${index + 1}`;
+  return `${num}. Account`;
 }
 
 export async function promptLoginMode(

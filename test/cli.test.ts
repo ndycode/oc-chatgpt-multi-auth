@@ -183,7 +183,7 @@ describe("CLI Module", () => {
         { index: 0, accountId: "acc_1234567890" },
       ]);
       
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringMatching(/Account 1.*567890/));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringMatching(/1\.\s*567890/));
     });
 
     it("displays plain Account N when no email or accountId", async () => {
@@ -193,7 +193,7 @@ describe("CLI Module", () => {
       const { promptLoginMode } = await import("../lib/cli.js");
       await promptLoginMode([{ index: 0 }]);
       
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Account 1"));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("1. Account"));
     });
   });
 });
