@@ -852,17 +852,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 					 * @returns Authorization flow configuration
 					 */
                                         authorize: async (inputs?: Record<string, string>) => {
-							// Detect if running in TUI/Non-interactive mode (OpenCode GUI)
-							// We force CLI usage to ensure proper shell interaction for OAuth flow
-							if (!process.stdout.isTTY) {
-								return {
-									url: "",
-									instructions: "Authentication via UI is currently closed. Please use the command `opencode auth login` in your terminal instead.",
-									method: "auto",
-									callback: async () => ({ type: "failed" as const, reason: "unknown" as const, message: "UI auth disabled" }),
-								};
-							}
-
 							// Always use the multi-account flow regardless of inputs
 							// The inputs parameter is only used for noBrowser flag, not for flow selection
 							const accounts: TokenSuccess[] = [];
