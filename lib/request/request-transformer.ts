@@ -8,6 +8,7 @@ import {
 	normalizeOrphanedToolOutputs,
 	injectMissingToolOutputs,
 } from "./helpers/input-utils.js";
+import { cleanupToolDefinitions } from "./helpers/tool-utils.js";
 import type {
 	ConfigOptions,
 	InputItem,
@@ -452,6 +453,13 @@ export async function transformRequestBody(
 	body.store = false;
 	// Always set stream=true for API - response handling detects original intent
 	body.stream = true;
+
+	// Clean up tool definitions (implement strict "require" logic)
+	// Filters invalid required fields and ensures empty objects have placeholders
+	if (body.tools) {
+		body.tools = cleanupToolDefinitions(body.tools);
+	}
+
 	body.instructions = codexInstructions;
 
 	// Prompt caching relies on the host providing a stable prompt_cache_key

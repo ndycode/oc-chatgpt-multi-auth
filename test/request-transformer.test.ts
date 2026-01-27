@@ -615,7 +615,6 @@ describe('Request Transformer Module', () => {
 					model: 'gpt-5-codex',
 					input: [],
 					// Host-provided key (OpenCode session id)
-					// @ts-expect-error extra field allowed
 					prompt_cache_key: 'ses_host_key_123',
 				};
 				const result: any = await transformRequestBody(body, codexInstructions);
@@ -1479,6 +1478,83 @@ describe('Request Transformer Module', () => {
 					expect(result.stream).toBe(true);
 					expect(result.instructions).toBe(codexInstructions);
 					expect(result.include).toEqual(['reasoning.encrypted_content']);
+				});
+			});
+
+			describe('Scenario 7: Tool Schema Cleaning (Require Logic)', () => {
+				it('should remove invalid required fields from tool definitions', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex',
+						input: [],
+						tools: [
+							{
+								type: 'function',
+								function: {
+									name: 'test_tool',
+									parameters: {
+										type: 'object',
+										properties: {
+											valid_param: { type: 'string' }
+										},
+										required: ['valid_param', 'invalid_param']
+									}
+								}
+							}
+						]
+					};
+
+					const result = await transformRequestBody(body, codexInstructions);
+					const tool = (result.tools as any)[0];
+					expect(tool.function.parameters.required).toEqual(['valid_param']);
+				});
+
+				it('should remove required array if all fields are invalid', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex',
+						input: [],
+						tools: [
+							{
+								type: 'function',
+								function: {
+									name: 'test_tool',
+									parameters: {
+										type: 'object',
+										properties: {
+											valid_param: { type: 'string' }
+										},
+										required: ['invalid_param']
+									}
+								}
+							}
+						]
+					};
+
+					const result = await transformRequestBody(body, codexInstructions);
+					const tool = (result.tools as any)[0];
+					expect(tool.function.parameters.required).toBeUndefined();
+				});
+
+				it('should inject placeholder for empty object parameters', async () => {
+					const body: RequestBody = {
+						model: 'gpt-5-codex',
+						input: [],
+						tools: [
+							{
+								type: 'function',
+								function: {
+									name: 'void_tool',
+									parameters: {
+										type: 'object',
+										properties: {}
+									}
+								}
+							}
+						]
+					};
+
+					const result = await transformRequestBody(body, codexInstructions);
+					const tool = (result.tools as any)[0];
+					expect(tool.function.parameters.properties).toHaveProperty('_placeholder');
 				});
 			});
 		});
