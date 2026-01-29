@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Dates use the ISO format (YYYY-MM-DD).
 
-## [4.9.6] - 2026-01-29
+## [4.9.7] - 2026-01-29
 
 ### Fixed
 - Business/Team workspace selection: detect multiple workspace account IDs from OAuth tokens and prompt for the correct one.
