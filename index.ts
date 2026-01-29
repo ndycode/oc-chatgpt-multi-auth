@@ -1302,49 +1302,17 @@ while (attempted.size < Math.max(1, accountCount)) {
                                         return `Switched to account: ${label}`;
                                 },
                         }),
-                        "openai-accounts-status": tool({
-                                description: "Show detailed status of OpenAI accounts and rate limits.",
-                                args: {
-                                        json: tool.schema.boolean().optional().describe("Return JSON instead of text"),
-                                },
-                                async execute({ json }) {
-                                        const storage = await loadAccounts();
-                                        if (!storage || storage.accounts.length === 0) {
-                                                return "No OpenAI accounts configured. Run: opencode auth login";
-                                        }
+			"openai-accounts-status": tool({
+				description: "Show detailed status of OpenAI accounts and rate limits.",
+				args: {},
+				async execute() {
+					const storage = await loadAccounts();
+					if (!storage || storage.accounts.length === 0) {
+						return "No OpenAI accounts configured. Run: opencode auth login";
+					}
 
-										const now = Date.now();
-										const activeIndex = resolveActiveIndex(storage, "codex");
-
-										if (json) {
-                                                return JSON.stringify(
-                                                        {
-																total: storage.accounts.length,
-																activeIndex,
-																activeIndexByFamily: storage.activeIndexByFamily ?? null,
-																storagePath: getStoragePath(),
-																accounts: storage.accounts.map((account, index) => ({
-																		index,
-																		active: index === activeIndex,
-																		label: formatAccountLabel(account, index),
-																		accountId: account.accountId ?? null,
-																		email: account.email ?? null,
-																		rateLimitResetTimes: account.rateLimitResetTimes ?? null,
-																		coolingDownUntil:
-																				typeof account.coolingDownUntil === "number"
-																						? account.coolingDownUntil
-																						: null,
-																		cooldownReason: account.cooldownReason ?? null,
-																		lastUsed:
-																				typeof account.lastUsed === "number"
-																						? account.lastUsed
-																						: null,
-																		})),
-                                                        },
-                                                        null,
-                                                        2,
-                                                );
-                                        }
+					const now = Date.now();
+					const activeIndex = resolveActiveIndex(storage, "codex");
 
                                         const lines: string[] = [
                                                 `Account Status (${storage.accounts.length} total):`,
