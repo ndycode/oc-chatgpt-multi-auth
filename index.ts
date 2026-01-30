@@ -783,9 +783,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 						continue;
 					}
 
-						const hadAccountId = !!account.accountId;
-						const accountId =
-							account.accountId ?? extractAccountId(accountAuth.access);
+				const hadAccountId = !!account.accountId;
+					// Prefer fresh token-derived ID over stored ID (fixes Business plan workspace issues)
+					const accountId =
+						extractAccountId(accountAuth.access) ?? account.accountId;
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
