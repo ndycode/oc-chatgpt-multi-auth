@@ -527,7 +527,7 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
   await fs.mkdir(dirname(resolvedPath), { recursive: true });
   
   const content = JSON.stringify(storage, null, 2);
-  await fs.writeFile(resolvedPath, content, "utf-8");
+  await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
   log.info("Exported accounts", { path: resolvedPath, count: storage.accounts.length });
 }
 
@@ -537,11 +537,22 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
  * @param filePath - Source file path
  * @throws Error if file is invalid or would exceed MAX_ACCOUNTS
  */
-export async function importAccounts(filePath: string): Promise<{ imported: number; total: number }> {
+export async function importAccounts(filePath: string): Promise<{ imported: number; total: number; skipped: number }> {
   const resolvedPath = resolvePath(filePath);
   
+  // Check file exists with friendly error
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`Import file not found: ${resolvedPath}`);
+  }
+  
   const content = await fs.readFile(resolvedPath, "utf-8");
-  const imported = JSON.parse(content) as unknown;
+  
+  let imported: unknown;
+  try {
+    imported = JSON.parse(content);
+  } catch {
+    throw new Error(`Invalid JSON in import file: ${resolvedPath}`);
+  }
   
   const normalized = normalizeAccountStorage(imported);
   if (!normalized) {
@@ -575,7 +586,8 @@ export async function importAccounts(filePath: string): Promise<{ imported: numb
   await saveAccounts(newStorage);
   
   const importedCount = deduplicatedAccounts.length - existingAccounts.length;
-  log.info("Imported accounts", { path: resolvedPath, imported: importedCount, total: deduplicatedAccounts.length });
+  const skippedCount = normalized.accounts.length - importedCount;
+  log.info("Imported accounts", { path: resolvedPath, imported: importedCount, skipped: skippedCount, total: deduplicatedAccounts.length });
   
-  return { imported: importedCount, total: deduplicatedAccounts.length };
+  return { imported: importedCount, total: deduplicatedAccounts.length, skipped: skippedCount };
 }

@@ -1315,12 +1315,17 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                 account.lastSwitchReason = "rotation";
                                         }
 
-										storage.activeIndex = targetIndex;
-										storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-										for (const family of MODEL_FAMILIES) {
-												storage.activeIndexByFamily[family] = targetIndex;
-										}
-										await saveAccounts(storage);
+					storage.activeIndex = targetIndex;
+					storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
+					for (const family of MODEL_FAMILIES) {
+							storage.activeIndexByFamily[family] = targetIndex;
+					}
+					try {
+						await saveAccounts(storage);
+					} catch (saveError) {
+						logWarn("Failed to save account switch", { error: String(saveError) });
+						return `Switched to ${formatAccountLabel(account, targetIndex)} but failed to persist. Changes may be lost on restart.`;
+					}
 
                                         if (cachedAccountManager) {
                                                 cachedAccountManager.setActiveIndex(targetIndex);
@@ -1422,7 +1427,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							}
 						} catch (error) {
 							const errorMsg = error instanceof Error ? error.message : String(error);
-							results.push(`  ✗ ${label}: Error - ${errorMsg.slice(0, 50)}`);
+							results.push(`  ✗ ${label}: Error - ${errorMsg.slice(0, 120)}`);
 							unhealthyCount++;
 						}
 					}
@@ -1434,7 +1439,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 				},
 			}),
 			"codex-remove": tool({
-				description: "Remove an Codex account by index (1-based). Use codex-list to list accounts first.",
+				description: "Remove a Codex account by index (1-based). Use codex-list to list accounts first.",
 				args: {
 					index: tool.schema.number().describe(
 						"Account number to remove (1-based, e.g., 1 for first account)",
@@ -1488,7 +1493,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 						}
 					}
 
+					try {
 					await saveAccounts(storage);
+				} catch (saveError) {
+					logWarn("Failed to save account removal", { error: String(saveError) });
+					return `Removed ${formatAccountLabel(account, targetIndex)} from memory but failed to persist. Changes may be lost on restart.`;
+				}
 
 					if (cachedAccountManager) {
 						const managedAccounts = cachedAccountManager.getAccountsSnapshot();
@@ -1546,7 +1556,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							}
 						} catch (error) {
 							const errorMsg = error instanceof Error ? error.message : String(error);
-							results.push(`  ✗ ${label}: Error - ${errorMsg.slice(0, 50)}`);
+							results.push(`  ✗ ${label}: Error - ${errorMsg.slice(0, 120)}`);
 							failedCount++;
 						}
 					}
@@ -1592,12 +1602,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 				try {
 					const result = await importAccounts(filePath);
 					cachedAccountManager = null;
-					return [
-						`Import complete.`,
-						``,
-						`New accounts: ${result.imported}`,
-						`Total accounts: ${result.total}`,
-					].join("\n");
+					const lines = [`Import complete.`, ``];
+					if (result.imported > 0) {
+						lines.push(`New accounts: ${result.imported}`);
+					}
+					if (result.skipped > 0) {
+						lines.push(`Duplicates skipped: ${result.skipped}`);
+					}
+					lines.push(`Total accounts: ${result.total}`);
+					return lines.join("\n");
 				} catch (error) {
 					const msg = error instanceof Error ? error.message : String(error);
 					return `Import failed: ${msg}`;
