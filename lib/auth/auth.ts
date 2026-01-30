@@ -2,6 +2,7 @@ import { generatePKCE } from "@openauthjs/openauth/pkce";
 import { randomBytes } from "node:crypto";
 import type { PKCEPair, AuthorizationFlow, TokenResult, ParsedAuthInput, JWTPayload } from "../types.js";
 import { logError } from "../logger.js";
+import { safeParseOAuthTokenResponse } from "../schemas.js";
 
 // OAuth constants (from openai/codex)
 export const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -89,24 +90,16 @@ export async function exchangeAuthorizationCode(
 		logError(`code->token failed: ${res.status} ${text}`);
 		return { type: "failed", reason: "http_error", statusCode: res.status, message: text || undefined };
 	}
-	const json = (await res.json()) as {
-		access_token?: string;
-		refresh_token?: string;
-		expires_in?: number;
-		id_token?: string;
-	};
-	if (
-		!json?.access_token ||
-		!json?.refresh_token ||
-		typeof json?.expires_in !== "number"
-	) {
-		logError("token response missing fields", json);
-		return { type: "failed", reason: "invalid_response", message: "Missing access_token, refresh_token, or expires_in" };
+	const rawJson = (await res.json()) as unknown;
+	const json = safeParseOAuthTokenResponse(rawJson);
+	if (!json) {
+		logError("token response validation failed", rawJson);
+		return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 	}
 	return {
 		type: "success",
 		access: json.access_token,
-		refresh: json.refresh_token,
+		refresh: json.refresh_token ?? "",
 		expires: Date.now() + json.expires_in * 1000,
 		idToken: json.id_token,
 		multiAccount: true,
@@ -158,15 +151,11 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
 			return { type: "failed", reason: "http_error", statusCode: response.status, message: text || undefined };
 		}
 
-		const json = (await response.json()) as {
-			access_token?: string;
-			refresh_token?: string;
-			expires_in?: number;
-			id_token?: string;
-		};
-		if (!json?.access_token || typeof json?.expires_in !== "number") {
-			logError("Token refresh response missing fields", json);
-			return { type: "failed", reason: "invalid_response", message: "Missing access_token or expires_in" };
+		const rawJson = (await response.json()) as unknown;
+		const json = safeParseOAuthTokenResponse(rawJson);
+		if (!json) {
+			logError("Token refresh response validation failed", rawJson);
+			return { type: "failed", reason: "invalid_response", message: "Response failed schema validation" };
 		}
 
 		const nextRefresh = json.refresh_token ?? refreshToken;

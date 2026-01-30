@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { PluginConfig } from "./types.js";
 import { logWarn } from "./logger.js";
+import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
 
 const CONFIG_PATH = join(homedir(), ".opencode", "openai-codex-auth-config.json");
 
@@ -36,12 +37,16 @@ export function loadPluginConfig(): PluginConfig {
 		}
 
 		const fileContent = readFileSync(CONFIG_PATH, "utf-8");
-		const userConfig = JSON.parse(fileContent) as Partial<PluginConfig>;
+		const userConfig = JSON.parse(fileContent) as unknown;
 
-		// Merge with defaults
+		const schemaErrors = getValidationErrors(PluginConfigSchema, userConfig);
+		if (schemaErrors.length > 0) {
+			logWarn(`Plugin config validation warnings: ${schemaErrors.slice(0, 3).join(", ")}`);
+		}
+
 		return {
 			...DEFAULT_CONFIG,
-			...userConfig,
+			...(userConfig as Partial<PluginConfig>),
 		};
 	} catch (error) {
 		logWarn(
