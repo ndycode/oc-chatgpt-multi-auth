@@ -87,6 +87,9 @@ export async function convertSseToJson(response: Response, headers: Headers): Pr
 		log.error("Error converting stream", { error: String(error) });
 		logRequest("stream-error", { error: String(error) });
 		throw error;
+	} finally {
+		// Release the reader lock to prevent resource leaks
+		reader.releaseLock();
 	}
 
 }

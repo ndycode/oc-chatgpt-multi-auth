@@ -6,6 +6,10 @@
  * when rate limits are encountered.
  */
 
+import { createLogger } from "./logger.js";
+
+const log = createLogger("rotation");
+
 // ============================================================================
 // Health Score Tracking
 // ============================================================================
@@ -281,6 +285,18 @@ export function selectHybridAccount(
       bestScore = score;
       bestAccount = account;
     }
+  }
+
+  if (bestAccount && available.length > 1) {
+    const health = healthTracker.getScore(bestAccount.index, quotaKey);
+    const tokens = tokenTracker.getTokens(bestAccount.index, quotaKey);
+    log.debug("Selected account", {
+      index: bestAccount.index,
+      health: Math.round(health),
+      tokens: Math.round(tokens),
+      score: Math.round(bestScore),
+      candidateCount: available.length,
+    });
   }
 
   return bestAccount;
