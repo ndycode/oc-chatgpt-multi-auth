@@ -1,23 +1,14 @@
 import type { Auth, Provider, Model } from "@opencode-ai/sdk";
 
-export interface PluginConfig {
-	codexMode?: boolean;
-	retryAllAccountsRateLimited?: boolean;
-	retryAllAccountsMaxWaitMs?: number;
-	retryAllAccountsMaxRetries?: number;
-	tokenRefreshSkewMs?: number;
-	rateLimitToastDebounceMs?: number;
-	/** Duration for toast notifications in milliseconds (default: 5000) */
-	toastDurationMs?: number;
-	/** Use per-project account storage instead of global (default: true) */
-	perProjectAccounts?: boolean;
-	sessionRecovery?: boolean;
-	autoResume?: boolean;
-}
+export type {
+	PluginConfigFromSchema as PluginConfig,
+	AccountIdSourceFromSchema as AccountIdSource,
+	TokenSuccessFromSchema as TokenSuccess,
+	TokenFailureFromSchema as TokenFailure,
+	TokenResultFromSchema as TokenResult,
+	TokenFailureReasonFromSchema as TokenFailureReason,
+} from "./schemas.js";
 
-/**
- * User configuration structure from opencode.json
- */
 export interface UserConfig {
 	global: ConfigOptions;
 	models: {
@@ -29,9 +20,6 @@ export interface UserConfig {
 	};
 }
 
-/**
- * Configuration options for reasoning and text settings
- */
 export interface ConfigOptions {
 	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on";
@@ -39,17 +27,11 @@ export interface ConfigOptions {
 	include?: string[];
 }
 
-/**
- * Reasoning configuration for requests
- */
 export interface ReasoningConfig {
 	effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	summary: "auto" | "concise" | "detailed" | "off" | "on";
 }
 
-/**
- * OAuth server information
- */
 export interface OAuthServerInfo {
 	port: number;
 	ready: boolean;
@@ -57,78 +39,21 @@ export interface OAuthServerInfo {
 	waitForCode: (state: string) => Promise<{ code: string } | null>;
 }
 
-/**
- * PKCE challenge and verifier
- */
 export interface PKCEPair {
 	challenge: string;
 	verifier: string;
 }
 
-/**
- * Authorization flow result
- */
 export interface AuthorizationFlow {
 	pkce: PKCEPair;
 	state: string;
 	url: string;
 }
 
-/**
- * Token exchange success result
- */
-export interface TokenSuccess {
-	type: "success";
-	access: string;
-	refresh: string;
-	expires: number;
-	/** ID token from OAuth response - contains email and other identity claims */
-	idToken?: string;
-	/** Flag to identify this auth as multi-account (vs built-in single account) */
-	multiAccount?: boolean;
-}
-
-/**
- * Token failure reason codes
- */
-export type TokenFailureReason =
-	| "http_error"
-	| "invalid_response"
-	| "network_error"
-	| "missing_refresh"
-	| "unknown";
-
-/**
- * Token exchange failure result with optional detailed error info
- */
-export interface TokenFailure {
-	type: "failed";
-	reason?: TokenFailureReason;
-	statusCode?: number;
-	message?: string;
-}
-
-/**
- * Token exchange result
- */
-export type TokenResult = TokenSuccess | TokenFailure;
-
-/**
- * Parsed authorization input
- */
 export interface ParsedAuthInput {
 	code?: string;
 	state?: string;
 }
-
-/**
- * Source of the accountId used for ChatGPT requests.
- * - token: derived from access token claim
- * - id_token: derived from id_token claim
- * - org: selected from organizations/workspaces list
- * - manual: explicit override (env/user selection)
- */
-export type AccountIdSource = "token" | "id_token" | "org" | "manual";
 
 /**
  * JWT payload with ChatGPT account info

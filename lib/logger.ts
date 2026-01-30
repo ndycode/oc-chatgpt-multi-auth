@@ -1,6 +1,7 @@
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { PLUGIN_NAME } from "./constants.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -32,6 +33,8 @@ const TOKEN_PATTERNS = [
 	/Bearer\s+\S+/gi,
 ];
 
+const EMAIL_PATTERN = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+
 const SENSITIVE_KEYS = new Set([
 	"access",
 	"accesstoken",
@@ -48,6 +51,9 @@ const SENSITIVE_KEYS = new Set([
 	"credential",
 	"id_token",
 	"idtoken",
+	"email",
+	"accountid",
+	"account_id",
 ]);
 
 function maskToken(token: string): string {
@@ -55,8 +61,21 @@ function maskToken(token: string): string {
 	return `${token.slice(0, 6)}...${token.slice(-4)}`;
 }
 
+function maskEmail(email: string): string {
+	const atIndex = email.indexOf("@");
+	if (atIndex < 0) return "***@***";
+	const local = email.slice(0, atIndex);
+	const domain = email.slice(atIndex + 1);
+	const parts = domain.split(".");
+	const tld = parts.pop() || "";
+	const prefix = local.slice(0, Math.min(2, local.length));
+	return `${prefix}***@***.${tld}`;
+}
+
 function maskString(value: string): string {
 	let result = value;
+	// Mask emails first (before token patterns might match parts of them)
+	result = result.replace(EMAIL_PATTERN, (match) => maskEmail(match));
 	for (const pattern of TOKEN_PATTERNS) {
 		result = result.replace(pattern, (match) => maskToken(match));
 	}
@@ -104,6 +123,20 @@ const CONSOLE_LOG_ENABLED = process.env.CODEX_CONSOLE_LOG === "1";
 const LOG_DIR = join(homedir(), ".opencode", "logs", "codex-plugin");
 
 let client: LogClient | null = null;
+let currentCorrelationId: string | null = null;
+
+export function setCorrelationId(id?: string): string {
+	currentCorrelationId = id ?? randomUUID();
+	return currentCorrelationId;
+}
+
+export function getCorrelationId(): string | null {
+	return currentCorrelationId;
+}
+
+export function clearCorrelationId(): void {
+	currentCorrelationId = null;
+}
 
 export function initLogger(newClient: LogClient): void {
 	client = newClient;
@@ -120,10 +153,17 @@ function logToApp(
 
 	const sanitizedMessage = maskString(message);
 	const sanitizedData = data === undefined ? undefined : sanitizeValue(data);
-	const extra =
-		sanitizedData === undefined
-			? undefined
-			: { data: typeof sanitizedData === "object" ? sanitizedData : { value: sanitizedData } };
+	const correlationId = currentCorrelationId;
+	const extraData: Record<string, unknown> = {};
+	
+	if (correlationId) {
+		extraData.correlationId = correlationId;
+	}
+	if (sanitizedData !== undefined) {
+		extraData.data = typeof sanitizedData === "object" ? sanitizedData : { value: sanitizedData };
+	}
+	
+	const extra = Object.keys(extraData).length > 0 ? extraData : undefined;
 
 	try {
 		const result = appLog({
@@ -196,6 +236,7 @@ export function logRequest(stage: string, data: Record<string, unknown>): void {
 
 	const timestamp = new Date().toISOString();
 	const requestId = ++requestCounter;
+	const correlationId = currentCorrelationId;
 	const filename = join(LOG_DIR, `request-${requestId}-${stage}.json`);
 	const sanitizedData = sanitizeValue(data) as Record<string, unknown>;
 
@@ -206,6 +247,7 @@ export function logRequest(stage: string, data: Record<string, unknown>): void {
 				{
 					timestamp,
 					requestId,
+					...(correlationId ? { correlationId } : {}),
 					stage,
 					...sanitizedData,
 				},
@@ -322,4 +364,4 @@ export function getRequestId(): number {
 	return requestCounter;
 }
 
-export { formatDuration };
+export { formatDuration, maskEmail };

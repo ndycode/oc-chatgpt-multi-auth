@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import type { AccountIdSource } from "./types.js";
+import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 
 const log = createLogger("storage");
 
@@ -512,6 +513,11 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
     const path = getStoragePath();
     const content = await fs.readFile(path, "utf-8");
     const data = JSON.parse(content) as unknown;
+
+    const schemaErrors = getValidationErrors(AnyAccountStorageSchema, data);
+    if (schemaErrors.length > 0) {
+      log.warn("Account storage schema validation warnings", { errors: schemaErrors.slice(0, 5) });
+    }
 
     const normalized = normalizeAccountStorage(data);
 
