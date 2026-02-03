@@ -7,6 +7,12 @@ dist/
 opencode.json
 .opencode/
 tmp
+tmp*
+*.tgz
+*.patched
+*first_fail*
+Heap-*.heapsnapshot
 .codex-cache
 .sisyphus/
 coverage/
+winston/
