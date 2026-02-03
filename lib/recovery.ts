@@ -140,11 +140,11 @@ async function recoverToolResultMissing(
   }
 }
 
-async function recoverThinkingBlockOrder(
+function recoverThinkingBlockOrder(
   sessionID: string,
   _failedMsg: MessageData,
   error: unknown
-): Promise<boolean> {
+): boolean {
   const targetIndex = extractMessageIndex(error);
   if (targetIndex !== null) {
     const targetMessageID = findMessageByIndexNeedingThinking(sessionID, targetIndex);
@@ -169,10 +169,10 @@ async function recoverThinkingBlockOrder(
   return anySuccess;
 }
 
-async function recoverThinkingDisabledViolation(
+function recoverThinkingDisabledViolation(
   sessionID: string,
   _failedMsg: MessageData
-): Promise<boolean> {
+): boolean {
   const messagesWithThinking = findMessagesWithThinkingBlocks(sessionID);
 
   if (messagesWithThinking.length === 0) {
@@ -381,14 +381,14 @@ export function createSessionRecoveryHook(
       if (errorType === "tool_result_missing") {
         success = await recoverToolResultMissing(client, sessionID, failedMsg);
       } else if (errorType === "thinking_block_order") {
-        success = await recoverThinkingBlockOrder(sessionID, failedMsg, info.error);
+        success = recoverThinkingBlockOrder(sessionID, failedMsg, info.error);
         if (success && config.autoResume) {
           const lastUser = findLastUserMessage(msgs ?? []);
           const resumeConfig = extractResumeConfig(lastUser, sessionID);
           await resumeSession(client, resumeConfig, directory);
         }
       } else if (errorType === "thinking_disabled_violation") {
-        success = await recoverThinkingDisabledViolation(sessionID, failedMsg);
+        success = recoverThinkingDisabledViolation(sessionID, failedMsg);
         if (success && config.autoResume) {
           const lastUser = findLastUserMessage(msgs ?? []);
           const resumeConfig = extractResumeConfig(lastUser, sessionID);

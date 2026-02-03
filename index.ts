@@ -71,6 +71,7 @@ import {
         formatWaitTime,
         sanitizeEmail,
         shouldUpdateAccountIdFromToken,
+        parseRateLimitReason,
 } from "./lib/accounts.js";
 import { getStoragePath, loadAccounts, saveAccounts, setStoragePath, exportAccounts, importAccounts, StorageError, formatStorageErrorHint, type AccountStorageV3 } from "./lib/storage.js";
 import {
@@ -89,6 +90,7 @@ import {
 	resetRateLimitBackoff,
 } from "./lib/request/rate-limit-backoff.js";
 import { addJitter } from "./lib/rotation.js";
+import { buildTableHeader, buildTableRow, type TableOptions } from "./lib/table-formatter.js";
 import { getModelFamily, MODEL_FAMILIES, type ModelFamily } from "./lib/prompts/codex.js";
 import type { AccountIdSource, OAuthAuthDetails, TokenResult, UserConfig } from "./lib/types.js";
 import {
@@ -114,9 +116,13 @@ import {
  * }
  * ```
  */
+// eslint-disable-next-line @typescript-eslint/require-await
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
 	let cachedAccountManager: AccountManager | null = null;
+	let accountManagerPromise: Promise<AccountManager> | null = null;
+	let loaderMutex: Promise<void> | null = null;
+	const MIN_BACKOFF_MS = 100;
 
         type TokenSuccess = Extract<TokenResult, { type: "success" }>;
         type TokenSuccessWithAccount = TokenSuccess & {
@@ -125,9 +131,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 accountLabel?: string;
         };
 
-        const resolveAccountSelection = async (
+        const resolveAccountSelection = (
                 tokens: TokenSuccess,
-        ): Promise<TokenSuccessWithAccount> => {
+        ): TokenSuccessWithAccount => {
                 const override = (process.env.CODEX_AUTH_ACCOUNT_ID ?? "").trim();
                 if (override) {
                         const suffix = override.length > 6 ? override.slice(-6) : override;
@@ -145,15 +151,17 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         return tokens;
                 }
 
-                if (candidates.length === 1) {
-                        const candidate = candidates[0];
-                        return {
-                                ...tokens,
-                                accountIdOverride: candidate.accountId,
-                                accountIdSource: candidate.source,
-                                accountLabel: candidate.label,
-                        };
-                }
+			if (candidates.length === 1) {
+				const [candidate] = candidates;
+				if (candidate) {
+					return {
+						...tokens,
+						accountIdOverride: candidate.accountId,
+						accountIdSource: candidate.source,
+						accountLabel: candidate.label,
+					};
+				}
+			}
 
                 // Auto-select the default candidate without prompting
                 // The user already selected their workspace on OpenAI's auth page
@@ -210,7 +218,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 REDIRECT_URI,
                         );
                         if (tokens?.type === "success") {
-                                const resolved = await resolveAccountSelection(tokens);
+                                const resolved = resolveAccountSelection(tokens);
                                 if (onSuccess) {
                                         await onSuccess(resolved);
                                 }
@@ -436,7 +444,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         process.env.OPENCODE_SKIP_EMAIL_HYDRATE === "1";
                 if (skipHydrate) return storage;
 
-                const accountsToHydrate = storage.accounts.filter(
+                const accountsCopy = storage.accounts.map((account) =>
+                        account ? { ...account } : account,
+                );
+                const accountsToHydrate = accountsCopy.filter(
                         (account) => account && !account.email,
                 );
                 if (accountsToHydrate.length === 0) return storage;
@@ -466,13 +477,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                                 account.refreshToken = refreshed.refresh;
                                                 changed = true;
                                         }
-                                } catch {
-                                        logDebug(`[${PLUGIN_NAME}] Failed to hydrate email for account`);
-                                }
+				} catch {
+					logWarn(`[${PLUGIN_NAME}] Failed to hydrate email for account`);
+				}
                         }),
                 );
 
                 if (changed) {
+                        storage.accounts = accountsCopy;
                         await saveAccounts(storage);
                 }
                 return storage;
@@ -514,6 +526,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
         // Event handler for session recovery and account selection
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
+          try {
                 const { event } = input;
                 // Handle TUI account selection events
                 // Accepts generic selection events with an index property
@@ -540,6 +553,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 }
                         }
                 }
+          } catch (error) {
+                logDebug(`[${PLUGIN_NAME}] Event handler error: ${error instanceof Error ? error.message : String(error)}`);
+          }
         };
 
         return {
@@ -576,25 +592,39 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				return {};
 			}
 
-                                const accountManager = await AccountManager.loadFromDisk(
-                                        auth as OAuthAuthDetails,
-                                );
-                                cachedAccountManager = accountManager;
-                                const refreshToken =
-                                        auth.type === "oauth" ? auth.refresh : "";
-                                const needsPersist =
-                                        refreshToken &&
-                                        !accountManager.hasRefreshToken(refreshToken);
-                                if (needsPersist) {
-                                        await accountManager.saveToDisk();
-                                }
+				// Acquire mutex for thread-safe initialization
+				// Use while loop to handle multiple concurrent waiters correctly
+				while (loaderMutex) {
+					await loaderMutex;
+				}
 
-                                if (accountManager.getAccountCount() === 0) {
-                                        logDebug(
-                                                `[${PLUGIN_NAME}] No OAuth accounts available (run opencode auth login)`,
-                                        );
-                                        return {};
-                                }
+				let resolveMutex: (() => void) | undefined;
+				loaderMutex = new Promise<void>((resolve) => {
+					resolveMutex = resolve;
+				});
+				try {
+					if (!accountManagerPromise) {
+						accountManagerPromise = AccountManager.loadFromDisk(
+							auth as OAuthAuthDetails,
+						);
+					}
+					const accountManager = await accountManagerPromise;
+					cachedAccountManager = accountManager;
+					const refreshToken =
+						auth.type === "oauth" ? auth.refresh : "";
+					const needsPersist =
+						refreshToken &&
+						!accountManager.hasRefreshToken(refreshToken);
+					if (needsPersist) {
+						await accountManager.saveToDisk();
+					}
+
+					if (accountManager.getAccountCount() === 0) {
+						logDebug(
+							`[${PLUGIN_NAME}] No OAuth accounts available (run opencode auth login)`,
+						);
+						return {};
+					}
 				// Extract user configuration (global + per-model options)
 				const providerConfig = provider as
 					| { options?: Record<string, unknown>; models?: UserConfig["models"] }
@@ -630,9 +660,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						)
 					: null;
 
-				checkAndNotify(async (message, variant) => {
-					await showToast(message, variant);
-				}).catch(() => {});
+			checkAndNotify(async (message, variant) => {
+				await showToast(message, variant);
+			}).catch((err) => {
+				logDebug(`Update check failed: ${err instanceof Error ? err.message : String(err)}`);
+			});
 
 
 				// Return SDK configuration
@@ -662,19 +694,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                                 const originalUrl = extractRequestUrl(input);
                                                 const url = rewriteUrlForCodex(originalUrl);
 
-						// Step 3: Transform request body with model-specific Codex instructions
-						// Instructions are fetched per model family (codex-max, codex, gpt-5.1)
-						// Capture original stream value before transformation
-						// generateText() sends no stream field, streamText() sends stream=true
-						const originalBody = init?.body ? JSON.parse(init.body as string) : {};
-						const isStreaming = originalBody.stream === true;
+							// Step 3: Transform request body with model-specific Codex instructions
+							// Instructions are fetched per model family (codex-max, codex, gpt-5.1)
+							// Capture original stream value before transformation
+							// generateText() sends no stream field, streamText() sends stream=true
+							let originalBody: Record<string, unknown> = {};
+							if (init?.body) {
+								try {
+									originalBody = JSON.parse(init.body as string);
+								} catch {
+									logWarn("Failed to parse request body, using empty object");
+								}
+							}
+							const isStreaming = originalBody.stream === true;
 
-						const transformation = await transformRequestForCodex(
-							init,
-							url,
-							userConfig,
-							codexMode,
-						);
+							const transformation = await transformRequestForCodex(
+								init,
+								url,
+								userConfig,
+								codexMode,
+								originalBody,
+							);
 									const requestInit = transformation?.updatedInit ?? init;
 									const promptCacheKey = transformation?.body?.prompt_cache_key;
 																				const model = transformation?.body.model;
@@ -825,30 +865,60 @@ while (attempted.size < Math.max(1, accountCount)) {
 												accountManager.markToastShown(account.index);
 											}
 
-											const headers = createCodexHeaders(
-												requestInit,
-												accountId,
-												accountAuth.access,
-												{
-													model,
-													promptCacheKey,
-												},
-											);
+								const headers = createCodexHeaders(
+									requestInit,
+									accountId,
+									accountAuth.access,
+									{
+										model,
+										promptCacheKey,
+									},
+								);
 
-										while (true) {
-											let response: Response;
-											const fetchStart = performance.now();
-											try {
-												response = await fetch(url, {
-													...requestInit,
-													headers,
-												});
-											} catch (networkError) {
-												const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
-												logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
-												accountManager.recordFailure(account, modelFamily, model);
-												break;
-											}
+								// Consume a token before making the request for proactive rate limiting
+								accountManager.consumeToken(account, modelFamily, model);
+
+							while (true) {
+								let response: Response;
+								const fetchStart = performance.now();
+
+								// Merge user AbortSignal with timeout (Node 18 compatible - no AbortSignal.any)
+								const fetchController = new AbortController();
+								const fetchTimeoutMs = 60000;
+								const fetchTimeoutId = setTimeout(
+									() => fetchController.abort(new Error("Request timeout")),
+									fetchTimeoutMs,
+								);
+
+								const onUserAbort = abortSignal
+									? () => fetchController.abort(abortSignal.reason ?? new Error("Aborted by user"))
+									: null;
+
+								if (abortSignal?.aborted) {
+									clearTimeout(fetchTimeoutId);
+									fetchController.abort(abortSignal.reason ?? new Error("Aborted by user"));
+								} else if (abortSignal && onUserAbort) {
+									abortSignal.addEventListener("abort", onUserAbort, { once: true });
+								}
+
+								try {
+								response = await fetch(url, {
+									...requestInit,
+									headers,
+									signal: fetchController.signal,
+								});
+				} catch (networkError) {
+								const errorMsg = networkError instanceof Error ? networkError.message : String(networkError);
+								logWarn(`Network error for account ${account.index + 1}: ${errorMsg}`);
+								accountManager.refundToken(account, modelFamily, model);
+								accountManager.recordFailure(account, modelFamily, model);
+								break;
+								} finally {
+									clearTimeout(fetchTimeoutId);
+									if (abortSignal && onUserAbort) {
+										abortSignal.removeEventListener("abort", onUserAbort);
+									}
+								}
 											const fetchLatencyMs = Math.round(performance.now() - fetchStart);
 
 											logRequest(LOG_STAGES.RESPONSE, {
@@ -868,18 +938,26 @@ while (attempted.size < Math.max(1, accountCount)) {
 									const { response: errorResponse, rateLimit, errorBody } =
 										await handleErrorResponse(response);
 
-							if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
-									const errorType = detectErrorType(errorBody);
-									const toastContent = getRecoveryToastContent(errorType);
-									await showToast(
-										`${toastContent.title}: ${toastContent.message}`,
-										"warning",
-										{ duration: toastDurationMs },
-									);
-										logDebug(`[${PLUGIN_NAME}] Recoverable error detected: ${errorType}`);
-									}
+			if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
+					const errorType = detectErrorType(errorBody);
+					const toastContent = getRecoveryToastContent(errorType);
+					await showToast(
+						`${toastContent.title}: ${toastContent.message}`,
+						"warning",
+						{ duration: toastDurationMs },
+					);
+						logDebug(`[${PLUGIN_NAME}] Recoverable error detected: ${errorType}`);
+					}
 
-									if (rateLimit) {
+					// Handle 5xx server errors by rotating to another account
+					if (response.status >= 500 && response.status < 600) {
+						logWarn(`Server error ${response.status} for account ${account.index + 1}. Rotating to next account.`);
+						accountManager.refundToken(account, modelFamily, model);
+						accountManager.recordFailure(account, modelFamily, model);
+						break;
+					}
+
+					if (rateLimit) {
 																														const { attempt, delayMs } = getRateLimitBackoff(
 																															account.index,
 																															quotaKey,
@@ -902,14 +980,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 																																			accountManager.markToastShown(account.index);
 								}
 
-															await sleep(addJitter(delayMs, 0.2));
+															await sleep(addJitter(Math.max(MIN_BACKOFF_MS, delayMs), 0.2));
 															continue;
 																																}
 
-				accountManager.markRateLimited(
+				accountManager.markRateLimitedWithReason(
 					account,
 					delayMs,
 					modelFamily,
+					parseRateLimitReason(rateLimit.code),
 					model,
 				);
 				accountManager.recordRateLimit(account, modelFamily, model);
@@ -939,8 +1018,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 																											}
 
 								resetRateLimitBackoff(account.index, quotaKey);
+								const successResponse = await handleSuccessResponse(response, isStreaming);
 								accountManager.recordSuccess(account, modelFamily, model);
-									return await handleSuccessResponse(response, isStreaming);
+									return successResponse;
 																								}
 										}
 
@@ -961,13 +1041,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 									continue;
 								}
 
-										const waitLabel = waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
-										const message =
-											count === 0
-												? "No Codex accounts configured. Run `opencode auth login`."
-												: `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`;
-										return new Response(JSON.stringify({ error: { message } }), {
-											status: 429,
+								const waitLabel = waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
+								const message =
+									count === 0
+										? "No Codex accounts configured. Run `opencode auth login`."
+										: waitMs > 0
+											? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`
+											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
+								return new Response(JSON.stringify({ error: { message } }), {
+									status: waitMs > 0 ? 429 : 503,
 											headers: {
 												"content-type": "application/json; charset=utf-8",
 											},
@@ -975,6 +1057,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 									}
 										},
                                 };
+				} finally {
+					resolveMutex?.();
+					loaderMutex = null;
+				}
                         },
 				methods: [
 					{
@@ -1025,9 +1111,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 					 * @returns Authorization flow configuration
 					 */
                                         authorize: async (inputs?: Record<string, string>) => {
-							// Always use the multi-account flow regardless of inputs
-							// The inputs parameter is only used for noBrowser flag, not for flow selection
-							const accounts: TokenSuccessWithAccount[] = [];
+					// Initialize storage path based on config BEFORE any account operations
+					// This ensures accounts are saved to the correct location (per-project or global)
+					const authPluginConfig = loadPluginConfig();
+					const authPerProjectAccounts = getPerProjectAccounts(authPluginConfig);
+					if (authPerProjectAccounts) {
+						setStoragePath(process.cwd());
+					}
+
+					// Always use the multi-account flow regardless of inputs
+					// The inputs parameter is only used for noBrowser flag, not for flow selection
+					const accounts: TokenSuccessWithAccount[] = [];
 							const noBrowser =
 								inputs?.noBrowser === "true" ||
 								inputs?.["no-browser"] === "true";
@@ -1082,9 +1176,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 									instructions:
 										"Account limit reached. Remove an account or start fresh.",
 									method: "auto",
-									callback: async () => ({
-										type: "failed" as const,
-									}),
+								callback: () => Promise.resolve({
+									type: "failed" as const,
+								}),
 								};
 							}
 
@@ -1117,7 +1211,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 								let resolved: TokenSuccessWithAccount | null = null;
 				if (result.type === "success") {
-					resolved = await resolveAccountSelection(result);
+					resolved = resolveAccountSelection(result);
 					const email = extractAccountEmail(resolved.access, resolved.idToken);
 					const accountId =
 						resolved.accountIdOverride ?? extractAccountId(resolved.access);
@@ -1149,7 +1243,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                                                         instructions:
                                                                                                 "Authentication failed.",
                                                                                         method: "auto",
-                                                                                        callback: async () => result,
+                                                                                        callback: () => Promise.resolve(result),
                                                                                 };
                                                                         }
 							logWarn(
@@ -1199,7 +1293,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                                         url: "",
                                                                         instructions: "Authentication cancelled",
                                                                         method: "auto",
-                                                                        callback: async () => ({
+                                                                        callback: () => Promise.resolve({
                                                                                 type: "failed" as const,
                                                                         }),
                                                                 };
@@ -1211,22 +1305,30 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                                 if (finalStorage) {
                                                                         actualAccountCount = finalStorage.accounts.length;
                                                                 }
-                                                        } catch (err) {
-                                                                logDebug(`[${PLUGIN_NAME}] Failed to load final account count: ${(err as Error)?.message ?? String(err)}`);
+								} catch (err) {
+									logWarn(`[${PLUGIN_NAME}] Failed to load final account count: ${(err as Error)?.message ?? String(err)}`);
                                                         }
 
                                                         return {
                                                                 url: "",
                                                                 instructions: `Multi-account setup complete (${actualAccountCount} account(s)).`,
                                                                 method: "auto",
-                                                                callback: async () => primary,
+                                                                callback: () => Promise.resolve(primary),
                                                         };
                                         },
 					},
 				{
 					label: AUTH_LABELS.OAUTH_MANUAL,
 					type: "oauth" as const,
-                                                authorize: async () => {
+				authorize: async () => {
+                                                        // Initialize storage path for manual OAuth flow
+                                                        // Must happen BEFORE persistAccountPool to ensure correct storage location
+                                                        const manualPluginConfig = loadPluginConfig();
+                                                        const manualPerProjectAccounts = getPerProjectAccounts(manualPluginConfig);
+                                                        if (manualPerProjectAccounts) {
+                                                                setStoragePath(process.cwd());
+                                                        }
+
                                                         const { pkce, url } = await createAuthorizationFlow();
                                                         return buildManualOAuthFlow(pkce, url, async (tokens) => {
                                                                 try {
@@ -1267,14 +1369,22 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                 ].join("\n");
                                         }
 
-										const now = Date.now();
-										const activeIndex = resolveActiveIndex(storage, "codex");
-										const lines: string[] = [
-                                                `Codex Accounts (${storage.accounts.length}):`,
-                                                "",
-                                                " #  Label                                     Status",
-                                                "----------------------------------------------- ---------------------",
-                                        ];
+					const now = Date.now();
+					const activeIndex = resolveActiveIndex(storage, "codex");
+					
+					const listTableOptions: TableOptions = {
+						columns: [
+							{ header: "#", width: 3 },
+							{ header: "Label", width: 42 },
+							{ header: "Status", width: 20 },
+						],
+					};
+					
+					const lines: string[] = [
+						`Codex Accounts (${storage.accounts.length}):`,
+						"",
+						...buildTableHeader(listTableOptions),
+					];
 
                                         storage.accounts.forEach((account, index) => {
                                                 const label = formatAccountLabel(account, index);
@@ -1293,8 +1403,7 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                         statuses.push("cooldown");
                                                 }
                                                 const statusText = statuses.length > 0 ? statuses.join(", ") : "ok";
-                                                const row = `${String(index + 1).padEnd(3)} ${label.padEnd(40)} ${statusText}`;
-                                                lines.push(row);
+                                                lines.push(buildTableRow([String(index + 1), label, statusText], listTableOptions));
                                         });
 
                                         lines.push("");
@@ -1367,31 +1476,38 @@ while (attempted.size < Math.max(1, accountCount)) {
 						return "No Codex accounts configured. Run: opencode auth login";
 					}
 
-					const now = Date.now();
-					const activeIndex = resolveActiveIndex(storage, "codex");
+				const now = Date.now();
+				const activeIndex = resolveActiveIndex(storage, "codex");
+
+				const statusTableOptions: TableOptions = {
+					columns: [
+						{ header: "#", width: 3 },
+						{ header: "Label", width: 42 },
+						{ header: "Active", width: 6 },
+						{ header: "Rate Limit", width: 16 },
+						{ header: "Cooldown", width: 16 },
+						{ header: "Last Used", width: 16 },
+					],
+				};
 
                                         const lines: string[] = [
                                                 `Account Status (${storage.accounts.length} total):`,
                                                 "",
-                                                " #  Label                                     Active  Rate Limit       Cooldown        Last Used",
-                                                "----------------------------------------------- ------ ---------------- ---------------- ----------------",
+                                                ...buildTableHeader(statusTableOptions),
                                         ];
 
-										storage.accounts.forEach((account, index) => {
-												const label = formatAccountLabel(account, index).padEnd(42);
-												const active = index === activeIndex ? "Yes" : "No";
-												const rateLimit = formatRateLimitEntry(account, now) ?? "None";
-												const cooldown = formatCooldown(account, now) ?? "No";
-												const lastUsed =
-														typeof account.lastUsed === "number" && account.lastUsed > 0
-																? `${formatWaitTime(now - account.lastUsed)} ago`
-																: "-";
+								storage.accounts.forEach((account, index) => {
+										const label = formatAccountLabel(account, index);
+										const active = index === activeIndex ? "Yes" : "No";
+										const rateLimit = formatRateLimitEntry(account, now) ?? "None";
+										const cooldown = formatCooldown(account, now) ?? "No";
+										const lastUsed =
+												typeof account.lastUsed === "number" && account.lastUsed > 0
+														? `${formatWaitTime(now - account.lastUsed)} ago`
+														: "-";
 
-												const row = `${String(index + 1).padEnd(3)} ${label} ${active.padEnd(
-														6,
-												)} ${rateLimit.padEnd(16)} ${cooldown.padEnd(16)} ${lastUsed}`;
-												lines.push(row);
-										});
+										lines.push(buildTableRow([String(index + 1), label, active, rateLimit, cooldown, lastUsed], statusTableOptions));
+								});
 
 										lines.push("");
 										lines.push("Active index by model family:");
@@ -1641,7 +1757,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 		}),
 
 	},
-        };
+	};
 };
 
 export const OpenAIAuthPlugin = OpenAIOAuthPlugin;

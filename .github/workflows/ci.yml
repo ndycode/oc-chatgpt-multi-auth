@@ -28,17 +28,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Security audit
+        run: npm audit --audit-level=high
+
       - name: Run type check
         run: npm run typecheck
 
-      - name: Run tests
-        run: npm test
+      - name: Run tests with coverage
+        run: npm run coverage
 
       - name: Build
         run: npm run build
 
   lint:
-    name: Type Check
+    name: Lint
 
     runs-on: ubuntu-latest
 
@@ -55,5 +58,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run type check
-        run: npm run typecheck
+      - name: Run ESLint
+        run: npm run lint

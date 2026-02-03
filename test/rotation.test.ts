@@ -201,6 +201,38 @@ describe("TokenBucketTracker", () => {
 		});
 	});
 
+	describe("refundToken", () => {
+		it("refunds token consumed within 30s window", () => {
+			tracker.tryConsume(0);
+			const result = tracker.refundToken(0);
+			expect(result).toBe(true);
+			expect(tracker.getTokens(0)).toBe(DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
+		});
+
+		it("rejects refund for token consumed over 30s ago", () => {
+			tracker.tryConsume(0);
+
+			vi.advanceTimersByTime(30_001);
+
+			const result = tracker.refundToken(0);
+			expect(result).toBe(false);
+		});
+
+		it("returns false when no tokens consumed", () => {
+			expect(tracker.refundToken(0)).toBe(false);
+		});
+
+		it("does not exceed maxTokens on refund", () => {
+			tracker.tryConsume(0);
+
+			vi.advanceTimersByTime(10_000);
+
+			const result = tracker.refundToken(0);
+			expect(result).toBe(true);
+			expect(tracker.getTokens(0)).toBe(DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
+		});
+	});
+
 	describe("token refill", () => {
 		it("refills tokens over time", () => {
 			for (let i = 0; i < 10; i++) {
@@ -235,6 +267,13 @@ describe("TokenBucketTracker", () => {
 		it("does not go below zero", () => {
 			tracker.drain(0, undefined, 100);
 			expect(tracker.getTokens(0)).toBe(0);
+		});
+
+		it("uses maxTokens when no prior entry exists for drain (line 205 coverage)", () => {
+			tracker.drain(5, "new-quota", 5);
+			expect(tracker.getTokens(5, "new-quota")).toBe(
+				DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens - 5
+			);
 		});
 	});
 
@@ -283,13 +322,14 @@ describe("selectHybridAccount", () => {
 		expect(result).toBe(null);
 	});
 
-	it("returns null when all accounts unavailable", () => {
+	it("returns least-recently-used account when all accounts unavailable (fallback)", () => {
 		const accounts: AccountWithMetrics[] = [
-			{ index: 0, isAvailable: false, lastUsed: 0 },
-			{ index: 1, isAvailable: false, lastUsed: 0 },
+			{ index: 0, isAvailable: false, lastUsed: 100 },
+			{ index: 1, isAvailable: false, lastUsed: 50 },
 		];
 		const result = selectHybridAccount(accounts, healthTracker, tokenTracker);
-		expect(result).toBe(null);
+		// When all accounts unavailable, returns the least-recently-used one as fallback
+		expect(result?.index).toBe(1); // index 1 has lastUsed: 50 (older)
 	});
 
 	it("returns the only available account", () => {

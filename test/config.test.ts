@@ -123,13 +123,27 @@ describe('Configuration Parsing', () => {
 				expect(low.effort).toBe('medium');
 			});
 
-			it('should keep codex-mini high effort when requested', () => {
-				const high = getReasoningConfig('codex-mini-latest', {
-					reasoningEffort: 'high',
-				});
-				expect(high.effort).toBe('high');
+		it('should keep codex-mini high effort when requested', () => {
+			const high = getReasoningConfig('codex-mini-latest', {
+				reasoningEffort: 'high',
 			});
+			expect(high.effort).toBe('high');
 		});
+
+		it('should clamp codex-mini xhigh to high', () => {
+			const xhigh = getReasoningConfig('gpt-5-codex-mini', {
+				reasoningEffort: 'xhigh',
+			});
+			expect(xhigh.effort).toBe('high');
+		});
+
+		it('should clamp codex-mini unknown effort to medium (line 263 coverage)', () => {
+			const unknown = getReasoningConfig('gpt-5-codex-mini', {
+				reasoningEffort: 'invalid-effort' as never,
+			});
+			expect(unknown.effort).toBe('medium');
+		});
+	});
 
 	describe('Model-specific behavior', () => {
 		it('should detect lightweight models correctly', () => {

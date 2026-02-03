@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
 	injectMissingToolOutputs,
 	normalizeOrphanedToolOutputs,
+	getContentText,
+	isOpenCodeSystemPrompt,
+	filterOpenCodeSystemPromptsWithCachedPrompt,
 } from "../lib/request/helpers/input-utils.js";
 import type { InputItem } from "../lib/types.js";
 
@@ -142,6 +145,67 @@ describe("Tool Output Normalization", () => {
 			expect(result).toHaveLength(2);
 			expect(result[1]?.type).toBe("function_call_output");
 		});
+
+		it("converts orphaned local_shell_call_output to message", () => {
+			const input: InputItem[] = [
+				{ type: "local_shell_call_output", role: "tool", call_id: "orphan_shell", output: "shell result" },
+			];
+			const result = normalizeOrphanedToolOutputs(input);
+			
+			expect(result).toHaveLength(1);
+			expect(result[0]?.type).toBe("message");
+			expect(result[0]?.role).toBe("assistant");
+		});
+
+		it("preserves local_shell_call_output with matching local_shell_call", () => {
+			const input: InputItem[] = [
+				{ type: "local_shell_call", role: "assistant", call_id: "shell_matched", command: "ls" },
+				{ type: "local_shell_call_output", role: "tool", call_id: "shell_matched", output: "files" },
+			];
+			const result = normalizeOrphanedToolOutputs(input);
+			
+			expect(result).toHaveLength(2);
+			expect(result[1]?.type).toBe("local_shell_call_output");
+		});
+
+		it("truncates very long output content", () => {
+			const longOutput = "x".repeat(20000);
+			const input: InputItem[] = [
+				{ type: "function_call_output", role: "tool", call_id: "orphan_long", output: longOutput },
+			];
+			const result = normalizeOrphanedToolOutputs(input);
+			
+			expect(result).toHaveLength(1);
+			expect(result[0]?.type).toBe("message");
+			const content = (result[0] as { content?: string }).content ?? "";
+			expect(content.length).toBeLessThan(20000);
+			expect(content).toContain("[truncated]");
+		});
+
+		it("handles non-string output by converting to JSON", () => {
+			const input: InputItem[] = [
+				{ type: "function_call_output", role: "tool", call_id: "orphan_obj", output: { key: "value" } },
+			];
+			const result = normalizeOrphanedToolOutputs(input);
+			
+			expect(result).toHaveLength(1);
+			expect(result[0]?.type).toBe("message");
+			const content = (result[0] as { content?: string }).content ?? "";
+			expect(content).toContain("key");
+			expect(content).toContain("value");
+		});
+
+		it("handles output with circular references gracefully", () => {
+			const circular: Record<string, unknown> = { a: 1 };
+			circular.self = circular;
+			const input: InputItem[] = [
+				{ type: "function_call_output", role: "tool", call_id: "orphan_circ", output: circular },
+			];
+			const result = normalizeOrphanedToolOutputs(input);
+			
+			expect(result).toHaveLength(1);
+			expect(result[0]?.type).toBe("message");
+		});
 	});
 
 	describe("combined normalization flow", () => {
@@ -157,6 +221,140 @@ describe("Tool Output Normalization", () => {
 			expect(injected.filter(i => i.type === "message")).toHaveLength(1);
 			expect(injected.filter(i => i.type === "function_call")).toHaveLength(1);
 			expect(injected.filter(i => i.type === "function_call_output")).toHaveLength(1);
+		});
+	});
+
+	describe("getContentText edge cases", () => {
+		it("returns empty string when content is neither string nor array", () => {
+			const item = { type: "message", role: "user", content: undefined } as unknown as InputItem;
+			expect(getContentText(item)).toBe("");
+		});
+
+		it("returns empty string when content is null", () => {
+			const item = { type: "message", role: "user", content: null } as unknown as InputItem;
+			expect(getContentText(item)).toBe("");
+		});
+
+		it("returns empty string when content is a number", () => {
+			const item = { type: "message", role: "user", content: 123 } as unknown as InputItem;
+			expect(getContentText(item)).toBe("");
+		});
+	});
+
+	describe("isOpenCodeSystemPrompt with cached prompt", () => {
+		it("returns true when content starts with cached prompt", () => {
+			const cachedPrompt = "You are OpenCode, an agent";
+			const item: InputItem = {
+				type: "message",
+				role: "system",
+				content: "You are OpenCode, an agent with additional context appended here",
+			};
+			expect(isOpenCodeSystemPrompt(item, cachedPrompt)).toBe(true);
+		});
+
+		it("returns true when first 200 chars match cached prompt prefix", () => {
+			const longText = "A".repeat(250);
+			const cachedPrompt = longText;
+			const item: InputItem = {
+				type: "message",
+				role: "system",
+				content: longText.slice(0, 200) + "B".repeat(100),
+			};
+			expect(isOpenCodeSystemPrompt(item, cachedPrompt)).toBe(true);
+		});
+
+		it("returns false for non-system roles even with matching content", () => {
+			const cachedPrompt = "You are OpenCode, an agent";
+			const item: InputItem = {
+				type: "message",
+				role: "user",
+				content: "You are OpenCode, an agent",
+			};
+			expect(isOpenCodeSystemPrompt(item, cachedPrompt)).toBe(false);
+		});
+
+		it("returns false when content is empty", () => {
+			const cachedPrompt = "You are OpenCode, an agent";
+			const item: InputItem = {
+				type: "message",
+				role: "system",
+				content: "",
+			};
+			expect(isOpenCodeSystemPrompt(item, cachedPrompt)).toBe(false);
+		});
+
+		it("returns true for developer role with matching signature", () => {
+			const item: InputItem = {
+				type: "message",
+				role: "developer",
+				content: "You are OpenCode, an interactive CLI agent that does stuff",
+			};
+			expect(isOpenCodeSystemPrompt(item, null)).toBe(true);
+		});
+	});
+
+	describe("filterOpenCodeSystemPromptsWithCachedPrompt", () => {
+		it("returns undefined for undefined input", () => {
+			expect(filterOpenCodeSystemPromptsWithCachedPrompt(undefined, null)).toBeUndefined();
+		});
+
+		it("preserves user messages unchanged", () => {
+			const input: InputItem[] = [
+				{ type: "message", role: "user", content: "Hello" },
+			];
+			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, null);
+			expect(result).toEqual(input);
+		});
+
+		it("filters out OpenCode system prompt without context", () => {
+			const input: InputItem[] = [
+				{ type: "message", role: "system", content: "You are OpenCode, an agent doing things" },
+			];
+			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, null);
+			expect(result).toHaveLength(0);
+		});
+
+		it("preserves context when filtering OpenCode system prompt", () => {
+			const input: InputItem[] = [
+				{
+					type: "message",
+					role: "system",
+					content: "You are OpenCode, an agent\n\nHere is some useful information about the environment you are running in:\n<env>test</env>",
+				},
+			];
+			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, null);
+			expect(result).toHaveLength(1);
+			expect((result?.[0] as { content: string }).content).toContain("Here is some useful information");
+		});
+
+		it("replaces array content with text when preserving context", () => {
+			const input: InputItem[] = [
+				{
+					type: "message",
+					role: "system",
+					content: [
+						{ type: "input_text", text: "You are OpenCode, an agent\n\n<instructions>\nDo things</instructions>" },
+					],
+				},
+			];
+			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, null);
+			expect(result).toHaveLength(1);
+			const content = (result?.[0] as { content: unknown }).content;
+			// Content is replaced with array containing extracted context
+			expect(Array.isArray(content)).toBe(true);
+			expect((content as { text: string }[])[0]?.text).toContain("<instructions>");
+		});
+
+		it("handles content that is neither string nor array when preserving context (line 41 coverage)", () => {
+			const input: InputItem[] = [
+				{
+					type: "message",
+					role: "system",
+					content: { weird: "object" } as unknown as string,
+				},
+			];
+			const result = filterOpenCodeSystemPromptsWithCachedPrompt(input, "{ weird: 'object' }");
+			expect(result).toBeDefined();
 		});
 	});
 });

@@ -111,3 +111,11 @@ describe("Codex Module", () => {
 		});
 	});
 });
+
+import { __clearCacheForTesting } from "../lib/prompts/codex.js";
+
+describe("Codex Cache", () => {
+	it("should clear prompt cache without error", () => {
+		expect(() => __clearCacheForTesting()).not.toThrow();
+	});
+});

@@ -15,6 +15,7 @@ const successHtml = fs.readFileSync(path.join(__dirname, "..", "oauth-success.ht
  * @returns Promise that resolves to server info
  */
 export function startLocalOAuthServer({ state }: { state: string }): Promise<OAuthServerInfo> {
+	let pollAborted = false;
 	const server = http.createServer((req, res) => {
 		try {
 			const url = new URL(req.url || "", "http://localhost");
@@ -36,6 +37,9 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 			}
 			res.statusCode = 200;
 			res.setHeader("Content-Type", "text/html; charset=utf-8");
+			res.setHeader("X-Frame-Options", "DENY");
+			res.setHeader("X-Content-Type-Options", "nosniff");
+			res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'none'");
 			res.end(successHtml);
 			(server as http.Server & { _lastCode?: string })._lastCode = code;
 	} catch (err) {
@@ -45,19 +49,25 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 	}
 	});
 
+	server.unref();
+
 	return new Promise((resolve) => {
 		server
 			.listen(1455, "127.0.0.1", () => {
 				resolve({
 					port: 1455,
 					ready: true,
-					close: () => server.close(),
+					close: () => {
+						pollAborted = true;
+						server.close();
+					},
 				waitForCode: async () => {
 					const POLL_INTERVAL_MS = 100;
 					const TIMEOUT_MS = 5 * 60 * 1000;
 					const maxIterations = Math.floor(TIMEOUT_MS / POLL_INTERVAL_MS);
 					const poll = () => new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
 					for (let i = 0; i < maxIterations; i++) {
+						if (pollAborted) return null;
 						const lastCode = (server as http.Server & { _lastCode?: string })._lastCode;
 						if (lastCode) return { code: lastCode };
 						await poll();
@@ -75,13 +85,14 @@ export function startLocalOAuthServer({ state }: { state: string }): Promise<OAu
 					port: 1455,
 					ready: false,
 				close: () => {
+					pollAborted = true;
 					try {
 						server.close();
 					} catch (err) {
 					logError(`Failed to close OAuth server: ${(err as Error)?.message ?? String(err)}`);
 					}
 				},
-					waitForCode: async () => null,
+					waitForCode: () => Promise.resolve(null),
 				});
 			});
 	});

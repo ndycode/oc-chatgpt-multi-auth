@@ -22,15 +22,17 @@ export function getBrowserOpener(): string {
 function commandExists(command: string): boolean {
 	if (!command) return false;
 
-	// "start" is a shell builtin on Windows; rely on shell execution
+	/* v8 ignore start -- unreachable: openBrowserUrl uses PowerShell on win32 */
 	if (process.platform === "win32" && command.toLowerCase() === "start") {
 		return true;
 	}
+	/* v8 ignore stop */
 
 	const pathValue = process.env.PATH || "";
 	const entries = pathValue.split(path.delimiter).filter(Boolean);
 	if (entries.length === 0) return false;
 
+	/* v8 ignore start -- unreachable: openBrowserUrl uses PowerShell on win32 */
 	if (process.platform === "win32") {
 		const pathext = (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
 			.split(";")
@@ -43,6 +45,7 @@ function commandExists(command: string): boolean {
 		}
 		return false;
 	}
+	/* v8 ignore stop */
 
 	for (const entry of entries) {
 		const candidate = path.join(entry, command);
@@ -61,7 +64,11 @@ export function openBrowserUrl(url: string): boolean {
 	try {
 		// Windows: use PowerShell Start-Process to avoid cmd/start quirks with URLs containing '&' or ':'
 		if (process.platform === "win32") {
-			const psUrl = url.replace(/`/g, "``").replace(/"/g, '""');
+			// Escape PowerShell special characters: backticks, double quotes, and $ (sub-expression injection)
+			const psUrl = url
+				.replace(/`/g, "``")
+				.replace(/\$/g, "`$")
+				.replace(/"/g, '""');
 			const child = spawn(
 				"powershell.exe",
 				["-NoLogo", "-NoProfile", "-Command", `Start-Process "${psUrl}"`],

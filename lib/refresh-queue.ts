@@ -217,9 +217,11 @@ export class RefreshQueue {
     }
 
     for (const token of staleTokens) {
+      // istanbul ignore next -- defensive: token always exists in pending at this point (not yet deleted)
+      const ageMs = now - (this.pending.get(token)?.startedAt ?? now);
       log.warn("Removing stale refresh entry", {
         tokenSuffix: token.slice(-6),
-        ageMs: now - (this.pending.get(token)?.startedAt ?? now),
+        ageMs,
       });
       this.pending.delete(token);
     }

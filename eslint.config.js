@@ -3,7 +3,7 @@ import tsparser from "@typescript-eslint/parser";
 
 export default [
   {
-    ignores: ["dist/**", "node_modules/**", "*.js", "*.cjs", "*.mjs", "scripts/**"],
+    ignores: ["dist/**", "node_modules/**", "winston/**", "*.js", "*.cjs", "*.mjs", "scripts/**"],
   },
   {
     files: ["index.ts", "lib/**/*.ts"],
@@ -24,6 +24,12 @@ export default [
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
       "@typescript-eslint/explicit-function-return-type": "off",
       "@typescript-eslint/no-non-null-assertion": "warn",
+      
+      // Promise handling (catch unhandled promises and misuse)
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/await-thenable": "error",
+      "@typescript-eslint/require-await": "warn",
       
       // General best practices
       "no-console": "off", // Allow console for CLI tool

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { loadPluginConfig, getCodexMode } from '../lib/config.js';
+import { loadPluginConfig, getCodexMode, getTokenRefreshSkewMs, getRetryAllAccountsMaxRetries } from '../lib/config.js';
 import type { PluginConfig } from '../lib/types.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -60,6 +60,8 @@ describe('Plugin Configuration', () => {
 				perProjectAccounts: true,
 				sessionRecovery: true,
 				autoResume: true,
+				parallelProbing: false,
+				parallelProbingMaxConcurrency: 2,
 			});
 			expect(mockExistsSync).toHaveBeenCalledWith(
 				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json')
@@ -83,6 +85,8 @@ describe('Plugin Configuration', () => {
 				perProjectAccounts: true,
 				sessionRecovery: true,
 				autoResume: true,
+				parallelProbing: false,
+				parallelProbingMaxConcurrency: 2,
 			});
 		});
 
@@ -103,6 +107,8 @@ describe('Plugin Configuration', () => {
 				perProjectAccounts: true,
 				sessionRecovery: true,
 				autoResume: true,
+				parallelProbing: false,
+				parallelProbingMaxConcurrency: 2,
 			});
 		});
 
@@ -125,6 +131,8 @@ describe('Plugin Configuration', () => {
 		perProjectAccounts: true,
 		sessionRecovery: true,
 		autoResume: true,
+		parallelProbing: false,
+		parallelProbingMaxConcurrency: 2,
 	});
 		expect(mockLogWarn).toHaveBeenCalled();
 	});
@@ -150,6 +158,8 @@ describe('Plugin Configuration', () => {
 			perProjectAccounts: true,
 			sessionRecovery: true,
 			autoResume: true,
+			parallelProbing: false,
+			parallelProbingMaxConcurrency: 2,
 		});
 		expect(mockLogWarn).toHaveBeenCalled();
 	});
@@ -223,6 +233,41 @@ describe('Plugin Configuration', () => {
 
 			// Test 3: default when neither set
 			expect(getCodexMode({})).toBe(true);
+		});
+	});
+
+	describe('Schema validation warnings', () => {
+		it('should log warning when config has invalid properties', () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockReturnValue(JSON.stringify({ 
+				codexMode: 'not-a-boolean',
+				unknownProperty: 'value'
+			}));
+
+			const mockLogWarn = vi.mocked(logger.logWarn);
+			mockLogWarn.mockClear();
+			loadPluginConfig();
+
+			expect(mockLogWarn).toHaveBeenCalledWith(
+				expect.stringContaining('Plugin config validation warnings')
+			);
+		});
+	});
+
+	describe('resolveNumberSetting without min option', () => {
+		it('should return candidate without min constraint via getRetryAllAccountsMaxRetries', () => {
+			delete process.env.CODEX_AUTH_RETRY_ALL_MAX_RETRIES;
+			const config: PluginConfig = { retryAllAccountsMaxRetries: 5 };
+			const result = getRetryAllAccountsMaxRetries(config);
+			expect(result).toBe(5);
+		});
+
+		it('should return env value without min constraint', () => {
+			process.env.CODEX_AUTH_TOKEN_REFRESH_SKEW_MS = '30000';
+			const config: PluginConfig = { tokenRefreshSkewMs: 60000 };
+			const result = getTokenRefreshSkewMs(config);
+			expect(result).toBe(30000);
+			delete process.env.CODEX_AUTH_TOKEN_REFRESH_SKEW_MS;
 		});
 	});
 });

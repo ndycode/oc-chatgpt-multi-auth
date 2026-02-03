@@ -132,7 +132,11 @@ function cleanupSchema(schema: Record<string, unknown>): void {
 	if (schema.properties && typeof schema.properties === "object") {
 		const props = schema.properties as Record<string, Record<string, unknown>>;
 		for (const key in props) {
-			cleanupSchema(props[key]);
+			const prop = props[key];
+			// istanbul ignore next -- JSON.stringify at line 39 strips undefined values
+			if (prop !== undefined) {
+				cleanupSchema(prop);
+			}
 		}
 	}
 

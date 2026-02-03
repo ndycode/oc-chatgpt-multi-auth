@@ -269,21 +269,303 @@ describe("RefreshQueue", () => {
     });
   });
 
-  describe("clear", () => {
-    it("should clear all pending entries", async () => {
-      vi.mocked(authModule.refreshAccessToken).mockImplementation(() => 
-        new Promise(() => {})
-      );
+	describe("clear", () => {
+		it("should clear all pending entries", async () => {
+			vi.mocked(authModule.refreshAccessToken).mockImplementation(() => 
+				new Promise(() => {})
+			);
 
-      const queue = new RefreshQueue();
-      queue.refresh("token-1");
-      queue.refresh("token-2");
-      
-      expect(queue.pendingCount).toBe(2);
-      
-      queue.clear();
-      
-      expect(queue.pendingCount).toBe(0);
-    });
-  });
+			const queue = new RefreshQueue();
+			queue.refresh("token-1");
+			queue.refresh("token-2");
+			
+			expect(queue.pendingCount).toBe(2);
+			
+			queue.clear();
+			
+			expect(queue.pendingCount).toBe(0);
+		});
+	});
+
+	describe("token rotation handling", () => {
+		it("should track token rotation when refresh returns different token", async () => {
+			const mockResult = {
+				type: "success" as const,
+				access: "access",
+				refresh: "new-rotated-token",
+				expires: Date.now() + 3600000,
+			};
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue(mockResult);
+
+			const queue = new RefreshQueue();
+			
+			const result = await queue.refresh("old-token");
+			expect(result.type).toBe("success");
+			if (result.type === "success") {
+				expect(result.refresh).toBe("new-rotated-token");
+			}
+		});
+
+		it("should reuse in-flight refresh via rotation mapping when new token arrives during refresh", async () => {
+			let resolveRefresh: (result: { type: "success"; access: string; refresh: string; expires: number }) => void;
+			const refreshPromise = new Promise<{ type: "success"; access: string; refresh: string; expires: number }>((resolve) => {
+				resolveRefresh = resolve;
+			});
+			
+			vi.mocked(authModule.refreshAccessToken)
+				.mockReturnValueOnce(refreshPromise)
+				.mockResolvedValue({
+					type: "success",
+					access: "access2",
+					refresh: "another",
+					expires: Date.now() + 3600000,
+				});
+
+			const queue = new RefreshQueue();
+			
+			const promise1 = queue.refresh("old-token");
+			expect(queue.pendingCount).toBe(1);
+			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+
+			resolveRefresh!({
+				type: "success",
+				access: "access",
+				refresh: "new-rotated-token",
+				expires: Date.now() + 3600000,
+			});
+			
+			const result1 = await promise1;
+			expect(result1.type).toBe("success");
+		});
+
+		it("should reuse pending refresh when request arrives with rotated new token", async () => {
+			let innerResolve: (result: { type: "success"; access: string; refresh: string; expires: number }) => void;
+			let callCount = 0;
+			
+			vi.mocked(authModule.refreshAccessToken).mockImplementation(() => {
+				callCount++;
+				return new Promise((resolve) => {
+					if (callCount === 1) {
+						innerResolve = resolve;
+					} else {
+						resolve({
+							type: "success",
+							access: "access2",
+							refresh: "third-token",
+							expires: Date.now() + 3600000,
+						});
+					}
+				});
+			});
+
+			const queue = new RefreshQueue();
+			
+			const promise1 = queue.refresh("old-token");
+			expect(queue.pendingCount).toBe(1);
+			
+			innerResolve!({
+				type: "success",
+				access: "access",
+				refresh: "new-rotated-token",
+				expires: Date.now() + 3600000,
+			});
+			
+			await promise1;
+			expect(queue.pendingCount).toBe(0);
+		});
+
+		it("should find original token when looking up via rotated token and reuse pending entry", async () => {
+			let outerResolve: (result: { type: "success"; access: string; refresh: string; expires: number }) => void;
+			let callCount = 0;
+			
+			vi.mocked(authModule.refreshAccessToken).mockImplementation(() => {
+				callCount++;
+				return new Promise((resolve) => {
+					if (callCount === 1) {
+						outerResolve = resolve;
+					} else {
+						resolve({
+							type: "success",
+							access: "access-other",
+							refresh: "other",
+							expires: Date.now() + 3600000,
+						});
+					}
+				});
+			});
+
+			const queue = new RefreshQueue();
+			
+			const promise1 = queue.refresh("old-token");
+			expect(queue.pendingCount).toBe(1);
+			
+			outerResolve!({
+				type: "success",
+				access: "access",
+				refresh: "new-rotated-token",
+				expires: Date.now() + 3600000,
+			});
+			
+			const result = await promise1;
+			expect(result.type).toBe("success");
+		});
+
+		it("should cleanup rotation mapping after refresh completes", async () => {
+			const mockResult = {
+				type: "success" as const,
+				access: "access",
+				refresh: "new-rotated-token",
+				expires: Date.now() + 3600000,
+			};
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue(mockResult);
+
+			const queue = new RefreshQueue();
+			
+			await queue.refresh("old-token");
+			
+			expect(queue.pendingCount).toBe(0);
+			
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue({
+				type: "success",
+				access: "access2",
+				refresh: "another-token",
+				expires: Date.now() + 3600000,
+			});
+			
+			await queue.refresh("new-rotated-token");
+			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(2);
+		});
+
+		it("should cleanup when token in rotation map matches the completed token", async () => {
+			const mockResult = {
+				type: "success" as const,
+				access: "access",
+				refresh: "rotated-token",
+				expires: Date.now() + 3600000,
+			};
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue(mockResult);
+
+			const queue = new RefreshQueue();
+			
+			await queue.refresh("original-token");
+			
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue({
+				type: "success",
+				access: "access2",
+				refresh: "original-token",
+				expires: Date.now() + 3600000,
+			});
+			await queue.refresh("rotated-token");
+			
+			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(2);
+		});
+
+		it("should reuse pending refresh when request arrives with rotated token via rotation map (lines 114, 134-135 coverage)", async () => {
+			let outerResolve: (result: { type: "success"; access: string; refresh: string; expires: number }) => void;
+			
+			vi.mocked(authModule.refreshAccessToken).mockImplementation(() => {
+				return new Promise((resolve) => {
+					outerResolve = resolve;
+				});
+			});
+
+			const queue = new RefreshQueue();
+			
+			const queueInternal = queue as unknown as {
+				tokenRotationMap: Map<string, string>;
+				pending: Map<string, { promise: Promise<unknown>; startedAt: number }>;
+			};
+			
+			const promise1 = queue.refresh("old-token");
+			expect(queue.pendingCount).toBe(1);
+			
+			queueInternal.tokenRotationMap.set("old-token", "new-rotated-token");
+			
+			const promise2 = queue.refresh("new-rotated-token");
+			
+			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+			
+			outerResolve!({
+				type: "success",
+				access: "access",
+				refresh: "new-rotated-token",
+				expires: Date.now() + 3600000,
+			});
+			
+			const [result1, result2] = await Promise.all([promise1, promise2]);
+			expect(result1).toBe(result2);
+		});
+
+		it("should cleanup rotation mapping entries that point to the completed token (line 145 coverage)", async () => {
+			const queue = new RefreshQueue();
+			
+			const queueInternal = queue as unknown as {
+				tokenRotationMap: Map<string, string>;
+			};
+			
+			queueInternal.tokenRotationMap.set("token-a", "token-b");
+			queueInternal.tokenRotationMap.set("token-c", "token-b");
+			
+			vi.mocked(authModule.refreshAccessToken).mockResolvedValue({
+				type: "success",
+				access: "access",
+				refresh: "token-b",
+				expires: Date.now() + 3600000,
+			});
+			
+			await queue.refresh("token-b");
+			
+			expect(queueInternal.tokenRotationMap.has("token-a")).toBe(false);
+			expect(queueInternal.tokenRotationMap.has("token-c")).toBe(false);
+		});
+
+		it("should handle non-Error exception during refresh (line 193-200 coverage)", async () => {
+			vi.mocked(authModule.refreshAccessToken).mockRejectedValue("string error");
+
+			const queue = new RefreshQueue();
+			const result = await queue.refresh("test-token");
+
+			expect(result.type).toBe("failed");
+			if (result.type === "failed") {
+				expect(result.reason).toBe("network_error");
+				expect(result.message).toBe("Unknown error during refresh");
+			}
+		});
+
+		it("should find original token via rotation map and reuse pending entry (line 134 true branch)", async () => {
+			let outerResolve: (result: { type: "success"; access: string; refresh: string; expires: number }) => void;
+			
+			vi.mocked(authModule.refreshAccessToken).mockImplementation(() => {
+				return new Promise((resolve) => {
+					outerResolve = resolve;
+				});
+			});
+
+			const queue = new RefreshQueue();
+			const queueInternal = queue as unknown as {
+				tokenRotationMap: Map<string, string>;
+			};
+			
+			const promise1 = queue.refresh("original-token");
+			expect(queue.pendingCount).toBe(1);
+			
+			queueInternal.tokenRotationMap.set("unrelated-token", "some-other-token");
+			queueInternal.tokenRotationMap.set("original-token", "rotated-token");
+			
+			const promise2 = queue.refresh("rotated-token");
+			
+			expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
+			expect(authModule.refreshAccessToken).toHaveBeenCalledWith("original-token");
+			
+			outerResolve!({
+				type: "success",
+				access: "access",
+				refresh: "rotated-token",
+				expires: Date.now() + 3600000,
+			});
+			
+			const [result1, result2] = await Promise.all([promise1, promise2]);
+			expect(result1).toBe(result2);
+		});
+	});
 });

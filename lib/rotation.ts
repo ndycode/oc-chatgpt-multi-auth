@@ -142,9 +142,12 @@ export const DEFAULT_TOKEN_BUCKET_CONFIG: TokenBucketConfig = {
   tokensPerMinute: 6,
 };
 
+const TOKEN_REFUND_WINDOW_MS = 30_000;
+
 interface TokenBucketEntry {
   tokens: number;
   lastRefill: number;
+  consumptions: number[];
 }
 
 /**
@@ -189,10 +192,47 @@ export class TokenBucketTracker {
       return false;
     }
 
+    const now = Date.now();
+    const cutoff = now - TOKEN_REFUND_WINDOW_MS;
+    const consumptions = (entry?.consumptions ?? []).filter(
+      (timestamp) => timestamp >= cutoff
+    );
+    consumptions.push(now);
+
     this.buckets.set(key, {
       tokens: currentTokens - 1,
-      lastRefill: Date.now(),
+      lastRefill: now,
+      consumptions,
     });
+    return true;
+  }
+
+  /**
+   * Attempt to refund a token consumed within the refund window.
+   * Use this when a request fails due to network errors (not rate limits).
+   * @returns true if refund was successful, false if no valid consumption found
+   */
+  refundToken(accountIndex: number, quotaKey?: string): boolean {
+    const key = this.getKey(accountIndex, quotaKey);
+    const entry = this.buckets.get(key);
+    if (!entry || entry.consumptions.length === 0) return false;
+
+    const now = Date.now();
+    const cutoff = now - TOKEN_REFUND_WINDOW_MS;
+
+    const validIndex = entry.consumptions.findIndex(
+      (timestamp) => timestamp >= cutoff
+    );
+    if (validIndex === -1) return false;
+
+    entry.consumptions.splice(validIndex, 1);
+    const currentTokens = this.refillTokens(entry);
+    this.buckets.set(key, {
+      tokens: Math.min(currentTokens + 1, this.config.maxTokens),
+      lastRefill: now,
+      consumptions: entry.consumptions,
+    });
+
     return true;
   }
 
@@ -206,6 +246,7 @@ export class TokenBucketTracker {
     this.buckets.set(key, {
       tokens: Math.max(0, currentTokens - drainAmount),
       lastRefill: Date.now(),
+      consumptions: entry?.consumptions ?? [],
     });
   }
 
@@ -241,7 +282,7 @@ export interface HybridSelectionConfig {
 export const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
   healthWeight: 2,
   tokenWeight: 5,
-  freshnessWeight: 0.1,
+  freshnessWeight: 2.0,
 };
 
 /**
@@ -264,8 +305,20 @@ export function selectHybridAccount(
   const cfg = { ...DEFAULT_HYBRID_SELECTION_CONFIG, ...config };
   const available = accounts.filter((a) => a.isAvailable);
 
-  if (available.length === 0) return null;
-  if (available.length === 1) return available[0];
+  if (available.length === 0) {
+    if (accounts.length === 0) return null;
+    let leastRecentlyUsed: AccountWithMetrics | null = null;
+    let oldestTime = Infinity;
+    for (const account of accounts) {
+      if (account.lastUsed < oldestTime) {
+        oldestTime = account.lastUsed;
+        leastRecentlyUsed = account;
+      }
+    }
+    return leastRecentlyUsed;
+  }
+  // istanbul ignore next -- defensive: available[0] always exists when length === 1
+  if (available.length === 1) return available[0] ?? null;
 
   const now = Date.now();
   let bestAccount: AccountWithMetrics | null = null;

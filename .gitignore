@@ -9,3 +9,4 @@ opencode.json
 tmp
 .codex-cache
 .sisyphus/
+coverage/

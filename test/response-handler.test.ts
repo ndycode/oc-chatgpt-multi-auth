@@ -110,5 +110,33 @@ data: {"type":"response.done","response":{"id":"resp_789"}}
 			expect(result.status).toBe(200);
 			expect(result.statusText).toBe('OK');
 		});
+
+		it('should throw error if SSE stream exceeds size limit', async () => {
+			const largeContent = 'a'.repeat(20 * 1024 * 1024 + 1);
+			const response = new Response(largeContent);
+			const headers = new Headers();
+
+			await expect(convertSseToJson(response, headers)).rejects.toThrow(
+				/exceeds.*bytes limit/
+			);
+		});
+
+		it('should throw error when stream read fails', async () => {
+			const mockReader = {
+				read: vi.fn().mockRejectedValue(new Error('Stream read error')),
+				releaseLock: vi.fn(),
+			};
+			const response = {
+				body: {
+					getReader: () => mockReader,
+				},
+				status: 200,
+				statusText: 'OK',
+			} as unknown as Response;
+			const headers = new Headers();
+
+			await expect(convertSseToJson(response, headers)).rejects.toThrow('Stream read error');
+			expect(mockReader.releaseLock).toHaveBeenCalled();
+		});
 	});
 });

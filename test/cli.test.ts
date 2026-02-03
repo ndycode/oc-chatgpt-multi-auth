@@ -189,14 +189,252 @@ describe("CLI Module", () => {
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringMatching(/1\.\s*567890/));
     });
 
-    it("displays plain Account N when no email or accountId", async () => {
-      mockRl.question.mockResolvedValueOnce("f");
-      const consoleSpy = vi.spyOn(console, "log");
-      
-      const { promptLoginMode } = await import("../lib/cli.js");
-      await promptLoginMode([{ index: 0 }]);
-      
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("1. Account"));
-    });
-  });
+		it("displays plain Account N when no email or accountId", async () => {
+			mockRl.question.mockResolvedValueOnce("f");
+			const consoleSpy = vi.spyOn(console, "log");
+			
+			const { promptLoginMode } = await import("../lib/cli.js");
+			await promptLoginMode([{ index: 0 }]);
+			
+			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("1. Account"));
+		});
+
+		it("displays label with email when both present", async () => {
+			mockRl.question.mockResolvedValueOnce("a");
+			const consoleSpy = vi.spyOn(console, "log");
+			
+			const { promptLoginMode } = await import("../lib/cli.js");
+			await promptLoginMode([{ index: 0, accountLabel: "Work", email: "work@example.com" }]);
+			
+			expect(consoleSpy).toHaveBeenCalledWith(expect.stringMatching(/Work.*work@example\.com/));
+		});
+
+		it("displays only label when no email", async () => {
+			mockRl.question.mockResolvedValueOnce("a");
+			const consoleSpy = vi.spyOn(console, "log");
+			
+			const { promptLoginMode } = await import("../lib/cli.js");
+			await promptLoginMode([{ index: 0, accountLabel: "Personal" }]);
+			
+			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("1. Personal"));
+		});
+	});
+
+	describe("isNonInteractiveMode", () => {
+		it("returns false when FORCE_INTERACTIVE_MODE is set", async () => {
+			process.env.FORCE_INTERACTIVE_MODE = "1";
+			const { isNonInteractiveMode } = await import("../lib/cli.js");
+			expect(isNonInteractiveMode()).toBe(false);
+		});
+
+		it("returns true when OPENCODE_TUI is set", async () => {
+			delete process.env.FORCE_INTERACTIVE_MODE;
+			process.env.OPENCODE_TUI = "1";
+			const { isNonInteractiveMode } = await import("../lib/cli.js");
+			expect(isNonInteractiveMode()).toBe(true);
+			delete process.env.OPENCODE_TUI;
+		});
+
+		it("returns true when OPENCODE_DESKTOP is set", async () => {
+			delete process.env.FORCE_INTERACTIVE_MODE;
+			process.env.OPENCODE_DESKTOP = "1";
+			const { isNonInteractiveMode } = await import("../lib/cli.js");
+			expect(isNonInteractiveMode()).toBe(true);
+			delete process.env.OPENCODE_DESKTOP;
+		});
+
+		it("returns true when TERM_PROGRAM is opencode", async () => {
+			delete process.env.FORCE_INTERACTIVE_MODE;
+			process.env.TERM_PROGRAM = "opencode";
+			const { isNonInteractiveMode } = await import("../lib/cli.js");
+			expect(isNonInteractiveMode()).toBe(true);
+			delete process.env.TERM_PROGRAM;
+		});
+
+		it("returns true when ELECTRON_RUN_AS_NODE is set", async () => {
+			delete process.env.FORCE_INTERACTIVE_MODE;
+			process.env.ELECTRON_RUN_AS_NODE = "1";
+			const { isNonInteractiveMode } = await import("../lib/cli.js");
+			expect(isNonInteractiveMode()).toBe(true);
+			delete process.env.ELECTRON_RUN_AS_NODE;
+		});
+
+		it("returns false when TTY is true and no env vars are set", async () => {
+			delete process.env.FORCE_INTERACTIVE_MODE;
+			delete process.env.OPENCODE_TUI;
+			delete process.env.OPENCODE_DESKTOP;
+			delete process.env.TERM_PROGRAM;
+			delete process.env.ELECTRON_RUN_AS_NODE;
+
+			const { stdin, stdout } = await import("node:process");
+			const origInputTTY = stdin.isTTY;
+			const origOutputTTY = stdout.isTTY;
+			
+			Object.defineProperty(stdin, "isTTY", { value: true, writable: true, configurable: true });
+			Object.defineProperty(stdout, "isTTY", { value: true, writable: true, configurable: true });
+			
+			try {
+				const { isNonInteractiveMode } = await import("../lib/cli.js");
+				expect(isNonInteractiveMode()).toBe(false);
+			} finally {
+				Object.defineProperty(stdin, "isTTY", { value: origInputTTY, writable: true, configurable: true });
+				Object.defineProperty(stdout, "isTTY", { value: origOutputTTY, writable: true, configurable: true });
+			}
+		});
+	});
+
+	describe("promptAccountSelection", () => {
+		it("returns null for empty candidates", async () => {
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const result = await promptAccountSelection([]);
+			expect(result).toBeNull();
+		});
+
+		it("returns first candidate by selection", async () => {
+			mockRl.question.mockResolvedValueOnce("1");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const candidates = [
+				{ accountId: "acc1", label: "Account 1" },
+				{ accountId: "acc2", label: "Account 2" },
+			];
+			const result = await promptAccountSelection(candidates);
+			
+			expect(result).toEqual(candidates[0]);
+			expect(mockRl.close).toHaveBeenCalled();
+		});
+
+		it("returns second candidate by selection", async () => {
+			mockRl.question.mockResolvedValueOnce("2");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const candidates = [
+				{ accountId: "acc1", label: "Account 1" },
+				{ accountId: "acc2", label: "Account 2" },
+			];
+			const result = await promptAccountSelection(candidates);
+			
+			expect(result).toEqual(candidates[1]);
+		});
+
+		it("returns default on empty input", async () => {
+			mockRl.question.mockResolvedValueOnce("");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const candidates = [
+				{ accountId: "acc1", label: "Account 1" },
+				{ accountId: "acc2", label: "Account 2" },
+			];
+			const result = await promptAccountSelection(candidates, { defaultIndex: 1 });
+			
+			expect(result).toEqual(candidates[1]);
+		});
+
+		it("returns default on quit input", async () => {
+			mockRl.question.mockResolvedValueOnce("q");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const candidates = [{ accountId: "acc1", label: "Account 1" }];
+			const result = await promptAccountSelection(candidates);
+			
+			expect(result).toEqual(candidates[0]);
+		});
+
+		it("re-prompts on invalid selection", async () => {
+			mockRl.question
+				.mockResolvedValueOnce("99")
+				.mockResolvedValueOnce("1");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const candidates = [{ accountId: "acc1", label: "Account 1" }];
+			const result = await promptAccountSelection(candidates);
+			
+			expect(result).toEqual(candidates[0]);
+			expect(mockRl.question).toHaveBeenCalledTimes(2);
+		});
+
+		it("displays custom title", async () => {
+			mockRl.question.mockResolvedValueOnce("1");
+			const consoleSpy = vi.spyOn(console, "log");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			await promptAccountSelection(
+				[{ accountId: "acc1", label: "Account 1" }],
+				{ title: "Custom Title" }
+			);
+			
+			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("Custom Title"));
+		});
+
+		it("shows default marker for default candidates", async () => {
+			mockRl.question.mockResolvedValueOnce("1");
+			const consoleSpy = vi.spyOn(console, "log");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			await promptAccountSelection([
+				{ accountId: "acc1", label: "Account 1", isDefault: true },
+			]);
+			
+			expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining("(default)"));
+		});
+
+		it("clamps defaultIndex to valid range", async () => {
+			mockRl.question.mockResolvedValueOnce("");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const candidates = [
+				{ accountId: "acc1", label: "Account 1" },
+				{ accountId: "acc2", label: "Account 2" },
+			];
+			const result = await promptAccountSelection(candidates, { defaultIndex: 999 });
+			
+			expect(result).toEqual(candidates[1]);
+		});
+
+		it("handles negative defaultIndex", async () => {
+			mockRl.question.mockResolvedValueOnce("");
+			
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const candidates = [
+				{ accountId: "acc1", label: "Account 1" },
+				{ accountId: "acc2", label: "Account 2" },
+			];
+			const result = await promptAccountSelection(candidates, { defaultIndex: -5 });
+			
+			expect(result).toEqual(candidates[0]);
+		});
+	});
+
+	describe("non-interactive mode behavior", () => {
+		beforeEach(() => {
+			delete process.env.FORCE_INTERACTIVE_MODE;
+			process.env.OPENCODE_TUI = "1";
+		});
+
+		afterEach(() => {
+			delete process.env.OPENCODE_TUI;
+		});
+
+		it("promptAddAnotherAccount returns false in non-interactive mode", async () => {
+			const { promptAddAnotherAccount } = await import("../lib/cli.js");
+			const result = await promptAddAnotherAccount(1);
+			expect(result).toBe(false);
+		});
+
+		it("promptLoginMode returns add in non-interactive mode", async () => {
+			const { promptLoginMode } = await import("../lib/cli.js");
+			const result = await promptLoginMode([{ index: 0 }]);
+			expect(result).toBe("add");
+		});
+
+		it("promptAccountSelection returns default in non-interactive mode", async () => {
+			const { promptAccountSelection } = await import("../lib/cli.js");
+			const candidates = [
+				{ accountId: "acc1", label: "Account 1" },
+				{ accountId: "acc2", label: "Account 2" },
+			];
+			const result = await promptAccountSelection(candidates, { defaultIndex: 1 });
+			expect(result).toEqual(candidates[1]);
+		});
+	});
 });

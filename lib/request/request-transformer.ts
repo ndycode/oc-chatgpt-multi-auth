@@ -480,10 +480,11 @@ export async function transformRequestBody(
 
 		body.input = filterInput(body.input);
 
-		// Debug: Verify all IDs were removed
+		// istanbul ignore next -- filterInput always removes IDs; this is defensive debug code
 		const remainingIds = (body.input || [])
 			.filter((item) => item.id)
 			.map((item) => item.id);
+		// istanbul ignore if -- filterInput always removes IDs; defensive debug warning
 		if (remainingIds.length > 0) {
 			logWarn(
 				`WARNING: ${remainingIds.length} IDs still present after filtering:`,

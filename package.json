@@ -1,6 +1,6 @@
 {
   "name": "oc-chatgpt-multi-auth",
-  "version": "4.12.2",
+  "version": "4.12.3",
   "description": "Multi-account rotation plugin for ChatGPT Plus/Pro (OAuth / Codex backend)",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -37,6 +37,7 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
+    "coverage": "vitest run --coverage",
     "prepublishOnly": "npm run build",
     "prepare": "husky"
   },
@@ -63,6 +64,7 @@
     "typescript": "^5"
   },
   "devDependencies": {
+    "@fast-check/vitest": "^0.2.4",
     "@opencode-ai/sdk": "^1.1.34",
     "@types/node": "^25.0.10",
     "@typescript-eslint/eslint-plugin": "^8.53.1",
@@ -70,6 +72,7 @@
     "@vitest/coverage-v8": "^4.0.18",
     "@vitest/ui": "^4.0.18",
     "eslint": "^9.39.2",
+    "fast-check": "^4.5.3",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "typescript": "^5.9.3",
