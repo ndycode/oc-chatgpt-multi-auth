@@ -7,9 +7,11 @@ import {
     rewriteUrlForCodex,
     createCodexHeaders,
     handleErrorResponse,
+    handleSuccessResponse,
     isEntitlementError,
     createEntitlementErrorResponse,
 } from '../lib/request/fetch-helpers.js';
+import * as loggerModule from '../lib/logger.js';
 import type { Auth } from '../lib/types.js';
 import { URL_PATHS, OPENAI_HEADERS, OPENAI_HEADER_VALUES } from '../lib/constants.js';
 
@@ -251,6 +253,347 @@ describe('Fetch Helpers Module', () => {
 			expect(json.error.type).toBe('entitlement_error');
 			expect(json.error.code).toBe('usage_not_included');
 			expect(json.error.message).toContain('ChatGPT subscription');
+		});
+	});
+
+	describe('handleSuccessResponse', () => {
+		it('logs warning when Deprecation header is present', async () => {
+			const warnSpy = vi.spyOn(loggerModule, 'logWarn');
+			const headers = new Headers({ 'Deprecation': 'true' });
+			const response = new Response('{}', { status: 200, headers });
+			
+			await handleSuccessResponse(response, false);
+			
+			expect(warnSpy).toHaveBeenCalledWith('API deprecation notice', { deprecation: 'true', sunset: null });
+		});
+
+		it('logs warning when Sunset header is present', async () => {
+			const warnSpy = vi.spyOn(loggerModule, 'logWarn');
+			const headers = new Headers({ 'Sunset': 'Sat, 01 Jan 2030 00:00:00 GMT' });
+			const response = new Response('{}', { status: 200, headers });
+			
+			await handleSuccessResponse(response, false);
+			
+			expect(warnSpy).toHaveBeenCalledWith('API deprecation notice', { deprecation: null, sunset: 'Sat, 01 Jan 2030 00:00:00 GMT' });
+		});
+
+		it('does not log warning when no deprecation headers present', async () => {
+			const warnSpy = vi.spyOn(loggerModule, 'logWarn');
+			const response = new Response('{}', { status: 200 });
+			
+			await handleSuccessResponse(response, false);
+			
+			expect(warnSpy).not.toHaveBeenCalled();
+		});
+
+		it('returns stream as-is for streaming requests', async () => {
+			const response = new Response('stream body', { status: 200 });
+			
+			const result = await handleSuccessResponse(response, true);
+			
+			expect(result.status).toBe(200);
+			const text = await result.text();
+			expect(text).toBe('stream body');
+		});
+	});
+
+	describe('handleErrorResponse error normalization', () => {
+		it('extracts nested error.message', async () => {
+			const body = { error: { message: 'nested error message', type: 'test_type', code: 'test_code' } };
+			const response = new Response(JSON.stringify(body), { status: 500 });
+			
+			const { response: result } = await handleErrorResponse(response);
+			const json = await result.json() as { error: { message: string; type?: string; code?: string } };
+			
+			expect(json.error.message).toBe('nested error message');
+			expect(json.error.type).toBe('test_type');
+			expect(json.error.code).toBe('test_code');
+		});
+
+		it('extracts top-level message', async () => {
+			const body = { message: 'top-level message' };
+			const response = new Response(JSON.stringify(body), { status: 500 });
+			
+			const { response: result } = await handleErrorResponse(response);
+			const json = await result.json() as { error: { message: string } };
+			
+			expect(json.error.message).toBe('top-level message');
+		});
+
+		it('uses trimmed body text when JSON parses to non-record (line 463 coverage)', async () => {
+			const response = new Response('"just a string"', { status: 500 });
+			
+			const { response: result } = await handleErrorResponse(response);
+			const json = await result.json() as { error: { message: string } };
+			
+			expect(json.error.message).toBe('"just a string"');
+		});
+
+		it('uses body text when no structured error', async () => {
+			const response = new Response('plain text error', { status: 500 });
+			
+			const { response: result } = await handleErrorResponse(response);
+			const json = await result.json() as { error: { message: string } };
+			
+			expect(json.error.message).toBe('plain text error');
+		});
+
+		it('uses statusText when body is empty', async () => {
+			const response = new Response('', { status: 500, statusText: 'Internal Server Error' });
+			
+			const { response: result } = await handleErrorResponse(response);
+			const json = await result.json() as { error: { message: string } };
+			
+			expect(json.error.message).toBe('Internal Server Error');
+		});
+
+	it('uses fallback message when everything is empty', async () => {
+		const response = new Response('', { status: 500, statusText: '' });
+		
+		const { response: result } = await handleErrorResponse(response);
+		const json = await result.json() as { error: { message: string } };
+		
+		expect(json.error.message).toBe('Request failed');
+	});
+
+		it('handles numeric error codes', async () => {
+			const body = { error: { message: 'error', code: 12345 } };
+			const response = new Response(JSON.stringify(body), { status: 500 });
+			
+			const { response: result } = await handleErrorResponse(response);
+			const json = await result.json() as { error: { code?: string | number } };
+			
+			expect(json.error.code).toBe(12345);
+		});
+	});
+
+	describe('handleErrorResponse edge cases', () => {
+		it('handles 404 with non-JSON body containing usage limit text', async () => {
+			const response = new Response('usage limit exceeded - please try again', { status: 404 });
+			
+			const { response: result, rateLimit } = await handleErrorResponse(response);
+			
+			expect(result.status).toBe(429);
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('handles 429 with entitlement error code (should not be rate limit)', async () => {
+			const body = { error: { code: 'usage_not_included', message: 'Not included' } };
+			const response = new Response(JSON.stringify(body), { status: 429 });
+			
+			const { response: result, rateLimit } = await handleErrorResponse(response);
+			
+			expect(result.status).toBe(429);
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it('handles 429 with entitlement text pattern (should not be rate limit)', async () => {
+			const body = { error: { message: 'Usage not included in your plan' } };
+			const response = new Response(JSON.stringify(body), { status: 429 });
+			
+			const { response: result, rateLimit } = await handleErrorResponse(response);
+			
+			expect(result.status).toBe(429);
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it('handles Response that throws on clone (safeReadBody catch)', async () => {
+			const response = new Response('test', { status: 500 });
+			const originalClone = response.clone.bind(response);
+			let cloneCallCount = 0;
+			response.clone = () => {
+				cloneCallCount++;
+				if (cloneCallCount === 1) {
+					throw new Error('Clone failed');
+				}
+				return originalClone();
+			};
+			
+			const { response: result } = await handleErrorResponse(response);
+			
+			expect(result.status).toBe(500);
+			const json = await result.json() as { error: { message: string } };
+			expect(json.error.message).toBe('Request failed');
+		});
+	});
+
+	describe('handleErrorResponse rate limit parsing', () => {
+	it('parses retryAfterMs from body', async () => {
+		const body = { error: { message: 'rate limited', retry_after_ms: 5000 } };
+		const response = new Response(JSON.stringify(body), { status: 429 });
+		
+		const { rateLimit } = await handleErrorResponse(response);
+		
+		expect(rateLimit).toBeDefined();
+		expect(rateLimit?.retryAfterMs).toBe(5000);
+	});
+
+		it('parses retry-after-ms header', async () => {
+			const headers = new Headers({ 'retry-after-ms': '3000' });
+			const response = new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429, headers });
+			
+			const { rateLimit } = await handleErrorResponse(response);
+			
+			expect(rateLimit).toBeDefined();
+			expect(rateLimit?.retryAfterMs).toBe(3000);
+		});
+
+		it('parses retry-after header (seconds)', async () => {
+			const headers = new Headers({ 'retry-after': '10' });
+			const response = new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429, headers });
+			
+			const { rateLimit } = await handleErrorResponse(response);
+			
+			expect(rateLimit).toBeDefined();
+			expect(rateLimit?.retryAfterMs).toBe(10000);
+		});
+
+		it('parses x-ratelimit-reset header (unix timestamp)', async () => {
+			const futureTimestamp = Math.floor(Date.now() / 1000) + 60;
+			const headers = new Headers({ 'x-ratelimit-reset': String(futureTimestamp) });
+			const response = new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429, headers });
+			
+			const { rateLimit } = await handleErrorResponse(response);
+			
+			expect(rateLimit).toBeDefined();
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+			expect(rateLimit?.retryAfterMs).toBeLessThanOrEqual(60000);
+		});
+
+		it('parses resetsAt from body', async () => {
+			const futureTimestamp = Math.floor(Date.now() / 1000) + 30;
+			const body = { error: { message: 'rate limited' }, resetsAt: futureTimestamp };
+			const response = new Response(JSON.stringify(body), { status: 429 });
+			
+			const { rateLimit } = await handleErrorResponse(response);
+			
+			expect(rateLimit).toBeDefined();
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
+
+	it('normalizes small retryAfterMs values as seconds', async () => {
+		const body = { error: { message: 'rate limited', retry_after_ms: 5 } };
+		const response = new Response(JSON.stringify(body), { status: 429 });
+		
+		const { rateLimit } = await handleErrorResponse(response);
+		
+		expect(rateLimit?.retryAfterMs).toBe(5000);
+	});
+
+	it('caps retryAfterMs at 5 minutes', async () => {
+		const body = { error: { message: 'rate limited', retry_after_ms: 600000 } };
+		const response = new Response(JSON.stringify(body), { status: 429 });
+		
+		const { rateLimit } = await handleErrorResponse(response);
+		
+		expect(rateLimit?.retryAfterMs).toBe(300000);
+	});
+
+	it('handles invalid retry-after header with default fallback', async () => {
+		const headers = new Headers({ 'retry-after': 'invalid' });
+		const response = new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429, headers });
+		
+		const { rateLimit } = await handleErrorResponse(response);
+		
+		expect(rateLimit?.retryAfterMs).toBe(60000);
+	});
+
+		it('handles millisecond unix timestamp in reset header', async () => {
+			const futureTimestampMs = Date.now() + 45000;
+			const headers = new Headers({ 'x-ratelimit-reset': String(futureTimestampMs) });
+			const response = new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429, headers });
+			
+			const { rateLimit } = await handleErrorResponse(response);
+			
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+		});
+
+		it('parses resetsAt in milliseconds format from body (already in ms)', async () => {
+			const futureTimestampMs = Date.now() + 30000;
+			const body = { error: { message: 'rate limited', resets_at: futureTimestampMs } };
+			const response = new Response(JSON.stringify(body), { status: 429 });
+			
+			const { rateLimit } = await handleErrorResponse(response);
+			
+			expect(rateLimit).toBeDefined();
+			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
+			expect(rateLimit?.retryAfterMs).toBeLessThanOrEqual(30000);
+		});
+
+		it('handles resetsAt in the past (delta <= 0)', async () => {
+			const pastTimestamp = Math.floor(Date.now() / 1000) - 60;
+			const body = { error: { message: 'rate limited', resets_at: pastTimestamp } };
+			const response = new Response(JSON.stringify(body), { status: 429 });
+			
+			const { rateLimit } = await handleErrorResponse(response);
+			
+			expect(rateLimit?.retryAfterMs).toBe(60000);
+		});
+
+		it('falls back to statusText when body is empty', async () => {
+			const response = new Response('', { status: 500, statusText: 'Internal Server Error' });
+			
+			const { response: errorResponse } = await handleErrorResponse(response);
+			const json = await errorResponse.json() as { error: { message: string } };
+			
+			expect(json.error.message).toBe('Internal Server Error');
+		});
+
+		it('falls back to default message when body and statusText are empty', async () => {
+			const response = new Response('', { status: 500, statusText: '' });
+			
+			const { response: errorResponse } = await handleErrorResponse(response);
+			const json = await errorResponse.json() as { error: { message: string } };
+			
+			expect(json.error.message).toBe('Request failed');
+		});
+	});
+
+	describe('transformRequestForCodex', () => {
+		it('returns undefined when init is undefined (line 166 coverage)', async () => {
+			const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+			const result = await transformRequestForCodex(undefined, 'https://example.com', { global: {}, models: {} });
+			expect(result).toBeUndefined();
+		});
+
+		it('returns undefined when init.body is undefined (line 166 coverage)', async () => {
+			const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+			const result = await transformRequestForCodex({}, 'https://example.com', { global: {}, models: {} });
+			expect(result).toBeUndefined();
+		});
+
+		it('returns undefined when init.body is not a string (line 167 coverage)', async () => {
+			const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+			const result = await transformRequestForCodex(
+				{ body: new Blob(['test']) as unknown as BodyInit },
+				'https://example.com',
+				{ global: {}, models: {} }
+			);
+			expect(result).toBeUndefined();
+		});
+
+		it('returns undefined and logs error when JSON parsing fails (line 220-222 coverage)', async () => {
+			const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+			const result = await transformRequestForCodex(
+				{ body: 'not valid json {{{' },
+				'https://example.com',
+				{ global: {}, models: {} }
+			);
+			expect(result).toBeUndefined();
+		});
+
+		it('transforms request body successfully (lines 194-202 coverage)', async () => {
+			const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+			const requestBody = { model: 'gpt-5.1', input: 'Hello' };
+			const result = await transformRequestForCodex(
+				{ body: JSON.stringify(requestBody) },
+				'https://example.com',
+				{ global: {}, models: {} }
+			);
+			expect(result).toBeDefined();
+			expect(result?.body).toBeDefined();
+			expect(result?.body.model).toBe('gpt-5.1');
+			expect(result?.updatedInit).toBeDefined();
 		});
 	});
 });

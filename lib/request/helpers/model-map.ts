@@ -94,12 +94,10 @@ export const MODEL_MAP: Record<string, string> = {
  */
 export function getNormalizedModel(modelId: string): string | undefined {
 	try {
-		// Try direct lookup first
-		if (MODEL_MAP[modelId]) {
+		if (Object.hasOwn(MODEL_MAP, modelId)) {
 			return MODEL_MAP[modelId];
 		}
 
-		// Try case-insensitive lookup
 		const lowerModelId = modelId.toLowerCase();
 		const match = Object.keys(MODEL_MAP).find(
 			(key) => key.toLowerCase() === lowerModelId,

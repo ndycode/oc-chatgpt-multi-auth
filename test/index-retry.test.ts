@@ -78,6 +78,12 @@ vi.mock("../lib/accounts.js", () => {
 
 		markRateLimited() {}
 
+		markRateLimitedWithReason() {}
+
+		consumeToken() { return true; }
+
+		refundToken() {}
+
 		markSwitched() {}
 
 		getMinWaitTimeForFamily() {
@@ -99,6 +105,7 @@ vi.mock("../lib/accounts.js", () => {
 		formatCooldown: (ms: number) => `${ms}ms`,
 		formatWaitTime: (ms: number) => `${ms}ms`,
 		sanitizeEmail: (email: string) => email,
+		parseRateLimitReason: () => "unknown",
 	};
 });
 

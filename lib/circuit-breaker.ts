@@ -125,11 +125,17 @@ export class CircuitBreaker {
 	}
 }
 
+const MAX_CIRCUIT_BREAKERS = 100;
 const circuitBreakers = new Map<string, CircuitBreaker>();
 
 export function getCircuitBreaker(key: string, config?: Partial<CircuitBreakerConfig>): CircuitBreaker {
 	let breaker = circuitBreakers.get(key);
 	if (!breaker) {
+		if (circuitBreakers.size >= MAX_CIRCUIT_BREAKERS) {
+			const firstKey = circuitBreakers.keys().next().value;
+			// istanbul ignore next -- defensive: firstKey always exists when size >= MAX_CIRCUIT_BREAKERS
+			if (firstKey) circuitBreakers.delete(firstKey);
+		}
 		breaker = new CircuitBreaker(config);
 		circuitBreakers.set(key, breaker);
 	}

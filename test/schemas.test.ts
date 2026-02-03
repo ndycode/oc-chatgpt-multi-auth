@@ -442,4 +442,10 @@ describe("getValidationErrors", () => {
 		expect(errors.length).toBeGreaterThan(0);
 		expect(errors.some((e) => e.includes("accounts") || e.includes("refreshToken"))).toBe(true);
 	});
+
+	it("returns error without path prefix when path is empty (line 286 coverage)", () => {
+		const errors = getValidationErrors(PluginConfigSchema, "not-an-object");
+		expect(errors.length).toBeGreaterThan(0);
+		expect(errors[0]).not.toMatch(/^[a-zA-Z0-9_.]+: /);
+	});
 });

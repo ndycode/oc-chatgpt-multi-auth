@@ -21,6 +21,8 @@ export const PluginConfigSchema = z.object({
 	perProjectAccounts: z.boolean().optional(),
 	sessionRecovery: z.boolean().optional(),
 	autoResume: z.boolean().optional(),
+	parallelProbing: z.boolean().optional(),
+	parallelProbingMaxConcurrency: z.number().min(1).max(5).optional(),
 });
 
 export type PluginConfigFromSchema = z.infer<typeof PluginConfigSchema>;

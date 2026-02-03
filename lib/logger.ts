@@ -151,7 +151,7 @@ function logToApp(
 	const appLog = client?.app?.log;
 	if (!appLog) return;
 
-	const sanitizedMessage = maskString(message);
+	const sanitizedMessage = maskString(message).replace(/[\r\n]+/g, " ");
 	const sanitizedData = data === undefined ? undefined : sanitizeValue(data);
 	const correlationId = currentCorrelationId;
 	const extraData: Record<string, unknown> = {};
@@ -231,7 +231,7 @@ export function logRequest(stage: string, data: Record<string, unknown>): void {
 	if (!LOGGING_ENABLED) return;
 
 	if (!existsSync(LOG_DIR)) {
-		mkdirSync(LOG_DIR, { recursive: true });
+		mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
 	}
 
 	const timestamp = new Date().toISOString();
@@ -254,7 +254,7 @@ export function logRequest(stage: string, data: Record<string, unknown>): void {
 				null,
 				2,
 			),
-			"utf8",
+			{ encoding: "utf8", mode: 0o600 },
 		);
 		logToApp("info", `Logged ${stage} to ${filename}`);
 		logToConsole("info", `[${PLUGIN_NAME}] Logged ${stage} to ${filename}`);
@@ -303,6 +303,7 @@ export interface ScopedLogger {
 	timeEnd(label: string, startTime: number): void;
 }
 
+const MAX_TIMERS = 100;
 const timers: Map<string, number> = new Map();
 
 export function createLogger(scope: string): ScopedLogger {
@@ -336,6 +337,11 @@ export function createLogger(scope: string): ScopedLogger {
 		time(label: string): () => number {
 			const key = `${scope}:${label}`;
 			const startTime = performance.now();
+		if (timers.size >= MAX_TIMERS) {
+			const firstKey = timers.keys().next().value;
+			// istanbul ignore next -- defensive: firstKey always exists when size >= MAX_TIMERS
+			if (firstKey) timers.delete(firstKey);
+		}
 			timers.set(key, startTime);
 			return () => {
 				const endTime = performance.now();

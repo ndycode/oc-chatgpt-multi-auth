@@ -38,6 +38,7 @@ const replaceContentText = (item: InputItem, contentText: string): InputItem => 
 			content: [{ type: "input_text", text: contentText }],
 		};
 	}
+	// istanbul ignore next -- only called after getContentText returns non-empty (string/array content)
 	return { ...item, content: contentText };
 };
 

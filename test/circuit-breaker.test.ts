@@ -4,6 +4,8 @@ import {
   CircuitOpenError,
   DEFAULT_CIRCUIT_BREAKER_CONFIG,
   getCircuitBreaker,
+  resetAllCircuitBreakers,
+  clearCircuitBreakers,
 } from "../lib/circuit-breaker.js";
 
 describe("Circuit breaker", () => {
@@ -159,5 +161,76 @@ describe("Circuit breaker", () => {
     const first = getCircuitBreaker("alpha");
     const second = getCircuitBreaker("beta");
     expect(first).not.toBe(second);
+  });
+
+  it("evicts oldest entry when max circuit breakers exceeded", () => {
+    clearCircuitBreakers();
+    for (let i = 0; i < 100; i++) {
+      getCircuitBreaker(`key-${i}`);
+    }
+    const firstBreaker = getCircuitBreaker("key-0");
+    getCircuitBreaker("new-key-101");
+    const refetchedFirst = getCircuitBreaker("key-0");
+    expect(refetchedFirst).not.toBe(firstBreaker);
+  });
+
+  it("resetAllCircuitBreakers resets all breakers to closed", () => {
+    clearCircuitBreakers();
+    const breaker1 = getCircuitBreaker("reset-test-1");
+    const breaker2 = getCircuitBreaker("reset-test-2");
+    breaker1.recordFailure();
+    breaker1.recordFailure();
+    breaker1.recordFailure();
+    breaker2.recordFailure();
+    breaker2.recordFailure();
+    breaker2.recordFailure();
+    expect(breaker1.getState()).toBe("open");
+    expect(breaker2.getState()).toBe("open");
+    resetAllCircuitBreakers();
+    expect(breaker1.getState()).toBe("closed");
+    expect(breaker2.getState()).toBe("closed");
+  });
+
+  it("clearCircuitBreakers removes all breakers", () => {
+    const breaker = getCircuitBreaker("clear-test");
+    breaker.recordFailure();
+    clearCircuitBreakers();
+    const newBreaker = getCircuitBreaker("clear-test");
+    expect(newBreaker.getFailureCount()).toBe(0);
+  });
+
+  it("getFailureCount returns pruned failure count", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    expect(breaker.getFailureCount()).toBe(2);
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.failureWindowMs + 1));
+    expect(breaker.getFailureCount()).toBe(0);
+  });
+
+  it("getTimeUntilReset returns 0 when not open", () => {
+    const breaker = new CircuitBreaker();
+    expect(breaker.getTimeUntilReset()).toBe(0);
+    breaker.recordFailure();
+    expect(breaker.getTimeUntilReset()).toBe(0);
+  });
+
+  it("getTimeUntilReset returns remaining time when open", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    expect(breaker.getState()).toBe("open");
+    vi.setSystemTime(new Date(10000));
+    expect(breaker.getTimeUntilReset()).toBe(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs - 10000);
+  });
+
+  it("getTimeUntilReset returns 0 when reset timeout elapsed", () => {
+    const breaker = new CircuitBreaker();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    vi.setSystemTime(new Date(DEFAULT_CIRCUIT_BREAKER_CONFIG.resetTimeoutMs + 1000));
+    expect(breaker.getTimeUntilReset()).toBe(0);
   });
 });

@@ -33,6 +33,15 @@ function normalizeDelayMs(value: number | null | undefined, fallback: number): n
 	return Math.max(0, Math.floor(candidate));
 }
 
+function pruneStaleRateLimitState(): void {
+	const now = Date.now();
+	for (const [key, state] of rateLimitStateByAccountQuota) {
+		if (now - state.lastAt > RATE_LIMIT_STATE_RESET_MS) {
+			rateLimitStateByAccountQuota.delete(key);
+		}
+	}
+}
+
 /**
  * Compute rate-limit backoff for an account+quota key.
  */
@@ -41,6 +50,7 @@ export function getRateLimitBackoff(
 	quotaKey: string,
 	serverRetryAfterMs: number | null | undefined,
 ): RateLimitBackoffResult {
+	pruneStaleRateLimitState();
 	const now = Date.now();
 	const stateKey = `${accountIndex}:${quotaKey}`;
 	const previous = rateLimitStateByAccountQuota.get(stateKey);

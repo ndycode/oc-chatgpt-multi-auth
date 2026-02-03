@@ -9,6 +9,14 @@ import { join } from "node:path";
 import { MESSAGE_STORAGE, PART_STORAGE, THINKING_TYPES, META_TYPES } from "./constants.js";
 import type { StoredMessageMeta, StoredPart, StoredTextPart } from "./types.js";
 
+const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+function validatePathId(id: string, name: string): void {
+  if (!SAFE_ID_PATTERN.test(id)) {
+    throw new Error(`Invalid ${name}: contains unsafe characters`);
+  }
+}
+
 // =============================================================================
 // ID Generation
 // =============================================================================
@@ -24,6 +32,7 @@ export function generatePartId(): string {
 // =============================================================================
 
 export function getMessageDir(sessionID: string): string {
+  validatePathId(sessionID, "sessionID");
   if (!existsSync(MESSAGE_STORAGE)) return "";
 
   const directPath = join(MESSAGE_STORAGE, sessionID);
@@ -82,6 +91,7 @@ export function readMessages(sessionID: string): StoredMessageMeta[] {
 // =============================================================================
 
 export function readParts(messageID: string): StoredPart[] {
+  validatePathId(messageID, "messageID");
   const partDir = join(PART_STORAGE, messageID);
   if (!existsSync(partDir)) return [];
 
@@ -154,7 +164,7 @@ export function injectTextPart(sessionID: string, messageID: string, text: strin
       synthetic: true,
     };
 
-    writeFileSync(join(partDir, `${partId}.json`), JSON.stringify(part, null, 2));
+    writeFileSync(join(partDir, `${partId}.json`), JSON.stringify(part, null, 2), { mode: 0o600 });
     return true;
   } catch {
     return false;
@@ -248,7 +258,7 @@ export function prependThinkingPart(sessionID: string, messageID: string): boole
       synthetic: true,
     };
 
-    writeFileSync(join(partDir, `${partId}.json`), JSON.stringify(part, null, 2));
+    writeFileSync(join(partDir, `${partId}.json`), JSON.stringify(part, null, 2), { mode: 0o600 });
     return true;
   } catch {
     return false;
@@ -361,7 +371,7 @@ export function replaceEmptyTextParts(messageID: string, replacementText: string
           if (!textPart.text?.trim()) {
             textPart.text = replacementText;
             textPart.synthetic = true;
-            writeFileSync(filePath, JSON.stringify(textPart, null, 2));
+            writeFileSync(filePath, JSON.stringify(textPart, null, 2), { mode: 0o600 });
             anyReplaced = true;
           }
         }

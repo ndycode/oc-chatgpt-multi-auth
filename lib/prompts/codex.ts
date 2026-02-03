@@ -15,7 +15,25 @@ const CACHE_TTL_MS = 15 * 60 * 1000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const MAX_CACHE_SIZE = 50;
 const memoryCache = new Map<string, { content: string; timestamp: number }>();
+
+/**
+ * Clear the memory cache - exposed for testing
+ * @internal
+ */
+export function __clearCacheForTesting(): void {
+	memoryCache.clear();
+}
+
+function setCacheEntry(key: string, value: { content: string; timestamp: number }): void {
+	if (memoryCache.size >= MAX_CACHE_SIZE && !memoryCache.has(key)) {
+		const firstKey = memoryCache.keys().next().value;
+		// istanbul ignore next -- defensive: firstKey always exists when size >= MAX_CACHE_SIZE
+		if (firstKey) memoryCache.delete(firstKey);
+	}
+	memoryCache.set(key, value);
+}
 
 /**
  * Model family type for prompt selection
@@ -186,7 +204,7 @@ export async function getCodexInstructions(
 		) {
 			const diskContent = await readFileOrNull(cacheFile);
 			if (diskContent) {
-				memoryCache.set(modelFamily, { content: diskContent, timestamp: Date.now() });
+				setCacheEntry(modelFamily, { content: diskContent, timestamp: Date.now() });
 				return diskContent;
 			}
 		}
@@ -208,7 +226,7 @@ export async function getCodexInstructions(
 		if (response.status === 304) {
 			const diskContent = await readFileOrNull(cacheFile);
 			if (diskContent) {
-				memoryCache.set(modelFamily, { content: diskContent, timestamp: Date.now() });
+				setCacheEntry(modelFamily, { content: diskContent, timestamp: Date.now() });
 				return diskContent;
 			}
 		}
@@ -230,7 +248,7 @@ export async function getCodexInstructions(
 				"utf8",
 			);
 
-			memoryCache.set(modelFamily, { content: instructions, timestamp: Date.now() });
+			setCacheEntry(modelFamily, { content: instructions, timestamp: Date.now() });
 			return instructions;
 		}
 
@@ -244,13 +262,13 @@ export async function getCodexInstructions(
 		const diskContent = await readFileOrNull(cacheFile);
 		if (diskContent) {
 			logWarn(`Using cached ${modelFamily} instructions`);
-			memoryCache.set(modelFamily, { content: diskContent, timestamp: Date.now() });
+			setCacheEntry(modelFamily, { content: diskContent, timestamp: Date.now() });
 			return diskContent;
 		}
 
 		logWarn(`Falling back to bundled instructions for ${modelFamily}`);
 		const bundled = await fs.readFile(join(__dirname, "codex-instructions.md"), "utf8");
-		memoryCache.set(modelFamily, { content: bundled, timestamp: Date.now() });
+		setCacheEntry(modelFamily, { content: bundled, timestamp: Date.now() });
 		return bundled;
 	}
 }

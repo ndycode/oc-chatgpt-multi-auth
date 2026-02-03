@@ -34,6 +34,31 @@ describe("Audit logging", () => {
 		}
 	});
 
+	describe("ensureLogDir (line 68 coverage)", () => {
+		it("should create log directory if it does not exist", () => {
+			const newLogDir = join(tmpdir(), `audit-test-new-${Date.now()}`);
+			if (existsSync(newLogDir)) {
+				rmSync(newLogDir, { recursive: true });
+			}
+			
+			configureAudit({
+				enabled: true,
+				logDir: newLogDir,
+			});
+			
+			auditLog(
+				AuditAction.ACCOUNT_ADD,
+				"test-actor",
+				"test-resource",
+				AuditOutcome.SUCCESS
+			);
+			
+			expect(existsSync(newLogDir)).toBe(true);
+			
+			rmSync(newLogDir, { recursive: true });
+		});
+	});
+
 	describe("configureAudit", () => {
 		it("should update audit configuration", () => {
 			configureAudit({ enabled: false });
@@ -117,6 +142,45 @@ describe("Audit logging", () => {
 
 			expect(entry.actor).not.toContain("user@example.com");
 			expect(entry.actor).toContain("***");
+		});
+
+		it("should mask email addresses in metadata values (line 112 coverage)", () => {
+			auditLog(
+				AuditAction.ACCOUNT_ADD,
+				"actor",
+				"account",
+				AuditOutcome.SUCCESS,
+				{ userEmail: "test@example.org" }
+			);
+
+			const logPath = getAuditLogPath();
+			const content = readFileSync(logPath, "utf8");
+			const entry = JSON.parse(content.trim());
+
+			expect(entry.metadata.userEmail).not.toContain("test@example.org");
+			expect(entry.metadata.userEmail).toContain("***");
+		});
+
+		it("should recursively sanitize nested object metadata (line 114 coverage)", () => {
+			auditLog(
+				AuditAction.ACCOUNT_ADD,
+				"actor",
+				"account",
+				AuditOutcome.SUCCESS,
+				{ 
+					nested: { 
+						secretToken: "hidden-value",
+						email: "nested@example.com"
+					}
+				}
+			);
+
+			const logPath = getAuditLogPath();
+			const content = readFileSync(logPath, "utf8");
+			const entry = JSON.parse(content.trim());
+
+			expect(entry.metadata.nested.secretToken).toBe("***REDACTED***");
+			expect(entry.metadata.nested.email).toContain("***");
 		});
 
 		it("should not write when disabled", () => {

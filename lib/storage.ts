@@ -1,11 +1,21 @@
 import { promises as fs, existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
-import { homedir } from "node:os";
 import { createLogger } from "./logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
-import type { AccountIdSource } from "./types.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
+import { getConfigDir, getProjectConfigDir, findProjectRoot, resolvePath } from "./storage/paths.js";
+import {
+  migrateV1ToV3,
+  type CooldownReason,
+  type RateLimitStateV3,
+  type AccountMetadataV1,
+  type AccountStorageV1,
+  type AccountMetadataV3,
+  type AccountStorageV3,
+} from "./storage/migrations.js";
+
+export type { CooldownReason, RateLimitStateV3, AccountMetadataV1, AccountStorageV1, AccountMetadataV3, AccountStorageV3 };
 
 const log = createLogger("storage");
 
@@ -17,8 +27,8 @@ export class StorageError extends Error {
   readonly path: string;
   readonly hint: string;
 
-  constructor(message: string, code: string, path: string, hint: string) {
-    super(message);
+  constructor(message: string, code: string, path: string, hint: string, cause?: Error) {
+    super(message, { cause });
     this.name = "StorageError";
     this.code = code;
     this.path = path;
@@ -64,53 +74,6 @@ function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
   return previousMutex.then(fn).finally(() => releaseLock());
 }
 
-export type CooldownReason = "auth-failure" | "network-error";
-
-export interface RateLimitStateV3 {
-  [key: string]: number | undefined;
-}
-
-export interface AccountMetadataV1 {
-  accountId?: string;
-  accountIdSource?: AccountIdSource;
-  accountLabel?: string;
-  email?: string;
-  refreshToken: string;
-  addedAt: number;
-  lastUsed: number;
-  lastSwitchReason?: "rate-limit" | "initial" | "rotation";
-  rateLimitResetTime?: number;
-  coolingDownUntil?: number;
-  cooldownReason?: CooldownReason;
-}
-
-export interface AccountStorageV1 {
-  version: 1;
-  accounts: AccountMetadataV1[];
-  activeIndex: number;
-}
-
-export interface AccountMetadataV3 {
-  accountId?: string;
-  accountIdSource?: AccountIdSource;
-  accountLabel?: string;
-  email?: string;
-  refreshToken: string;
-  addedAt: number;
-  lastUsed: number;
-  lastSwitchReason?: "rate-limit" | "initial" | "rotation";
-  rateLimitResetTimes?: RateLimitStateV3;
-  coolingDownUntil?: number;
-  cooldownReason?: CooldownReason;
-}
-
-export interface AccountStorageV3 {
-  version: 3;
-  accounts: AccountMetadataV3[];
-  activeIndex: number;
-  activeIndexByFamily?: Partial<Record<ModelFamily, number>>;
-}
-
 type AnyAccountStorage = AccountStorageV1 | AccountStorageV3;
 
 type AccountLike = {
@@ -120,14 +83,6 @@ type AccountLike = {
   addedAt?: number;
   lastUsed?: number;
 };
-
-function getConfigDir(): string {
-  return join(homedir(), ".opencode");
-}
-
-function getProjectConfigDir(projectPath: string): string {
-  return join(projectPath, ".opencode");
-}
 
 async function ensureGitignore(storagePath: string): Promise<void> {
   if (!currentStoragePath) return;
@@ -157,36 +112,6 @@ async function ensureGitignore(storagePath: string): Promise<void> {
   }
 }
 
-const PROJECT_MARKERS = [".git", "package.json", "Cargo.toml", "go.mod", "pyproject.toml", ".opencode"];
-
-function isProjectDirectory(dir: string): boolean {
-  return PROJECT_MARKERS.some((marker) => existsSync(join(dir, marker)));
-}
-
-/**
- * Walk up the directory tree to find the nearest project root.
- * Returns the first directory containing a project marker, or null if none found.
- */
-function findProjectRoot(startDir: string): string | null {
-  let current = startDir;
-  const root = dirname(current) === current ? current : null;
-  
-  while (current) {
-    if (isProjectDirectory(current)) {
-      return current;
-    }
-    
-    const parent = dirname(current);
-    // Reached filesystem root
-    if (parent === current) {
-      break;
-    }
-    current = parent;
-  }
-  
-  return root && isProjectDirectory(root) ? root : null;
-}
-
 let currentStoragePath: string | null = null;
 
 export function setStoragePath(projectPath: string | null): void {
@@ -203,6 +128,10 @@ export function setStoragePath(projectPath: string | null): void {
   }
 }
 
+export function setStoragePathDirect(path: string | null): void {
+  currentStoragePath = path;
+}
+
 /**
  * Returns the file path for the account storage JSON file.
  * @returns Absolute path to the accounts.json file
@@ -212,10 +141,6 @@ export function getStoragePath(): string {
     return currentStoragePath;
   }
   return join(getConfigDir(), "openai-codex-accounts.json");
-}
-
-function nowMs(): number {
-  return Date.now();
 }
 
 function selectNewestAccount<T extends AccountLike>(
@@ -308,6 +233,7 @@ export function deduplicateAccountsByEmail<T extends { email?: string; lastUsed?
     }
 
     const existing = accounts[existingIndex];
+    // istanbul ignore next -- defensive code: existingIndex always refers to valid account
     if (!existing) {
       emailToNewestIndex.set(email, i);
       continue;
@@ -368,42 +294,6 @@ function extractActiveKey(accounts: unknown[], activeIndex: number): string | un
       : undefined;
 
   return accountId || refreshToken;
-}
-
-function migrateV1ToV3(v1: AccountStorageV1): AccountStorageV3 {
-  const now = nowMs();
-  return {
-    version: 3,
-    accounts: v1.accounts.map((account) => {
-      const rateLimitResetTimes: RateLimitStateV3 = {};
-      if (typeof account.rateLimitResetTime === "number" && account.rateLimitResetTime > now) {
-        for (const family of MODEL_FAMILIES) {
-          rateLimitResetTimes[family] = account.rateLimitResetTime;
-        }
-      }
-      return {
-        accountId: account.accountId,
-        accountIdSource: account.accountIdSource,
-        accountLabel: account.accountLabel,
-        email: account.email,
-        refreshToken: account.refreshToken,
-        addedAt: account.addedAt,
-        lastUsed: account.lastUsed,
-        lastSwitchReason: account.lastSwitchReason,
-        rateLimitResetTimes: Object.keys(rateLimitResetTimes).length > 0 ? rateLimitResetTimes : undefined,
-        coolingDownUntil: account.coolingDownUntil,
-        cooldownReason: account.cooldownReason,
-      };
-    }),
-    activeIndex: v1.activeIndex,
-    activeIndexByFamily: {
-      "gpt-5.2-codex": v1.activeIndex,
-      "codex-max": v1.activeIndex,
-      codex: v1.activeIndex,
-      "gpt-5.2": v1.activeIndex,
-      "gpt-5.1": v1.activeIndex,
-    },
-  };
 }
 
 /**
@@ -552,14 +442,15 @@ export async function loadAccounts(): Promise<AccountStorageV3 | null> {
 export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
   return withStorageLock(async () => {
     const path = getStoragePath();
-    const tempPath = `${path}.${Date.now()}.tmp`;
+    const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+    const tempPath = `${path}.${uniqueSuffix}.tmp`;
 
     try {
       await fs.mkdir(dirname(path), { recursive: true });
       await ensureGitignore(path);
 
       const content = JSON.stringify(storage, null, 2);
-      await fs.writeFile(tempPath, content, "utf-8");
+      await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
 
       const stats = await fs.stat(tempPath);
       if (stats.size === 0) {
@@ -567,7 +458,23 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
         throw emptyError;
       }
 
-      await fs.rename(tempPath, path);
+      // Retry rename with exponential backoff for Windows EPERM/EBUSY
+      let lastError: NodeJS.ErrnoException | null = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          await fs.rename(tempPath, path);
+          return;
+        } catch (renameError) {
+          const code = (renameError as NodeJS.ErrnoException).code;
+          if (code === "EPERM" || code === "EBUSY") {
+            lastError = renameError as NodeJS.ErrnoException;
+            await new Promise(r => setTimeout(r, 10 * Math.pow(2, attempt)));
+            continue;
+          }
+          throw renameError;
+        }
+      }
+      if (lastError) throw lastError;
     } catch (error) {
       try {
         await fs.unlink(tempPath);
@@ -589,7 +496,8 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
         `Failed to save accounts: ${err?.message || "Unknown error"}`,
         code,
         path,
-        hint
+        hint,
+        err instanceof Error ? err : undefined
       );
     }
   });
@@ -611,16 +519,6 @@ export async function clearAccounts(): Promise<void> {
       }
     }
   });
-}
-
-/**
- * Resolves a file path, expanding tilde to home directory.
- */
-function resolvePath(filePath: string): string {
-  if (filePath.startsWith("~")) {
-    return join(homedir(), filePath.slice(1));
-  }
-  return resolve(filePath);
 }
 
 /**

@@ -234,6 +234,30 @@ describe("proactive-refresh", () => {
 			expect(refreshQueue.queuedRefresh).not.toHaveBeenCalled();
 		});
 
+		it("does not log when all accounts return no_refresh_token (line 171 coverage)", async () => {
+			const accounts = [
+				createMockAccount({
+					index: 0,
+					access: undefined,
+					expires: Date.now() + 60000,
+					refreshToken: "",
+				}),
+				createMockAccount({
+					index: 1,
+					access: undefined,
+					expires: Date.now() + 60000,
+					refreshToken: "",
+				}),
+			];
+
+			const results = await refreshExpiringAccounts(accounts);
+
+			expect(results.size).toBe(2);
+			expect(results.get(0)?.reason).toBe("no_refresh_token");
+			expect(results.get(1)?.reason).toBe("no_refresh_token");
+			expect(refreshQueue.queuedRefresh).not.toHaveBeenCalled();
+		});
+
 		it("refreshes only accounts approaching expiry", async () => {
 			const accounts = [
 				createMockAccount({

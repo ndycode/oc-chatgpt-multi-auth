@@ -22,6 +22,8 @@ const DEFAULT_CONFIG: PluginConfig = {
 	perProjectAccounts: true,
 	sessionRecovery: true,
 	autoResume: true,
+	parallelProbing: false,
+	parallelProbingMaxConcurrency: 2,
 };
 
 /**
@@ -97,6 +99,7 @@ function resolveNumberSetting(
 	if (min !== undefined) {
 		return Math.max(min, candidate);
 	}
+	// istanbul ignore next -- dead code: all callers pass { min: ... }
 	return candidate;
 }
 
@@ -178,5 +181,22 @@ export function getPerProjectAccounts(pluginConfig: PluginConfig): boolean {
 		"CODEX_AUTH_PER_PROJECT_ACCOUNTS",
 		pluginConfig.perProjectAccounts,
 		true,
+	);
+}
+
+export function getParallelProbing(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_PARALLEL_PROBING",
+		pluginConfig.parallelProbing,
+		false,
+	);
+}
+
+export function getParallelProbingMaxConcurrency(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY",
+		pluginConfig.parallelProbingMaxConcurrency,
+		2,
+		{ min: 1 },
 	);
 }

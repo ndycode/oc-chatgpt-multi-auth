@@ -5,11 +5,13 @@
 
 import type { Auth, OpencodeClient } from "@opencode-ai/sdk";
 import { queuedRefresh } from "../refresh-queue.js";
-import { logRequest, logError } from "../logger.js";
+import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
 import { convertSseToJson, ensureContentType } from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
+import { CodexAuthError } from "../errors.js";
+import { isRecord } from "../utils.js";
 import {
         HTTP_STATUS,
         OPENAI_HEADERS,
@@ -101,7 +103,7 @@ export async function refreshAndUpdateToken(
 	const refreshResult = await queuedRefresh(refreshToken);
 
 	if (refreshResult.type === "failed") {
-		throw new Error(ERROR_MESSAGES.TOKEN_REFRESH_FAILED);
+		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: false });
 	}
 
 	await client.auth.set({
@@ -153,6 +155,7 @@ export function rewriteUrlForCodex(url: string): string {
  * @param url - Request URL
  * @param userConfig - User configuration
  * @param codexMode - Enable CODEX_MODE (bridge prompt instead of tool remap)
+ * @param parsedBody - Pre-parsed body to avoid double JSON.parse (optional)
  * @returns Transformed body and updated init, or undefined if no body
  */
 export async function transformRequestForCodex(
@@ -160,11 +163,14 @@ export async function transformRequestForCodex(
 	url: string,
 	userConfig: UserConfig,
 	codexMode = true,
+	parsedBody?: Record<string, unknown>,
 ): Promise<{ body: RequestBody; updatedInit: RequestInit } | undefined> {
 	if (!init?.body) return undefined;
+	if (typeof init.body !== 'string') return undefined;
 
 	try {
-		const body = JSON.parse(init.body as string) as RequestBody;
+		// Use pre-parsed body if provided, otherwise parse from init.body
+		const body = (parsedBody ?? JSON.parse(init.body)) as RequestBody;
 		const originalModel = body.model;
 
 		// Normalize model first to determine which instructions to fetch
@@ -305,6 +311,13 @@ export async function handleSuccessResponse(
     response: Response,
     isStreaming: boolean,
 ): Promise<Response> {
+    // Check for deprecation headers (RFC 8594)
+    const deprecation = response.headers.get("Deprecation");
+    const sunset = response.headers.get("Sunset");
+    if (deprecation || sunset) {
+        logWarn(`API deprecation notice`, { deprecation, sunset });
+    }
+
     const responseHeaders = ensureContentType(response.headers);
 
 	// For non-streaming requests (generateText), convert SSE to JSON
@@ -467,11 +480,7 @@ function ensureJsonErrorResponse(response: Response, payload: ErrorPayload): Res
                 status: response.status,
                 statusText: response.statusText,
                 headers,
-        });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-        return typeof value === "object" && value !== null;
+	});
 }
 
 function parseRetryAfterMs(
@@ -535,10 +544,14 @@ function parseRetryAfterMs(
 
 function normalizeRetryAfter(value: number): number {
         if (!Number.isFinite(value)) return 60000;
+        let ms: number;
         if (value > 0 && value < 1000) {
-                return Math.floor(value * 1000);
+                ms = Math.floor(value * 1000);
+        } else {
+                ms = Math.floor(value);
         }
-        return Math.floor(value);
+        const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+        return Math.min(ms, MAX_RETRY_DELAY_MS);
 }
 
 function toNumber(value: unknown): number | undefined {

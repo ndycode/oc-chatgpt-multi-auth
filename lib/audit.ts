@@ -65,7 +65,7 @@ export function getAuditConfig(): AuditConfig {
 
 function ensureLogDir(): void {
 	if (!existsSync(auditConfig.logDir)) {
-		mkdirSync(auditConfig.logDir, { recursive: true });
+		mkdirSync(auditConfig.logDir, { recursive: true, mode: 0o700 });
 	}
 }
 

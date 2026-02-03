@@ -4,6 +4,8 @@ import type { SSEEventData } from "../types.js";
 
 const log = createLogger("response-handler");
 
+const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
+
 /**
 
  * Parse SSE stream to extract final response
@@ -11,14 +13,21 @@ const log = createLogger("response-handler");
  * @returns Final response object or null if not found
  */
 function parseSseStream(sseText: string): unknown | null {
-	const lines = sseText.split('\n');
+	const lines = sseText.split(/\r?\n/);
 
 	for (const line of lines) {
-		if (line.startsWith('data: ')) {
+		const trimmedLine = line.trim();
+		if (trimmedLine.startsWith('data: ')) {
+			const payload = trimmedLine.substring(6).trim();
+			if (!payload || payload === '[DONE]') continue;
 			try {
-				const data = JSON.parse(line.substring(6)) as SSEEventData;
+				const data = JSON.parse(payload) as SSEEventData;
 
-				// Look for response.done event with final data
+				if (data.type === 'error') {
+					log.error("SSE error event received", { error: data });
+					return null;
+				}
+
 				if (data.type === 'response.done' || data.type === 'response.completed') {
 					return data.response;
 				}
@@ -51,6 +60,9 @@ export async function convertSseToJson(response: Response, headers: Headers): Pr
 			const { done, value } = await reader.read();
 			if (done) break;
 			fullText += decoder.decode(value, { stream: true });
+			if (fullText.length > MAX_SSE_SIZE) {
+				throw new Error(`SSE response exceeds ${MAX_SSE_SIZE} bytes limit`);
+			}
 		}
 
 		if (LOGGING_ENABLED) {
