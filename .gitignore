@@ -16,3 +16,8 @@ Heap-*.heapsnapshot
 .sisyphus/
 coverage/
 winston/
+.tmp-plugin-test/
+.tmp-release-*.md
+task_plan.md
+findings.md
+progress.md

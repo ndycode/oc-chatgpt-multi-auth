@@ -15,6 +15,8 @@ all notable changes to this project. dates are ISO format (YYYY-MM-DD).
 - **request correlation**: each upstream fetch now sets a correlation id, reuses `CODEX_THREAD_ID`/`prompt_cache_key` when available, and clears scope after each request.
 - **plan-mode tool gating**: `request_user_input` is automatically stripped from tool definitions when collaboration mode is Default (kept in Plan mode).
 - **safety prompt hardening**: bridge/remap prompts now explicitly block destructive git commands unless the user asks for them.
+- **gpt-5.2-codex default effort**: default reasoning now prefers `xhigh` when no explicit effort/variant is provided.
+- **gitignore hygiene**: local planning/release scratch artifacts are now ignored to keep working trees clean.
 
 ### fixed
 

@@ -95,6 +95,11 @@
               "reasoningSummary": "detailed",
               "textVerbosity": "medium"
             }
+          },
+          "options": {
+            "reasoningEffort": "xhigh",
+            "reasoningSummary": "detailed",
+            "textVerbosity": "medium"
           }
         },
         "gpt-5.1-codex-max": {

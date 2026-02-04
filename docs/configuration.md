@@ -35,7 +35,7 @@ controls how much thinking the model does.
 | model | supported values |
 |-------|------------------|
 | `gpt-5.2` | none, low, medium, high, xhigh |
-| `gpt-5.2-codex` | low, medium, high, xhigh |
+| `gpt-5.2-codex` | low, medium, high, xhigh (default: xhigh) |
 | `gpt-5.1-codex-max` | low, medium, high, xhigh |
 | `gpt-5.1-codex` | low, medium, high |
 | `gpt-5.1-codex-mini` | medium, high |

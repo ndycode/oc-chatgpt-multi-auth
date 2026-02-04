@@ -317,11 +317,14 @@ export function getReasoningConfig(
 	// - Codex models (including GPT-5.2 Codex) do NOT support "none"
 	const supportsNone = isGpt52General || isGpt51General;
 
-	// Default based on model type (Codex CLI defaults)
+	// Default based on model type (Codex CLI defaults + plugin opinionated tuning)
 	// Note: OpenAI docs say gpt-5.1 defaults to "none", but we default to "medium"
-	// for better coding assistance unless user explicitly requests "none"
+	// for better coding assistance unless user explicitly requests "none".
+	// GPT-5.2 Codex defaults to xhigh in this plugin for stronger coding output.
 	const defaultEffort: ReasoningConfig["effort"] = isCodexMini
 		? "medium"
+		: isGpt52Codex
+			? "xhigh"
 		: supportsXhigh
 			? "high"
 			: isLightweight
