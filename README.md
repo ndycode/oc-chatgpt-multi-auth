@@ -130,7 +130,7 @@ opencode run "Hello" --model=openai/gpt-5.2 --variant=medium
 | Model | Variants | Notes |
 |-------|----------|-------|
 | `gpt-5.2` | none, low, medium, high, xhigh | Latest GPT-5.2 with reasoning levels |
-| `gpt-5.2-codex` | low, medium, high, xhigh | GPT-5.2 Codex for code generation |
+| `gpt-5.2-codex` | low, medium, high, xhigh | GPT-5.2 Codex for code generation (default: xhigh) |
 | `gpt-5.1-codex-max` | low, medium, high, xhigh | Maximum context Codex |
 | `gpt-5.1-codex` | low, medium, high | Standard Codex |
 | `gpt-5.1-codex-mini` | medium, high | Lightweight Codex |
@@ -185,6 +185,10 @@ Add this to your `~/.config/opencode/opencode.json`:
             "medium": { "reasoningEffort": "medium" },
             "high": { "reasoningEffort": "high" },
             "xhigh": { "reasoningEffort": "xhigh" }
+          },
+          "options": {
+            "reasoningEffort": "xhigh",
+            "reasoningSummary": "detailed"
           }
         },
         "gpt-5.1-codex-max": {

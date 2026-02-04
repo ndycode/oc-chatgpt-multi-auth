@@ -896,14 +896,14 @@ describe('Request Transformer Module', () => {
 			expect(result.reasoning?.effort).toBe('high');
 		});
 
-		it('should default gpt-5.2-codex to high effort', async () => {
+		it('should default gpt-5.2-codex to xhigh effort', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5.2-codex',
 				input: [],
 			};
 			const result = await transformRequestBody(body, codexInstructions);
 			expect(result.model).toBe('gpt-5.2-codex');
-			expect(result.reasoning?.effort).toBe('high');
+			expect(result.reasoning?.effort).toBe('xhigh');
 		});
 
 		it('should preserve xhigh for codex-max when requested', async () => {
