@@ -45,6 +45,7 @@ import {
 	getRetryAllAccountsMaxRetries,
 	getRetryAllAccountsMaxWaitMs,
 	getRetryAllAccountsRateLimited,
+	getFallbackToGpt52OnUnsupportedGpt53,
 	getTokenRefreshSkewMs,
 	getSessionRecovery,
 	getAutoResume,
@@ -96,6 +97,7 @@ import {
 	extractRequestUrl,
         handleErrorResponse,
         handleSuccessResponse,
+	shouldFallbackToGpt52OnUnsupportedGpt53,
         refreshAndUpdateToken,
         rewriteUrlForCodex,
 	shouldRefreshToken,
@@ -117,7 +119,13 @@ import {
 	type ModelFamily,
 } from "./lib/prompts/codex.js";
 import { prewarmOpenCodeCodexPrompt } from "./lib/prompts/opencode-codex.js";
-import type { AccountIdSource, OAuthAuthDetails, TokenResult, UserConfig } from "./lib/types.js";
+import type {
+	AccountIdSource,
+	OAuthAuthDetails,
+	RequestBody,
+	TokenResult,
+	UserConfig,
+} from "./lib/types.js";
 import {
 	createSessionRecoveryHook,
 	isRecoverableError,
@@ -704,6 +712,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const retryAllAccountsRateLimited = getRetryAllAccountsRateLimited(pluginConfig);
 				const retryAllAccountsMaxWaitMs = getRetryAllAccountsMaxWaitMs(pluginConfig);
 				const retryAllAccountsMaxRetries = getRetryAllAccountsMaxRetries(pluginConfig);
+				const fallbackToGpt52OnUnsupportedGpt53 =
+					getFallbackToGpt52OnUnsupportedGpt53(pluginConfig);
 				const toastDurationMs = getToastDurationMs(pluginConfig);
 				const perProjectAccounts = getPerProjectAccounts(pluginConfig);
 				const fetchTimeoutMs = getFetchTimeoutMs(pluginConfig);
@@ -873,12 +883,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										fastSessionMaxInputItems,
 									},
 								);
-										const requestInit = transformation?.updatedInit ?? baseInit;
-										const transformedBody = transformation?.body;
+										let requestInit = transformation?.updatedInit ?? baseInit;
+										let transformedBody: RequestBody | undefined = transformation?.body;
 										const promptCacheKey = transformedBody?.prompt_cache_key;
-																					const model = transformedBody?.model;
-																					const modelFamily = model ? getModelFamily(model) : "gpt-5.1";
-																					const quotaKey = model ? `${modelFamily}:${model}` : modelFamily;
+										let model = transformedBody?.model;
+										let modelFamily = model ? getModelFamily(model) : "gpt-5.1";
+										let quotaKey = model ? `${modelFamily}:${model}` : modelFamily;
 						const threadIdCandidate =
 							(process.env.CODEX_THREAD_ID ?? promptCacheKey ?? "")
 								.toString()
@@ -946,6 +956,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							let allRateLimitedRetries = 0;
 							let emptyResponseRetries = 0;
+							let attemptedGpt53Fallback = false;
 
 							while (true) {
 										const accountCount = accountManager.getAccountCount();
@@ -1037,7 +1048,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 												accountManager.markToastShown(account.index);
 											}
 
-								const headers = createCodexHeaders(
+								let headers = createCodexHeaders(
 									requestInit,
 									accountId,
 									accountAuth.access,
@@ -1117,6 +1128,61 @@ while (attempted.size < Math.max(1, accountCount)) {
 											requestCorrelationId,
 											threadId: threadIdCandidate,
 										});
+
+			if (
+				fallbackToGpt52OnUnsupportedGpt53 &&
+				!attemptedGpt53Fallback &&
+				shouldFallbackToGpt52OnUnsupportedGpt53(model, errorBody)
+			) {
+				const previousModel = model ?? "gpt-5.3-codex";
+				const previousModelFamily = modelFamily;
+				attemptedGpt53Fallback = true;
+				accountManager.refundToken(account, previousModelFamily, previousModel);
+
+				model = "gpt-5.2-codex";
+				modelFamily = getModelFamily(model);
+				quotaKey = `${modelFamily}:${model}`;
+
+				if (transformedBody && typeof transformedBody === "object") {
+					transformedBody = { ...transformedBody, model };
+				} else {
+					let fallbackBody: Record<string, unknown> = { model };
+					if (requestInit?.body && typeof requestInit.body === "string") {
+						try {
+							const parsed = JSON.parse(requestInit.body) as Record<string, unknown>;
+							fallbackBody = { ...parsed, model };
+						} catch {
+							// Keep minimal fallback body if parsing fails.
+						}
+					}
+					transformedBody = fallbackBody as RequestBody;
+				}
+
+				requestInit = {
+					...(requestInit ?? {}),
+					body: JSON.stringify(transformedBody),
+				};
+				headers = createCodexHeaders(
+					requestInit,
+					accountId,
+					accountAuth.access,
+					{
+						model,
+						promptCacheKey,
+					},
+				);
+				accountManager.consumeToken(account, modelFamily, model);
+				runtimeMetrics.lastError = `Model fallback: ${previousModel} -> ${model}`;
+				logWarn(
+					`Model ${previousModel} is unsupported for this ChatGPT account. Falling back to ${model}.`,
+				);
+				await showToast(
+					`Model ${previousModel} is not available for this account. Retrying with ${model}.`,
+					"warning",
+					{ duration: toastDurationMs },
+				);
+				continue;
+			}
 
 			if (recoveryHook && errorBody && isRecoverableError(errorBody)) {
 					const errorType = detectErrorType(errorBody);

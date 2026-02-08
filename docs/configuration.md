@@ -98,7 +98,8 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
   "toastDurationMs": 5000,
   "retryAllAccountsRateLimited": true,
   "retryAllAccountsMaxWaitMs": 0,
-  "retryAllAccountsMaxRetries": null
+  "retryAllAccountsMaxRetries": null,
+  "fallbackToGpt52OnUnsupportedGpt53": true
 }
 ```
 
@@ -115,6 +116,7 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
 | `retryAllAccountsRateLimited` | `true` | wait and retry when all accounts hit rate limits |
 | `retryAllAccountsMaxWaitMs` | `0` | max wait time in ms (0 = unlimited) |
 | `retryAllAccountsMaxRetries` | `Infinity` | max retry attempts |
+| `fallbackToGpt52OnUnsupportedGpt53` | `true` | automatically retry once with `gpt-5.2-codex` when `gpt-5.3-codex` is rejected for ChatGPT entitlement |
 | `sessionRecovery` | `true` | auto-recover from common api errors |
 | `autoResume` | `true` | auto-resume after thinking block recovery |
 | `tokenRefreshSkewMs` | `60000` | refresh tokens this many ms before expiry |
@@ -141,6 +143,7 @@ override any config with env vars:
 | `CODEX_AUTH_RETRY_ALL_RATE_LIMITED=0` | disable wait-and-retry |
 | `CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS=30000` | set max wait time |
 | `CODEX_AUTH_RETRY_ALL_MAX_RETRIES=1` | set max retries |
+| `CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=0` | disable fallback and keep strict `gpt-5.3-codex` behavior |
 | `CODEX_AUTH_ACCOUNT_ID=acc_xxx` | force specific workspace id |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=120000` | override fetch timeout |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=60000` | override SSE stall timeout |

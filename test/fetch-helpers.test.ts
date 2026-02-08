@@ -10,6 +10,7 @@ import {
     handleSuccessResponse,
     isEntitlementError,
     createEntitlementErrorResponse,
+	shouldFallbackToGpt52OnUnsupportedGpt53,
 } from '../lib/request/fetch-helpers.js';
 import * as loggerModule from '../lib/logger.js';
 import type { Auth } from '../lib/types.js';
@@ -253,6 +254,53 @@ describe('Fetch Helpers Module', () => {
 			expect(json.error.type).toBe('entitlement_error');
 			expect(json.error.code).toBe('usage_not_included');
 			expect(json.error.message).toContain('ChatGPT subscription');
+		});
+	});
+
+	describe('gpt-5.3 unsupported model handling', () => {
+		it('normalizes ChatGPT model-not-supported 400 to actionable entitlement error', async () => {
+			const body = {
+				detail: "The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+			};
+			const response = new Response(JSON.stringify(body), { status: 400, statusText: 'Bad Request' });
+
+			const { response: result } = await handleErrorResponse(response);
+			const json = await result.json() as {
+				error: {
+					message: string;
+					type?: string;
+					code?: string;
+				};
+			};
+
+			expect(json.error.type).toBe('entitlement_error');
+			expect(json.error.code).toBe('model_not_supported_with_chatgpt_account');
+			expect(json.error.message).toContain("'gpt-5.3-codex'");
+			expect(json.error.message).toContain('gpt-5.2-codex');
+		});
+
+		it('flags fallback when gpt-5.3-codex returns unsupported-model entitlement error', () => {
+			const shouldFallback = shouldFallbackToGpt52OnUnsupportedGpt53('gpt-5.3-codex', {
+				error: {
+					code: 'model_not_supported_with_chatgpt_account',
+					message: 'not supported when using Codex with a ChatGPT account',
+				},
+			});
+
+			expect(shouldFallback).toBe(true);
+		});
+
+		it('does not flag fallback for other models or errors', () => {
+			expect(
+				shouldFallbackToGpt52OnUnsupportedGpt53('gpt-5.2-codex', {
+					error: { code: 'model_not_supported_with_chatgpt_account' },
+				}),
+			).toBe(false);
+			expect(
+				shouldFallbackToGpt52OnUnsupportedGpt53('gpt-5.3-codex', {
+					error: { code: 'usage_not_included' },
+				}),
+			).toBe(false);
 		});
 	});
 

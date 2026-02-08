@@ -7,6 +7,7 @@ import {
 	getFastSessionMaxInputItems,
 	getTokenRefreshSkewMs,
 	getRetryAllAccountsMaxRetries,
+	getFallbackToGpt52OnUnsupportedGpt53,
 	getFetchTimeoutMs,
 	getStreamStallTimeoutMs,
 } from '../lib/config.js';
@@ -43,6 +44,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_FAST_SESSION',
 		'CODEX_AUTH_FAST_SESSION_STRATEGY',
 		'CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS',
+		'CODEX_AUTH_FALLBACK_GPT53_TO_GPT52',
 	] as const;
 	const originalEnv: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
 
@@ -78,6 +80,7 @@ describe('Plugin Configuration', () => {
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
 				retryAllAccountsMaxRetries: Infinity,
+				fallbackToGpt52OnUnsupportedGpt53: true,
 				tokenRefreshSkewMs: 60_000,
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
@@ -111,6 +114,7 @@ describe('Plugin Configuration', () => {
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
 				retryAllAccountsMaxRetries: Infinity,
+				fallbackToGpt52OnUnsupportedGpt53: true,
 				tokenRefreshSkewMs: 60_000,
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
@@ -141,6 +145,7 @@ describe('Plugin Configuration', () => {
 				retryAllAccountsRateLimited: true,
 				retryAllAccountsMaxWaitMs: 0,
 				retryAllAccountsMaxRetries: Infinity,
+				fallbackToGpt52OnUnsupportedGpt53: true,
 				tokenRefreshSkewMs: 60_000,
 				rateLimitToastDebounceMs: 60_000,
 				toastDurationMs: 5_000,
@@ -173,6 +178,7 @@ describe('Plugin Configuration', () => {
 		retryAllAccountsRateLimited: true,
 		retryAllAccountsMaxWaitMs: 0,
 		retryAllAccountsMaxRetries: Infinity,
+		fallbackToGpt52OnUnsupportedGpt53: true,
 		tokenRefreshSkewMs: 60_000,
 		rateLimitToastDebounceMs: 60_000,
 		toastDurationMs: 5_000,
@@ -208,6 +214,7 @@ describe('Plugin Configuration', () => {
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 0,
 			retryAllAccountsMaxRetries: Infinity,
+			fallbackToGpt52OnUnsupportedGpt53: true,
 			tokenRefreshSkewMs: 60_000,
 			rateLimitToastDebounceMs: 60_000,
 			toastDurationMs: 5_000,
@@ -298,6 +305,37 @@ describe('Plugin Configuration', () => {
 			expect(getFastSession({ fastSession: true })).toBe(false);
 			process.env.CODEX_AUTH_FAST_SESSION = '1';
 			expect(getFastSession({ fastSession: false })).toBe(true);
+		});
+	});
+
+	describe('getFallbackToGpt52OnUnsupportedGpt53', () => {
+		it('should default to true', () => {
+			delete process.env.CODEX_AUTH_FALLBACK_GPT53_TO_GPT52;
+			expect(getFallbackToGpt52OnUnsupportedGpt53({})).toBe(true);
+		});
+
+		it('should use config value when env var not set', () => {
+			delete process.env.CODEX_AUTH_FALLBACK_GPT53_TO_GPT52;
+			expect(
+				getFallbackToGpt52OnUnsupportedGpt53({
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBe(true);
+		});
+
+		it('should prioritize env var over config', () => {
+			process.env.CODEX_AUTH_FALLBACK_GPT53_TO_GPT52 = '0';
+			expect(
+				getFallbackToGpt52OnUnsupportedGpt53({
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				}),
+			).toBe(false);
+			process.env.CODEX_AUTH_FALLBACK_GPT53_TO_GPT52 = '1';
+			expect(
+				getFallbackToGpt52OnUnsupportedGpt53({
+					fallbackToGpt52OnUnsupportedGpt53: false,
+				}),
+			).toBe(true);
 		});
 	});
 

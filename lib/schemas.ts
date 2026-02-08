@@ -18,6 +18,7 @@ export const PluginConfigSchema = z.object({
 	retryAllAccountsRateLimited: z.boolean().optional(),
 	retryAllAccountsMaxWaitMs: z.number().min(0).optional(),
 	retryAllAccountsMaxRetries: z.number().min(0).optional(),
+	fallbackToGpt52OnUnsupportedGpt53: z.boolean().optional(),
 	tokenRefreshSkewMs: z.number().min(0).optional(),
 	rateLimitToastDebounceMs: z.number().min(0).optional(),
 	toastDurationMs: z.number().min(1000).optional(),

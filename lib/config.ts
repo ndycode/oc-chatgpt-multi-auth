@@ -19,6 +19,7 @@ const DEFAULT_CONFIG: PluginConfig = {
 	retryAllAccountsRateLimited: true,
 	retryAllAccountsMaxWaitMs: 0,
 	retryAllAccountsMaxRetries: Infinity,
+	fallbackToGpt52OnUnsupportedGpt53: true,
 	tokenRefreshSkewMs: 60_000,
 	rateLimitToastDebounceMs: 60_000,
 	toastDurationMs: 5_000,
@@ -162,6 +163,14 @@ export function getRetryAllAccountsMaxRetries(pluginConfig: PluginConfig): numbe
 		pluginConfig.retryAllAccountsMaxRetries,
 		Infinity,
 		{ min: 0 },
+	);
+}
+
+export function getFallbackToGpt52OnUnsupportedGpt53(pluginConfig: PluginConfig): boolean {
+	return resolveBooleanSetting(
+		"CODEX_AUTH_FALLBACK_GPT53_TO_GPT52",
+		pluginConfig.fallbackToGpt52OnUnsupportedGpt53,
+		true,
 	);
 }
 

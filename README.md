@@ -674,6 +674,7 @@ Create `~/.opencode/openai-codex-auth-config.json` for optional settings:
 | `retryAllAccountsRateLimited` | `true` | Wait and retry when all accounts are rate-limited |
 | `retryAllAccountsMaxWaitMs` | `0` | Max wait time (0 = unlimited) |
 | `retryAllAccountsMaxRetries` | `Infinity` | Max retry attempts |
+| `fallbackToGpt52OnUnsupportedGpt53` | `true` | Automatically retry once with `gpt-5.2-codex` when `gpt-5.3-codex` is rejected for ChatGPT Codex OAuth entitlement |
 | `fetchTimeoutMs` | `60000` | Request timeout to Codex backend (ms) |
 | `streamStallTimeoutMs` | `45000` | Abort non-stream parsing if SSE stalls (ms) |
 
@@ -688,6 +689,7 @@ CODEX_AUTH_PREWARM=0 opencode                    # Disable startup prewarm (prom
 CODEX_AUTH_FAST_SESSION=1 opencode               # Enable faster response defaults
 CODEX_AUTH_FAST_SESSION_STRATEGY=always opencode # Force fast mode for all prompts
 CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS=24 opencode # Tune fast-mode history window
+CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=0 opencode    # Disable gpt-5.3 -> gpt-5.2 fallback (strict mode)
 CODEX_AUTH_FETCH_TIMEOUT_MS=120000 opencode      # Override request timeout
 CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=60000 opencode # Override SSE stall timeout
 ```

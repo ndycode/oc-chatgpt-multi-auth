@@ -2,6 +2,17 @@
 
 all notable changes to this project. dates are ISO format (YYYY-MM-DD).
 
+## [4.14.2] - 2026-02-08
+
+### changed
+
+- **gpt-5.3 fallback default**: fallback from `gpt-5.3-codex` to `gpt-5.2-codex` on ChatGPT entitlement rejection is now enabled by default for all users.
+- **strict-mode opt-out**: strict behavior is now opt-out via `fallbackToGpt52OnUnsupportedGpt53: false` or `CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=0`.
+
+### fixed
+
+- **unsupported-model handling**: normalized the upstream 400 (`"not supported when using Codex with a ChatGPT account"`) to a clear entitlement-style error instead of generic bad-request handling.
+
 ## [4.14.1] - 2026-02-07
 
 ### added

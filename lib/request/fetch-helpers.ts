@@ -32,6 +32,45 @@ export interface EntitlementError {
         message: string;
 }
 
+const CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE = "model_not_supported_with_chatgpt_account";
+const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
+	/model is not supported when using codex with a chatgpt account/i;
+
+function extractUnsupportedCodexModel(bodyText: string): string | undefined {
+	const match = bodyText.match(
+		/['"]([^'"]+)['"]\s+model is not supported when using codex with a chatgpt account/i,
+	);
+	return match?.[1];
+}
+
+function isUnsupportedCodexModelForChatGpt(status: number, bodyText: string): boolean {
+	if (status !== HTTP_STATUS.BAD_REQUEST) return false;
+	if (!bodyText) return false;
+	return CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(bodyText);
+}
+
+/**
+ * Returns true when a `gpt-5.3-codex` request should fallback to `gpt-5.2-codex`.
+ */
+export function shouldFallbackToGpt52OnUnsupportedGpt53(
+	requestedModel: string | undefined,
+	errorBody: unknown,
+): boolean {
+	if (requestedModel !== "gpt-5.3-codex") return false;
+	if (!isRecord(errorBody)) return false;
+
+	const maybeError = errorBody.error;
+	if (!isRecord(maybeError)) return false;
+
+	const code = typeof maybeError.code === "string" ? maybeError.code : "";
+	const message = typeof maybeError.message === "string" ? maybeError.message : "";
+
+	return (
+		code === CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE ||
+		CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(message)
+	);
+}
+
 /**
  * Checks if an error code indicates an entitlement/subscription issue
  * These errors should NOT be treated as rate limits because:
@@ -483,6 +522,25 @@ function normalizeErrorPayload(
         status: number,
         diagnostics?: ErrorDiagnostics,
 ): ErrorPayload {
+        if (isUnsupportedCodexModelForChatGpt(status, bodyText)) {
+                const unsupportedModel = extractUnsupportedCodexModel(bodyText) ?? "requested model";
+                const payload: ErrorPayload = {
+                        error: {
+                                message:
+                                        `The model '${unsupportedModel}' is not currently available for this ChatGPT account when using Codex OAuth. ` +
+                                        "This is an account/workspace entitlement gate, not a temporary rate limit. " +
+                                        "Try 'gpt-5.2-codex' or enable automatic fallback via CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=1 " +
+                                        "(or fallbackToGpt52OnUnsupportedGpt53 in ~/.opencode/openai-codex-auth-config.json).",
+                                type: "entitlement_error",
+                                code: CHATGPT_CODEX_UNSUPPORTED_MODEL_CODE,
+                        },
+                };
+                if (diagnostics && Object.keys(diagnostics).length > 0) {
+                        payload.error.diagnostics = diagnostics;
+                }
+                return payload;
+        }
+
         if (isRecord(errorBody)) {
                 const maybeError = errorBody.error;
                 if (isRecord(maybeError) && typeof maybeError.message === "string") {
