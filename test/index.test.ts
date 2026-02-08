@@ -70,6 +70,7 @@ vi.mock("../lib/config.js", () => ({
 	getRetryAllAccountsMaxRetries: () => 3,
 	getRetryAllAccountsMaxWaitMs: () => 30000,
 	getRetryAllAccountsRateLimited: () => true,
+	getFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
 	getTokenRefreshSkewMs: () => 60000,
 	getSessionRecovery: () => false,
 	getAutoResume: () => false,
@@ -156,6 +157,7 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	refreshAndUpdateToken: vi.fn(async (auth: unknown) => auth),
 	createCodexHeaders: () => new Headers(),
 	handleErrorResponse: vi.fn(async (response: Response) => ({ response })),
+	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
 	handleSuccessResponse: vi.fn(async (response: Response) => response),
 }));
 
@@ -838,6 +840,59 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(503);
 		expect(await response.text()).toContain("server errors or auth issues");
+	});
+
+	it("falls back from gpt-5.3-codex to gpt-5.2-codex when unsupported fallback is enabled", async () => {
+		const configModule = await import("../lib/config.js");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+
+		vi.mocked(configModule.getFallbackToGpt52OnUnsupportedGpt53).mockReturnValueOnce(true);
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
+			updatedInit: {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.3-codex" }),
+			},
+			body: { model: "gpt-5.3-codex" },
+		});
+		vi.mocked(fetchHelpers.handleErrorResponse).mockResolvedValueOnce({
+			response: new Response(
+				JSON.stringify({
+					error: {
+						code: "model_not_supported_with_chatgpt_account",
+						message:
+							"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+					},
+				}),
+				{ status: 400 },
+			),
+			rateLimit: undefined,
+			errorBody: {
+				error: {
+					code: "model_not_supported_with_chatgpt_account",
+					message:
+						"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+				},
+			},
+		});
+		vi.mocked(fetchHelpers.shouldFallbackToGpt52OnUnsupportedGpt53).mockReturnValueOnce(true);
+
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("bad", { status: 400 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.3-codex" }),
+		});
+
+		expect(response.status).toBe(200);
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		const firstInit = vi.mocked(globalThis.fetch).mock.calls[0]?.[1] as RequestInit;
+		const secondInit = vi.mocked(globalThis.fetch).mock.calls[1]?.[1] as RequestInit;
+		expect(JSON.parse(firstInit.body as string).model).toBe("gpt-5.3-codex");
+		expect(JSON.parse(secondInit.body as string).model).toBe("gpt-5.2-codex");
 	});
 
 	it("handles empty body in request", async () => {

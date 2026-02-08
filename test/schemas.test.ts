@@ -30,6 +30,7 @@ describe("PluginConfigSchema", () => {
 			retryAllAccountsRateLimited: true,
 			retryAllAccountsMaxWaitMs: 5000,
 			retryAllAccountsMaxRetries: 3,
+			fallbackToGpt52OnUnsupportedGpt53: false,
 			tokenRefreshSkewMs: 60000,
 			rateLimitToastDebounceMs: 30000,
 			toastDurationMs: 5000,
