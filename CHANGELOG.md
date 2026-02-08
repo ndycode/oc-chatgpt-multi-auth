@@ -90,6 +90,78 @@ all notable changes to this project. dates are ISO format (YYYY-MM-DD).
 
 - **legacy migration**: when the new project-scoped path is empty, the plugin now auto-migrates legacy `<project>/.opencode/openai-codex-accounts.json` data on first load.
 
+## [4.12.4] - 2026-02-03
+
+### added
+
+- **Empty response retry** - Automatically retries when the API returns empty/malformed responses. Configurable via `emptyResponseMaxRetries` (default: 2) and `emptyResponseRetryDelayMs` (default: 1000ms)
+- **PID offset for parallel agents** - When multiple OpenCode instances run in parallel, each process now gets a deterministic offset for account selection, reducing contention. Enable with `pidOffsetEnabled: true`
+
+### changed
+
+```json
+{
+  "emptyResponseMaxRetries": 2,
+  "emptyResponseRetryDelayMs": 1000,
+  "pidOffsetEnabled": false
+}
+```
+
+- Environment variables:
+- `CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES`
+- `CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS`
+- `CODEX_AUTH_PID_OFFSET_ENABLED`
+
+- **Test coverage** - 1516 tests across 49 files (up from 1498)
+
+### fixed
+
+- **PID offset formula** - Fixed bug where all accounts received the same offset (now uses `account.index * 0.131 + pidBonus` for unique distribution)
+- **Empty response detection** - Hardened `isEmptyResponse()` to correctly identify empty choice objects (`[{}]`) and whitespace-only content as empty
+- **Test mocks** - Fixed `index.test.ts` mocks for `createLogger` and new config getters (55 tests were failing)
+
+### metadata
+- npm publish status: not published on npm (tag/release only).
+
+## [4.12.3] - 2026-02-03
+
+### changed
+
+- **Test coverage** - Up to 89% coverage (1498 tests)
+- **Code quality** - Various improvements from audit
+
+### fixed
+
+- **Account persistence fix** - Accounts were being saved to the wrong location when `perProjectAccounts` was enabled (default). The issue was that `setStoragePath()` only ran in the loader, but authorize runs before that. So accounts got written to the global path, then the loader looked in the per-project path and found nothing. Both OAuth methods (browser and manual URL paste) now init storage path before saving. (#19)
+
+## [4.12.2] - 2026-01-30
+
+### fixed
+
+- **TUI crash on workspace prompt** - Removed redundant workspace selection prompt (auto-selects default now). Added `isNonInteractiveMode()` to detect TUI/Desktop environments. (#17)
+- **Web UI validation error** - Added validate function to manual OAuth flow for proper error messages instead of `[object Object]`.
+
+## [4.12.1] - 2026-01-30
+
+### changed
+
+- **Audit logging** - Rotating file audit log with structured entries
+- **Auth rate limiting** - Token bucket rate limiting (5 req/min/account) 
+- **Proactive token refresh** - Refreshes tokens 5 minutes before expiry
+- **Zod schemas** - Runtime validation as single source of truth
+
+- ### Stats
+- **Tests**: 580 â†’ 631 (+51)
+- All passing on Windows with `--pool=forks`
+
+### fixed
+
+- **Business plan workspace fix** - Fixed the "usage not included" errors some Business plan users were hitting. Turns out we were sending a stale stored accountId instead of pulling the fresh one from the token - problematic when you've got multiple workspaces. (#17, h/t @alanzchen for the detailed trace)
+- **Persistence errors actually visible now** - Storage failures used to fail silently unless you had debug mode on. Now you get a proper error toast with actionable hints (antivirus exclusions on Windows, chmod suggestions on Unix). (#19)
+- **Atomic writes for account storage** - Switched to temp file + rename to avoid corrupted state if a write gets interrupted mid-flight.
+- **Fixed a reader lock leak** - The SSE response handler wasn't releasing its lock in the finally block. Small thing but could cause issues over time.
+- **Debug logging for rotation** - Added some visibility into which account gets picked and why during rotation.
+
 ## [4.12.0] - 2026-01-30
 
 ### breaking
@@ -112,6 +184,34 @@ all notable changes to this project. dates are ISO format (YYYY-MM-DD).
 ### fixed
 
 - **windows account persistence**: fixed silent failure when saving accounts on Windows. errors are now logged at WARN level with storage path in message, and a toast notification appears if persistence fails.
+
+## [4.11.1] - 2026-01-29
+
+### changed
+
+- This plugin provides 6 built-in tools for managing your OpenAI accounts. Just ask the agent or type the tool name directly.
+
+- | Tool | What It Does | Example Prompt |
+- |------|--------------|----------------|
+- | `openai-accounts` | List all accounts | "list my accounts" |
+- | `openai-accounts-switch` | Switch active account | "switch to account 2" |
+- | `openai-accounts-status` | Show rate limits & health | "show account status" |
+- | `openai-accounts-health` | Validate tokens (read-only) | "check account health" |
+- | `openai-accounts-refresh` | Refresh & save tokens | "refresh my tokens" |
+- | `openai-accounts-remove` | Remove an account | "remove account 3" |
+
+### fixed
+
+- **Zod validation error** - Fixed crash when calling `openai-accounts-status` with no accounts configured
+
+## [4.11.0] - 2026-01-29
+
+### added
+
+- **Subdirectory detection** - Per-project accounts now work from subdirectories. The plugin walks up the directory tree to find the project root (identified by `.git`, `package.json`, `pyproject.toml`, etc.)
+- **Live countdown timer** - Rate limit waits now show a live countdown that updates every 5 seconds: `Waiting for rate limit reset (2m 35s remaining)`
+- **Auto-remove on auth failure** - Accounts are automatically removed after 3 consecutive auth failures, with a notification explaining what happened. No more manual cleanup of dead accounts.
+- **openai-accounts-refresh tool** - Manually refresh all OAuth tokens to verify they're still valid
 
 ## [4.10.0] - 2026-01-29
 
@@ -154,6 +254,81 @@ env vars:
 - `CODEX_AUTH_ACCOUNT_ID` override to force a specific workspace id (non-interactive login).
 - troubleshooting guidance for "usage not included in your plan".
 
+## [4.9.6] - 2026-01-27
+
+### changed
+
+- **tui auth gating**: non-tty/ui auth attempts now return a clear instruction to run `opencode auth login` in a terminal shell.
+- **error-mapping simplification**: consolidated entitlement/rate-limit mapping in fetch helpers for a single handling path.
+
+## [4.9.5] - 2026-01-28
+
+### changed
+
+- When your ChatGPT subscription didn't include Codex access, the plugin kept rotating through all accounts and retrying forever because it thought it was a temporary rate limit.
+
+- You get an immediate, clear error: "This model is not included in your ChatGPT subscription."
+
+### fixed
+
+- **Account error handling** - Fixes infinite retry loop when account doesn't have access to Codex models. `usage_not_included` errors now return 403 Forbidden instead of being treated as rate limits. Clear error message explaining the subscription issue. Prevents pointless account rotation for non-recoverable errors. (#16, thanks @rainmeter33-jpg!)
+
+## [4.9.4] - 2026-01-27
+
+### added
+
+- **TUI auth flow disabled** - We now strictly enforce using `opencode auth login` in the terminal for authentication. The UI-based 'Connect' flow is disabled with a clear message to prevent issues with non-interactive environments.
+
+### changed
+
+- **Strict tool schema validation** - Added filtering of required fields, flattening enums for compatibility with strict models like Claude/Gemini
+
+### fixed
+
+- **Manual login fixed** - Parsing of OAuth URLs with fragments (`#code=`) is fixed
+- **Account switching** - Manual selection is now strictly prioritized over rotation logic
+- **apply_patch enabled** - The bridge prompt now allows `apply_patch`
+
+## [4.9.3] - 2026-01-27
+
+### changed
+
+- **Strict schema validation** - Ported robust tool cleaning logic from `antigravity-auth`. Automatically normalizes tool definitions to prevent errors with strict models (like Claude or Gemini):
+  - Filters out `required` fields that are not defined in `properties`
+  - Flattens `anyOf` schemas with `const` values into standard `enum` arrays
+  - Converts nullable array types into single types with a description note
+  - Injects placeholder properties for empty object parameters
+- **Enabled apply_patch** - Updated the Codex bridge prompt to allow the `apply_patch` tool
+
+### fixed
+
+- **Manual login fixed** - The plugin now correctly parses OAuth redirect URLs that use fragments (e.g., `#code=...`). Previously, it only looked for query parameters, which caused manual copy-paste logins to fail with a redirection error.
+- **Account switching logic** - Changed account selection logic to strictly respect your manual choice. Before this fix, the hybrid rotation algorithm would sometimes override your selection based on account health or token scores.
+- **TUI integration** - Implemented the missing event handler for the TUI. When you click an account in the interface, it now triggers the `openai.account.select` event, saves the new active index to disk, and shows a confirmation toast.
+- **Removed API key option** - Removed the 'API Key' authentication method from the list because this plugin is designed for OAuth only.
+
+## [4.9.2] - 2026-01-27
+
+### fixed
+
+- **Auth prompts moved to TUI** - Avoids readline input conflicts
+- **Error payload normalization** - Improves rate-limit handling and rotation
+
+### metadata
+- npm publish status: not published on npm (tag/release only).
+
+## [4.9.1] - 2026-01-26
+
+### changed
+
+- When `opencode auth login` called the authorize function, `inputs` was `undefined`. The code had a conditional check that only entered the multi-account while loop if `inputs` existed with keys. This caused only single-account flow to run.
+
+### fixed
+
+- **Multi-account flow always runs** - authorize() now always uses multi-account flow regardless of inputs parameter. (#12)
+
+- Removed the conditional check so multi-account flow always runs, allowing users to add multiple ChatGPT accounts.
+
 ## [4.9.0] - 2026-01-26
 
 **breaking: package renamed from `opencode-openai-codex-auth-multi` to `oc-chatgpt-multi-auth`**
@@ -175,11 +350,14 @@ update your `~/.config/opencode/opencode.json`:
 }
 ```
 
-## [4.8.2] - 2026-01-25
+## Legacy 4.8.2 (Package-Only) - 2026-01-25
 
 ### changed
 - fix node esm plugin load by importing tool from `@opencode-ai/plugin/tool` and ensuring runtime dependency is installed.
 - correct package metadata (repository links, update-check package name) and add troubleshooting guidance for plugin install/load.
+
+### metadata
+- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `oc-chatgpt-multi-auth`.
 
 ## [4.7.0] - 2026-01-25
 
@@ -211,6 +389,9 @@ update your `~/.config/opencode/opencode.json`:
 - **error response handling**: `handleErrorResponse()` now returns `errorBody` for recovery detection
 - enhanced error logging with recoverable error detection in fetch flow
 
+### metadata
+- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `oc-chatgpt-multi-auth`.
+
 ## [4.6.0] - 2026-01-25
 
 **feature release**: context overflow handling and missing tool result injection.
@@ -228,6 +409,9 @@ update your `~/.config/opencode/opencode.json`:
   - new function: `injectMissingToolOutputs()` in `lib/request/helpers/input-utils.ts`
 - **34 new unit tests** for context overflow and tool injection
 
+### metadata
+- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `oc-chatgpt-multi-auth`.
+
 ## [4.5.0] - 2026-01-24
 
 ### added
@@ -239,7 +423,10 @@ update your `~/.config/opencode/opencode.json`:
 - health-aware account rotation with automatic failover
 - hybrid selection prefers healthy accounts with available tokens
 
-## [4.4.0] - 2026-01-23
+### metadata
+- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `oc-chatgpt-multi-auth`.
+
+## Legacy 4.4.0 (Package-Only) - 2026-01-23
 
 ### added
 - **health scoring**: tracks success/failure per account
@@ -251,3 +438,28 @@ new retry options:
 - `retryAllAccountsRateLimited` (default: `true`)
 - `retryAllAccountsMaxWaitMs` (default: `0` = unlimited)
 - `retryAllAccountsMaxRetries` (default: `Infinity`)
+
+### metadata
+- npm publish status: not published on npm (tag/release only).
+
+## [4.3.1] - 2026-01-23
+
+### added
+
+- **openai-accounts-status --json** - Scriptable status output with email/ID labels
+
+### changed
+
+- **Account labels** - Now prefer email and show ID suffix when available; list/status outputs are columnized for readability
+- **Email normalization** - Stored account emails are trimmed/lowercased when present
+
+- @opencode-ai plugin/sdk 1.1.34
+- hono 4.11.5
+- vitest 4.0.18
+- @types/node 25.0.10
+- @typescript-eslint 8.53.1
+
+- @andremxmx for reporting the multi-account ID issue (#4)
+
+### metadata
+- npm package line: published under `opencode-openai-codex-auth-multi` (legacy package), not `oc-chatgpt-multi-auth`.
