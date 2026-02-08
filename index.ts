@@ -91,8 +91,10 @@ import {
         formatCooldown,
         formatWaitTime,
         sanitizeEmail,
+        selectBestAccountCandidate,
         shouldUpdateAccountIdFromToken,
-	parseRateLimitReason,
+        resolveRequestAccountId,
+        parseRateLimitReason,
 } from "./lib/accounts.js";
 import {
 	getStoragePath,
@@ -237,7 +239,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         return tokens;
                 }
 
-			if (candidates.length === 1) {
+                if (candidates.length === 1) {
 				const [candidate] = candidates;
 				if (candidate) {
 					return {
@@ -249,25 +251,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				}
 			}
 
-                // Auto-select the default candidate without prompting
-                // The user already selected their workspace on OpenAI's auth page
-                // Prompting again breaks TUI mode and is redundant
-                const choice = (() => {
-                        // Prefer org-level default
-                        const orgDefault = candidates.find(
-                                (candidate) => candidate.isDefault && candidate.source === "org",
-                        );
-                        if (orgDefault) return orgDefault;
-
-                        // Fall back to token-derived account
-                        const tokenAccount = candidates.find(
-                                (candidate) => candidate.source === "token",
-                        );
-                        if (tokenAccount) return tokenAccount;
-
-                        // Otherwise first candidate
-                        return candidates[0];
-                })();
+                // Auto-select the best workspace candidate without prompting.
+                // This honors org/default/id-token signals and avoids forcing personal token IDs.
+                const choice = selectBestAccountCandidate(candidates);
                 if (!choice) return tokens;
 
                 return {
@@ -1071,9 +1057,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 
 				const hadAccountId = !!account.accountId;
-					// Prefer fresh token-derived ID over stored ID (fixes Business plan workspace issues)
-					const accountId =
-						extractAccountId(accountAuth.access) ?? account.accountId;
+					const tokenAccountId = extractAccountId(accountAuth.access);
+					const accountId = resolveRequestAccountId(
+						account.accountId,
+						account.accountIdSource,
+						tokenAccountId,
+					);
 						if (!accountId) {
 							accountManager.markAccountCoolingDown(
 								account,
@@ -1084,7 +1073,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							continue;
 						}
 											account.accountId = accountId;
-											if (!hadAccountId) {
+											if (!hadAccountId && tokenAccountId && accountId === tokenAccountId) {
 												account.accountIdSource = account.accountIdSource ?? "token";
 											}
 											account.email =

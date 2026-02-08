@@ -106,6 +106,8 @@ vi.mock("../lib/accounts.js", () => {
 		AccountManager,
 		extractAccountEmail: () => "user@example.com",
 		extractAccountId: () => "account-1",
+		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
+		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
 		formatAccountLabel: (_account: any, index: number) => `Account ${index + 1}`,
 		formatCooldown: (ms: number) => `${ms}ms`,
 		formatWaitTime: (ms: number) => `${ms}ms`,

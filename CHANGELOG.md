@@ -2,6 +2,17 @@
 
 all notable changes to this project. dates are ISO format (YYYY-MM-DD).
 
+## [5.1.0] - 2026-02-08
+
+### changed
+
+- **workspace candidate selection hardened**: OAuth workspace auto-selection now prefers org defaults, id-token-selected workspace IDs, and non-personal org candidates before falling back to token-derived personal IDs.
+
+### fixed
+
+- **business workspace routing**: explicit org/manual workspace bindings are now preserved at request time and no longer overwritten by token `chatgpt_account_id` values.
+- **gpt-5.3-codex on Business accounts**: fixed a dual-workspace path where requests could be routed to personal/free workspace IDs and fail with unsupported-model errors.
+
 ## [5.0.0] - 2026-02-08
 
 ### breaking

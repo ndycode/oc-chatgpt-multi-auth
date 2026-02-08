@@ -16,6 +16,7 @@ export interface AccountIdCandidate {
 	label: string;
 	source: AccountIdSource;
 	isDefault?: boolean;
+	isPersonal?: boolean;
 }
 
 /**
@@ -160,6 +161,7 @@ function extractCandidateFromRecord(
 		label,
 		source,
 		isDefault,
+		isPersonal,
 	};
 }
 
@@ -225,6 +227,50 @@ function uniqueCandidates(candidates: AccountIdCandidate[]): AccountIdCandidate[
 		result.push(candidate);
 	}
 	return result;
+}
+
+/**
+ * Select the best workspace candidate for OAuth account binding.
+ * Preference order:
+ * 1) org default that is not personal
+ * 2) org default (any)
+ * 3) id_token candidate
+ * 4) non-personal org candidate
+ * 5) token candidate
+ * 6) first candidate
+ */
+export function selectBestAccountCandidate(
+	candidates: AccountIdCandidate[],
+): AccountIdCandidate | undefined {
+	if (candidates.length === 0) return undefined;
+
+	const orgDefaultNonPersonal = candidates.find(
+		(candidate) =>
+			candidate.source === "org" && candidate.isDefault === true && candidate.isPersonal !== true,
+	);
+	if (orgDefaultNonPersonal) return orgDefaultNonPersonal;
+
+	const orgDefault = candidates.find(
+		(candidate) => candidate.source === "org" && candidate.isDefault === true,
+	);
+	if (orgDefault) return orgDefault;
+
+	const idTokenCandidate = candidates.find(
+		(candidate) => candidate.source === "id_token",
+	);
+	if (idTokenCandidate) return idTokenCandidate;
+
+	const nonPersonalOrg = candidates.find(
+		(candidate) => candidate.source === "org" && candidate.isPersonal !== true,
+	);
+	if (nonPersonalOrg) return nonPersonalOrg;
+
+	const tokenCandidate = candidates.find(
+		(candidate) => candidate.source === "token",
+	);
+	if (tokenCandidate) return tokenCandidate;
+
+	return candidates[0];
 }
 
 /**
@@ -319,6 +365,22 @@ export function shouldUpdateAccountIdFromToken(
 	if (!currentAccountId) return true;
 	if (!source) return true;
 	return source === "token" || source === "id_token";
+}
+
+/**
+ * Resolve which accountId to use for runtime API calls.
+ * Preserves explicit org/manual selections; only token/id_token sources auto-follow token changes.
+ */
+export function resolveRequestAccountId(
+	storedAccountId: string | undefined,
+	source: AccountIdSource | undefined,
+	tokenAccountId: string | undefined,
+): string | undefined {
+	if (!storedAccountId) return tokenAccountId;
+	if (!shouldUpdateAccountIdFromToken(source, storedAccountId)) {
+		return storedAccountId;
+	}
+	return tokenAccountId ?? storedAccountId;
 }
 
 /**

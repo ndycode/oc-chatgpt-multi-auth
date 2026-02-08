@@ -283,8 +283,10 @@ vi.mock("../lib/accounts.js", () => {
 	return {
 		AccountManager: MockAccountManager,
 		getAccountIdCandidates: () => [{ accountId: "acc-1", source: "token", label: "Test" }],
+		selectBestAccountCandidate: (candidates: Array<{ accountId: string }>) => candidates[0] ?? null,
 		extractAccountEmail: () => "user@example.com",
 		extractAccountId: () => "account-1",
+		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
 		formatAccountLabel: (_account: unknown, index: number) => `Account ${index + 1}`,
 		formatCooldown: () => null,
 		formatWaitTime: (ms: number) => `${Math.round(ms / 1000)}s`,

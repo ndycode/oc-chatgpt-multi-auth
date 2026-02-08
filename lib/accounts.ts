@@ -22,7 +22,9 @@ export {
 	extractAccountId,
 	extractAccountEmail,
 	getAccountIdCandidates,
+	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
+	resolveRequestAccountId,
 	sanitizeEmail,
 	type AccountIdCandidate,
 } from "./auth/token-utils.js";

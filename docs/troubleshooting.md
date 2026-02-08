@@ -213,9 +213,10 @@ Failed to access Codex API
 **Cause:** The plugin is using the wrong workspace/account id (personal vs business).
 
 **Solutions:**
-1. Re-run `opencode auth login` and select the correct workspace when prompted.
-2. If running non-interactively, set `CODEX_AUTH_ACCOUNT_ID` to the workspace account id and re-login.
-3. Verify the workspace has Codex access in the ChatGPT UI.
+1. Upgrade to `oc-chatgpt-multi-auth@5.1.0` or newer (workspace routing logic was hardened for Business + Personal dual accounts).
+2. Re-run `opencode auth login` and select the correct workspace when prompted.
+3. If running non-interactively, set `CODEX_AUTH_ACCOUNT_ID` to the workspace account id and re-login.
+4. Verify the workspace has Codex access in the ChatGPT UI.
 
 </details>
 

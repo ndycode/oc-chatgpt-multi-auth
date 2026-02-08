@@ -9,7 +9,9 @@ import {
 	extractAccountId,
 	extractAccountEmail,
 	getAccountIdCandidates,
+	selectBestAccountCandidate,
 	shouldUpdateAccountIdFromToken,
+	resolveRequestAccountId,
 	sanitizeEmail,
 } from "../lib/auth/token-utils.js";
 import { JWT_CLAIM_PATH } from "../lib/constants.js";
@@ -406,6 +408,7 @@ describe("Token Utils Module", () => {
 			const candidates = getAccountIdCandidates("access_token");
 			const personalCandidate = candidates.find((c) => c.accountId === "acc_personal");
 			expect(personalCandidate?.label).toContain("personal");
+			expect(personalCandidate?.isPersonal).toBe(true);
 		});
 
 		it("should parse string 'true' as isDefault", () => {
@@ -521,6 +524,8 @@ describe("Token Utils Module", () => {
 			const falseCandidate = candidates.find((c) => c.accountId === "personal_false");
 			expect(trueCandidate?.label).toContain("personal");
 			expect(falseCandidate?.label).not.toContain("personal");
+			expect(trueCandidate?.isPersonal).toBe(true);
+			expect(falseCandidate?.isPersonal).toBe(false);
 		});
 
 		it("should handle number value for boolean fields (line 37 false branch)", () => {
@@ -561,6 +566,74 @@ describe("Token Utils Module", () => {
 		});
 	});
 
+	describe("selectBestAccountCandidate", () => {
+		it("prefers non-personal org default over token", () => {
+			const selected = selectBestAccountCandidate([
+				{
+					accountId: "personal_token",
+					label: "Token",
+					source: "token",
+					isDefault: true,
+				},
+				{
+					accountId: "business_org",
+					label: "Business",
+					source: "org",
+					isDefault: true,
+					isPersonal: false,
+				},
+			]);
+			expect(selected?.accountId).toBe("business_org");
+		});
+
+		it("prefers id_token candidate over token when no org default exists", () => {
+			const selected = selectBestAccountCandidate([
+				{
+					accountId: "personal_token",
+					label: "Token",
+					source: "token",
+				},
+				{
+					accountId: "selected_workspace",
+					label: "ID token account",
+					source: "id_token",
+				},
+			]);
+			expect(selected?.accountId).toBe("selected_workspace");
+		});
+
+		it("prefers non-personal org over token when no default/id_token exists", () => {
+			const selected = selectBestAccountCandidate([
+				{
+					accountId: "personal_token",
+					label: "Token",
+					source: "token",
+				},
+				{
+					accountId: "business_org",
+					label: "Business org",
+					source: "org",
+					isPersonal: false,
+				},
+			]);
+			expect(selected?.accountId).toBe("business_org");
+		});
+
+		it("falls back to token, then first candidate", () => {
+			const tokenSelected = selectBestAccountCandidate([
+				{ accountId: "token_id", label: "Token", source: "token" },
+				{ accountId: "other", label: "Other", source: "org", isPersonal: true },
+			]);
+			expect(tokenSelected?.accountId).toBe("token_id");
+
+			const firstSelected = selectBestAccountCandidate([
+				{ accountId: "first", label: "First", source: "org", isPersonal: true },
+				{ accountId: "second", label: "Second", source: "org", isPersonal: true },
+			]);
+			expect(firstSelected?.accountId).toBe("first");
+		});
+	});
+
 	describe("shouldUpdateAccountIdFromToken", () => {
 		it("should return true when no current account ID", () => {
 			expect(shouldUpdateAccountIdFromToken("token", undefined)).toBe(true);
@@ -584,6 +657,27 @@ describe("Token Utils Module", () => {
 
 		it("should return false for manual source (preserve manual selection)", () => {
 			expect(shouldUpdateAccountIdFromToken("manual", "acc_123")).toBe(false);
+		});
+	});
+
+	describe("resolveRequestAccountId", () => {
+		it("preserves org/manual selection when token differs", () => {
+			expect(resolveRequestAccountId("org_business", "org", "token_personal")).toBe(
+				"org_business",
+			);
+			expect(resolveRequestAccountId("manual_selected", "manual", "token_personal")).toBe(
+				"manual_selected",
+			);
+		});
+
+		it("follows token for token/id_token sources", () => {
+			expect(resolveRequestAccountId("old", "token", "new_token")).toBe("new_token");
+			expect(resolveRequestAccountId("old", "id_token", "new_token")).toBe("new_token");
+		});
+
+		it("falls back correctly when values are missing", () => {
+			expect(resolveRequestAccountId(undefined, "org", "token_only")).toBe("token_only");
+			expect(resolveRequestAccountId("stored_only", "token", undefined)).toBe("stored_only");
 		});
 	});
 
