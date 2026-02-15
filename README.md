@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/oc-chatgpt-multi-auth.svg)](https://www.npmjs.com/package/oc-chatgpt-multi-auth)
 [![npm downloads](https://img.shields.io/npm/dw/oc-chatgpt-multi-auth.svg)](https://www.npmjs.com/package/oc-chatgpt-multi-auth)
 
-OAuth plugin for OpenCode that lets you use ChatGPT Plus/Pro rate limits with models like `gpt-5.2`, `gpt-5.3-codex`, and `gpt-5.1-codex-max` (plus optional `gpt-5.3-codex-spark` IDs when entitled).
+OAuth plugin for OpenCode that lets you use ChatGPT Plus/Pro rate limits with models like `gpt-5.2`, `gpt-5.3-codex`, `gpt-5.3-codex-spark` and `gpt-5.1-codex-max` (plus optional `gpt-5.3-codex-spark` IDs when entitled).
 
 > [!NOTE]
 > **Renamed from `opencode-openai-codex-auth-multi`** — If you were using the old package, update your config to use `oc-chatgpt-multi-auth` instead. The rename was necessary because OpenCode blocks plugins containing `opencode-openai-codex-auth` in the name.
