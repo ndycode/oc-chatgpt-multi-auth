@@ -290,6 +290,32 @@ describe("Token Utils Module", () => {
 			expect(candidates.some((c) => c.accountId === "claim_orgs_id")).toBe(true);
 		});
 
+		it("should extract all ids from id_token auth.organizations array", () => {
+			mockedDecodeJWT.mockImplementation((token) => {
+				if (token === "id_token") {
+					return {
+						[JWT_CLAIM_PATH]: {
+							organizations: [
+								{ id: "claim_org_1", name: "Claim Org One" },
+								{ id: "claim_org_2", name: "Claim Org Two" },
+							],
+						},
+					};
+				}
+				return null;
+			});
+			const candidates = getAccountIdCandidates(undefined, "id_token");
+			const organizationCandidates = candidates.filter((c) => c.source === "org");
+			expect(organizationCandidates.map((c) => c.accountId)).toEqual([
+				"claim_org_1",
+				"claim_org_2",
+			]);
+			expect(organizationCandidates.map((c) => c.organizationId)).toEqual([
+				"claim_org_1",
+				"claim_org_2",
+			]);
+		});
+
 		it("should extract default candidate from access token", () => {
 			mockedDecodeJWT.mockReturnValue({
 				[JWT_CLAIM_PATH]: {
@@ -341,6 +367,19 @@ describe("Token Utils Module", () => {
 			const candidates = getAccountIdCandidates("access_token");
 			const sameIdCandidates = candidates.filter((c) => c.accountId === "acc_same");
 			expect(sameIdCandidates.length).toBe(1);
+		});
+
+		it("should collapse duplicate org candidates by organizationId", () => {
+			mockedDecodeJWT.mockReturnValue({
+				organizations: [
+					{ account_id: "acc_one", organization_id: "org_dup", name: "Org A" },
+					{ account_id: "acc_two", organization_id: "org_dup", name: "Org B" },
+				],
+			});
+			const candidates = getAccountIdCandidates("access_token");
+			const duplicateOrgCandidates = candidates.filter((c) => c.organizationId === "org_dup");
+			expect(duplicateOrgCandidates).toHaveLength(1);
+			expect(duplicateOrgCandidates[0]?.accountId).toBe("acc_one");
 		});
 
 		it("should extract from id_token separately", () => {

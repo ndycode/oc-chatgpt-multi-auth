@@ -999,6 +999,41 @@ describe("AccountManager", () => {
       expect(manager.getCurrentAccount()?.accountId).toBe("workspace-b");
       expect(manager.getActiveIndex()).toBe(1);
     });
+
+    it("switches between accounts that share accountId/refreshToken but have different organizationId", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            organizationId: "org-a",
+            accountId: "shared-account",
+            refreshToken: "shared-refresh",
+            email: "user@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            organizationId: "org-b",
+            accountId: "shared-account",
+            refreshToken: "shared-refresh",
+            email: "user@example.com",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      expect(manager.getAccountCount()).toBe(2);
+      expect(manager.getCurrentAccount()?.organizationId).toBe("org-a");
+
+      const switched = manager.setActiveIndex(1);
+      expect(switched?.organizationId).toBe("org-b");
+      expect(manager.getCurrentAccount()?.organizationId).toBe("org-b");
+      expect(manager.getActiveIndex()).toBe(1);
+    });
   });
 
   describe("markSwitched", () => {

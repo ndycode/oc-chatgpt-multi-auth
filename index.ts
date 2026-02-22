@@ -222,6 +222,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 		type TokenSuccessWithAccount = TokenSuccess & {
 				accountIdOverride?: string;
+				organizationIdOverride?: string;
 				accountIdSource?: AccountIdSource;
 				accountLabel?: string;
 		};
@@ -233,10 +234,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 		const createSelectionVariant = (
 				tokens: TokenSuccess,
-				candidate: { accountId: string; source?: AccountIdSource; label?: string },
+				candidate: {
+					accountId: string;
+					organizationId?: string;
+					source?: AccountIdSource;
+					label?: string;
+				},
 		): TokenSuccessWithAccount => ({
 				...tokens,
 				accountIdOverride: candidate.accountId,
+				organizationIdOverride: candidate.organizationId,
 				accountIdSource: candidate.source,
 				accountLabel: candidate.label,
 		});
@@ -280,16 +287,23 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 				const primary = createSelectionVariant(tokens, {
 						accountId: choice.accountId,
+						organizationId: choice.organizationId,
 						source: choice.source ?? "token",
 						label: choice.label,
 				});
 
 				const variantsForPersistence: TokenSuccessWithAccount[] = [primary];
 				for (const candidate of candidates) {
-						if (candidate.accountId === primary.accountIdOverride) continue;
+						if (
+							candidate.accountId === primary.accountIdOverride &&
+							(candidate.organizationId ?? "") === (primary.organizationIdOverride ?? "")
+						) {
+							continue;
+						}
 						variantsForPersistence.push(
 								createSelectionVariant(tokens, {
 										accountId: candidate.accountId,
+										organizationId: candidate.organizationId,
 										source: candidate.source,
 										label: candidate.label,
 								}),
@@ -406,51 +420,82 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					const stored = replaceAll ? null : loadedStorage;
 					const accounts = stored?.accounts ? [...stored.accounts] : [];
 
-					const indexByRefreshTokenWithoutAccountId = new Map<string, number>();
-					const indexByAccountId = new Map<string, number>();
-					const indexByEmailWithoutAccountId = new Map<string, number>();
-					for (let i = 0; i < accounts.length; i += 1) {
-						const account = accounts[i];
-						if (!account) continue;
-						if (account.accountId) {
-							indexByAccountId.set(account.accountId, i);
-							continue;
+					const buildIdentityIndexes = (): {
+						byOrganizationId: Map<string, number>;
+						byAccountId: Map<string, number>;
+						byRefreshTokenLegacy: Map<string, number>;
+						byEmailLegacy: Map<string, number>;
+					} => {
+						const byOrganizationId = new Map<string, number>();
+						const byAccountId = new Map<string, number>();
+						const byRefreshTokenLegacy = new Map<string, number>();
+						const byEmailLegacy = new Map<string, number>();
+
+						for (let i = 0; i < accounts.length; i += 1) {
+							const account = accounts[i];
+							if (!account) continue;
+
+							const organizationId = account.organizationId?.trim();
+							if (organizationId) {
+								byOrganizationId.set(organizationId, i);
+								continue;
+							}
+
+							const accountId = account.accountId?.trim();
+							if (accountId) {
+								byAccountId.set(accountId, i);
+								continue;
+							}
+
+							const refreshToken = account.refreshToken?.trim();
+							if (refreshToken) {
+								byRefreshTokenLegacy.set(refreshToken, i);
+							}
+							const email = account.email?.trim();
+							if (email) {
+								byEmailLegacy.set(email, i);
+							}
 						}
-						if (account.refreshToken) {
-							indexByRefreshTokenWithoutAccountId.set(account.refreshToken, i);
-						}
-						if (account.email) {
-							indexByEmailWithoutAccountId.set(account.email, i);
-						}
-					}
+
+						return {
+							byOrganizationId,
+							byAccountId,
+							byRefreshTokenLegacy,
+							byEmailLegacy,
+						};
+					};
+
+					let identityIndexes = buildIdentityIndexes();
 
 					for (const result of results) {
 						const accountId = result.accountIdOverride ?? extractAccountId(result.access);
+						const normalizedAccountId = accountId?.trim() || undefined;
+						const organizationId = result.organizationIdOverride?.trim() || undefined;
 						const accountIdSource =
-							accountId
+							normalizedAccountId
 								? result.accountIdSource ??
-								  (result.accountIdOverride ? "manual" : "token")
+									(result.accountIdOverride ? "manual" : "token")
 								: undefined;
 						const accountLabel = result.accountLabel;
 						const accountEmail = sanitizeEmail(extractAccountEmail(result.access, result.idToken));
-						const existingById =
-							accountId && indexByAccountId.has(accountId)
-								? indexByAccountId.get(accountId)
-								: undefined;
-						const existingByEmailWithoutAccountId =
-							accountEmail && indexByEmailWithoutAccountId.has(accountEmail)
-								? indexByEmailWithoutAccountId.get(accountEmail)
-								: undefined;
-						const existingByRefreshTokenWithoutAccountId =
-							indexByRefreshTokenWithoutAccountId.get(result.refresh);
-						const existingFallbackWithoutAccountId =
-							existingByEmailWithoutAccountId ?? existingByRefreshTokenWithoutAccountId;
-						const existingIndex = existingById ?? existingFallbackWithoutAccountId;
+
+						const existingIndex = (() => {
+							if (organizationId) {
+								return identityIndexes.byOrganizationId.get(organizationId);
+							}
+							if (normalizedAccountId) {
+								return identityIndexes.byAccountId.get(normalizedAccountId);
+							}
+							return (
+								identityIndexes.byRefreshTokenLegacy.get(result.refresh) ??
+								(accountEmail ? identityIndexes.byEmailLegacy.get(accountEmail) : undefined)
+							);
+						})();
 
 						if (existingIndex === undefined) {
-							const newIndex = accounts.length;
 							accounts.push({
-								accountId,
+								accountId: normalizedAccountId,
+								organizationId,
 								accountIdSource,
 								accountLabel,
 								email: accountEmail,
@@ -460,31 +505,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								addedAt: now,
 								lastUsed: now,
 							});
-							if (accountId) {
-								indexByAccountId.set(accountId, newIndex);
-							} else {
-								indexByRefreshTokenWithoutAccountId.set(result.refresh, newIndex);
-								if (accountEmail) {
-									indexByEmailWithoutAccountId.set(accountEmail, newIndex);
-								}
-							}
+							identityIndexes = buildIdentityIndexes();
 							continue;
 						}
 
 						const existing = accounts[existingIndex];
 						if (!existing) continue;
 
-						const oldAccountId = existing.accountId;
-						const oldToken = existing.refreshToken;
-						const oldEmail = existing.email;
 						const nextEmail = accountEmail ?? existing.email;
-						const nextAccountId = accountId ?? existing.accountId;
+						const nextOrganizationId = organizationId ?? existing.organizationId;
+						const nextAccountId = normalizedAccountId ?? existing.accountId;
 						const nextAccountIdSource =
-							accountId ? accountIdSource ?? existing.accountIdSource : existing.accountIdSource;
+							normalizedAccountId
+								? accountIdSource ?? existing.accountIdSource
+								: existing.accountIdSource;
 						const nextAccountLabel = accountLabel ?? existing.accountLabel;
 						accounts[existingIndex] = {
 							...existing,
 							accountId: nextAccountId,
+							organizationId: nextOrganizationId,
 							accountIdSource: nextAccountIdSource,
 							accountLabel: nextAccountLabel,
 							email: nextEmail,
@@ -493,33 +532,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							expiresAt: result.expires,
 							lastUsed: now,
 						};
-						const hadOldAccountId = typeof oldAccountId === "string" && oldAccountId.length > 0;
-						if (hadOldAccountId && oldAccountId !== nextAccountId) {
-							indexByAccountId.delete(oldAccountId);
-						}
-						if (!hadOldAccountId) {
-							if (oldToken && oldToken !== result.refresh) {
-								indexByRefreshTokenWithoutAccountId.delete(oldToken);
-							}
-							if (oldEmail && oldEmail !== nextEmail) {
-								indexByEmailWithoutAccountId.delete(oldEmail);
-							}
-						}
-
-						if (nextAccountId) {
-							indexByAccountId.set(nextAccountId, existingIndex);
-							if (!hadOldAccountId) {
-								indexByRefreshTokenWithoutAccountId.delete(result.refresh);
-								if (nextEmail) {
-									indexByEmailWithoutAccountId.delete(nextEmail);
-								}
-							}
-						} else {
-							indexByRefreshTokenWithoutAccountId.set(result.refresh, existingIndex);
-							if (nextEmail) {
-								indexByEmailWithoutAccountId.set(nextEmail, existingIndex);
-							}
-						}
+						identityIndexes = buildIdentityIndexes();
 					}
 
 					if (accounts.length === 0) return;
@@ -2212,6 +2225,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (!resolved.primary.accountIdOverride && flagged.accountId) {
 											resolved.primary.accountIdOverride = flagged.accountId;
 											resolved.primary.accountIdSource = flagged.accountIdSource ?? "manual";
+											resolved.primary.organizationIdOverride = flagged.organizationId;
 											resolved.variantsForPersistence = [resolved.primary];
 										}
 										if (!resolved.primary.accountLabel && flagged.accountLabel) {
@@ -2237,6 +2251,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									if (!resolved.primary.accountIdOverride && flagged.accountId) {
 										resolved.primary.accountIdOverride = flagged.accountId;
 										resolved.primary.accountIdSource = flagged.accountIdSource ?? "manual";
+										resolved.primary.organizationIdOverride = flagged.organizationId;
 										resolved.variantsForPersistence = [resolved.primary];
 									}
 									if (!resolved.primary.accountLabel && flagged.accountLabel) {
