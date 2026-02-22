@@ -2291,8 +2291,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (!resolved.primary.accountIdOverride && flagged.accountId) {
 											resolved.primary.accountIdOverride = flagged.accountId;
 											resolved.primary.accountIdSource = flagged.accountIdSource ?? "manual";
-											resolved.primary.organizationIdOverride = flagged.organizationId;
 											resolved.variantsForPersistence = [resolved.primary];
+										}
+										if (!resolved.primary.organizationIdOverride && flagged.organizationId) {
+											resolved.primary.organizationIdOverride = flagged.organizationId;
 										}
 										if (!resolved.primary.accountLabel && flagged.accountLabel) {
 											resolved.primary.accountLabel = flagged.accountLabel;
@@ -2317,8 +2319,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 									if (!resolved.primary.accountIdOverride && flagged.accountId) {
 										resolved.primary.accountIdOverride = flagged.accountId;
 										resolved.primary.accountIdSource = flagged.accountIdSource ?? "manual";
-										resolved.primary.organizationIdOverride = flagged.organizationId;
 										resolved.variantsForPersistence = [resolved.primary];
+									}
+									if (!resolved.primary.organizationIdOverride && flagged.organizationId) {
+										resolved.primary.organizationIdOverride = flagged.organizationId;
 									}
 									if (!resolved.primary.accountLabel && flagged.accountLabel) {
 										resolved.primary.accountLabel = flagged.accountLabel;

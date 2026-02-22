@@ -1694,6 +1694,99 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts[0]?.refreshToken).toBe("refresh-shared");
 		expect(mockStorage.accounts[0]?.accessToken).toBe("access-no-org-2");
 	});
+
+	it("preserves flagged organization identity during verify-flagged restore for cached and refreshed paths", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+		const accountsModule = await import("../lib/accounts.js");
+		const refreshQueueModule = await import("../lib/refresh-queue.js");
+
+		const flaggedAccounts = [
+			{
+				refreshToken: "flagged-refresh-cache",
+				organizationId: "org-cache",
+				accountId: "flagged-cache",
+				accountIdSource: "manual",
+				accountLabel: "Cache Workspace",
+				email: "cache@example.com",
+				flaggedAt: Date.now() - 1000,
+				addedAt: Date.now() - 1000,
+				lastUsed: Date.now() - 1000,
+			},
+			{
+				refreshToken: "flagged-refresh-live",
+				organizationId: "org-refresh",
+				accountId: "flagged-live",
+				accountIdSource: "manual",
+				accountLabel: "Refresh Workspace",
+				email: "refresh@example.com",
+				flaggedAt: Date.now() - 500,
+				addedAt: Date.now() - 500,
+				lastUsed: Date.now() - 500,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "verify-flagged" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		vi.mocked(storageModule.loadFlaggedAccounts)
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: flaggedAccounts,
+			})
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: flaggedAccounts,
+			})
+			.mockResolvedValueOnce({
+				version: 1,
+				accounts: [],
+			});
+
+		vi.mocked(accountsModule.lookupCodexCliTokensByEmail).mockImplementation(async (email) => {
+			if (email === "cache@example.com") {
+				return {
+					accessToken: "cached-access",
+					refreshToken: "cached-refresh",
+					expiresAt: Date.now() + 60_000,
+				};
+			}
+			return null;
+		});
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValue([
+			{
+				accountId: "token-shared",
+				source: "token",
+				label: "Token Shared [id:shared]",
+			},
+		]);
+		vi.mocked(accountsModule.selectBestAccountCandidate).mockImplementation(
+			(candidates) => candidates[0] ?? null,
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		expect(vi.mocked(refreshQueueModule.queuedRefresh)).toHaveBeenCalledTimes(1);
+		expect(mockStorage.accounts).toHaveLength(2);
+		expect(new Set(mockStorage.accounts.map((account) => account.organizationId))).toEqual(
+			new Set(["org-cache", "org-refresh"]),
+		);
+		expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith({
+			version: 1,
+			accounts: [],
+		});
+	});
 });
 
 describe("OpenAIOAuthPlugin showToast error handling", () => {
