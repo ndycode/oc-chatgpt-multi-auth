@@ -13,6 +13,7 @@ import type { AccountIdSource, JWTPayload } from "../types.js";
  */
 export interface AccountIdCandidate {
 	accountId: string;
+	organizationId?: string;
 	label: string;
 	source: AccountIdSource;
 	isDefault?: boolean;
@@ -100,6 +101,7 @@ function normalizeCandidateArray(value: unknown): unknown[] {
 function extractCandidateFromRecord(
 	record: Record<string, unknown>,
 	source: AccountIdSource,
+	organizationIdOverride?: string,
 ): AccountIdCandidate | null {
 	const accountId =
 		toStringValue(record.account_id) ??
@@ -112,6 +114,14 @@ function extractCandidateFromRecord(
 		toStringValue(record.id);
 
 	if (!accountId) return null;
+
+	const organizationId =
+		organizationIdOverride ??
+		toStringValue(record.organization_id) ??
+		toStringValue(record.organizationId) ??
+		toStringValue(record.org_id) ??
+		toStringValue(record.team_id) ??
+		toStringValue(record.workspace_id);
 
 	const name =
 		toStringValue(record.name) ??
@@ -158,6 +168,7 @@ function extractCandidateFromRecord(
 
 	return {
 		accountId,
+		organizationId,
 		label,
 		source,
 		isDefault,
@@ -171,19 +182,50 @@ function extractCandidateFromRecord(
 function collectCandidatesFromList(
 	value: unknown,
 	source: AccountIdSource,
+	organizationIdsByIndex?: Array<string | undefined>,
 ): AccountIdCandidate[] {
 	const result: AccountIdCandidate[] = [];
 	const list = normalizeCandidateArray(value);
 	if (list.length === 0) return result;
 
-	for (const item of list) {
+	for (const [index, item] of list.entries()) {
 		if (!isRecord(item)) continue;
-		const candidate = extractCandidateFromRecord(item, source);
+		const candidate = extractCandidateFromRecord(
+			item,
+			source,
+			organizationIdsByIndex?.[index],
+		);
 		if (candidate) {
 			result.push(candidate);
 		}
 	}
 	return result;
+}
+
+function extractOrganizationIdsByIndex(value: unknown): Array<string | undefined> {
+	const organizations = normalizeCandidateArray(value);
+	if (organizations.length === 0) return [];
+
+	return organizations.map((organization) => {
+		if (!isRecord(organization)) return undefined;
+		return (
+			toStringValue(organization.id) ??
+			toStringValue(organization.organization_id) ??
+			toStringValue(organization.organizationId) ??
+			toStringValue(organization.org_id) ??
+			toStringValue(organization.team_id) ??
+			toStringValue(organization.workspace_id)
+		);
+	});
+}
+
+function extractCanonicalOrganizationIds(
+	payload: JWTPayload | Record<string, unknown> | null,
+): Array<string | undefined> {
+	if (!payload || !isRecord(payload)) return [];
+	const auth = payload[JWT_CLAIM_PATH];
+	if (!isRecord(auth)) return [];
+	return extractOrganizationIdsByIndex(auth.organizations);
 }
 
 /**
@@ -199,15 +241,32 @@ function collectCandidatesFromPayload(
 	const keys = ["organizations", "orgs", "accounts", "workspaces", "teams"];
 	for (const key of keys) {
 		if (key in payload) {
-			candidates.push(...collectCandidatesFromList(payload[key], source));
+			candidates.push(
+				...collectCandidatesFromList(
+					payload[key],
+					source,
+					key === "organizations" ? extractOrganizationIdsByIndex(payload[key]) : undefined,
+				),
+			);
 		}
 	}
 
 	const auth = payload[JWT_CLAIM_PATH];
 	if (isRecord(auth)) {
+		const canonicalOrganizationIds = extractCanonicalOrganizationIds(payload);
 		for (const key of keys) {
 			if (key in auth) {
-				candidates.push(...collectCandidatesFromList(auth[key], source));
+				candidates.push(
+					...collectCandidatesFromList(
+						auth[key],
+						source,
+						key === "organizations"
+							? canonicalOrganizationIds.length > 0
+								? canonicalOrganizationIds
+								: extractOrganizationIdsByIndex(auth[key])
+							: undefined,
+					),
+				);
 			}
 		}
 	}
@@ -216,14 +275,20 @@ function collectCandidatesFromPayload(
 }
 
 /**
- * Removes duplicate candidates by accountId.
+ * Removes duplicate candidates by identity hierarchy.
+ * organizationId -> accountId.
  */
 function uniqueCandidates(candidates: AccountIdCandidate[]): AccountIdCandidate[] {
 	const seen = new Set<string>();
 	const result: AccountIdCandidate[] = [];
 	for (const candidate of candidates) {
-		if (seen.has(candidate.accountId)) continue;
-		seen.add(candidate.accountId);
+		const organizationId = candidate.organizationId?.trim();
+		const accountId = candidate.accountId.trim();
+		const key = organizationId
+			? `organizationId:${organizationId}`
+			: `accountId:${accountId}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
 		result.push(candidate);
 	}
 	return result;
@@ -340,10 +405,12 @@ export function getAccountIdCandidates(
 
 	if (idToken) {
 		const decoded = decodeJWT(idToken);
+		const canonicalOrganizationIds = extractCanonicalOrganizationIds(decoded);
 		const idAccountId = extractAccountIdFromPayload(decoded);
 		if (idAccountId && idAccountId !== accessId) {
 			candidates.push({
 				accountId: idAccountId,
+				organizationId: canonicalOrganizationIds[0],
 				label: formatTokenCandidateLabel("ID token account", idAccountId),
 				source: "id_token",
 			});
