@@ -1405,7 +1405,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts).toHaveLength(1);
 	});
 
-	it("persists all account candidates from a single login while keeping best candidate primary", async () => {
+	it("persists distinct organization candidates from a single login while keeping best candidate primary", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
@@ -1417,9 +1417,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			idToken: "id-multi",
 		});
 		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
-			{ accountId: "token-personal", source: "token", label: "Token Personal [id:sonal]" },
-			{ accountId: "org-default", source: "org", label: "Workspace Alpha [id:fault]" },
-			{ accountId: "id-secondary", source: "id_token", label: "Workspace Beta [id:ndary]" },
+			{ accountId: "token-personal", source: "token", label: "Token Personal [id:sonal]", organizationId: "org-personal" },
+			{ accountId: "org-default", source: "org", label: "Workspace Alpha [id:fault]", organizationId: "org-default" },
+			{ accountId: "id-secondary", source: "id_token", label: "Workspace Beta [id:ndary]", organizationId: "org-secondary" },
 		]);
 		vi.mocked(accountsModule.selectBestAccountCandidate).mockImplementationOnce((candidates) =>
 			candidates.find((candidate) => candidate.accountId === "org-default") ?? candidates[0],
@@ -1451,6 +1451,11 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			"Workspace Beta [id:ndary]",
 		]);
 		expect(mockStorage.activeIndex).toBe(0);
+
+		const persistedOrgIds = mockStorage.accounts
+			.filter((account) => account.organizationId)
+			.map((account) => account.organizationId);
+		expect(persistedOrgIds).toEqual(["org-default", "org-secondary"]);
 	});
 
 	it("keeps non-primary candidates persisted even when best candidate differs", async () => {
@@ -1465,8 +1470,8 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			idToken: "id-two",
 		});
 		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([
-			{ accountId: "token-first", source: "token", label: "Token First [id:first]" },
-			{ accountId: "org-preferred", source: "org", label: "Org Preferred [id:ferred]" },
+			{ accountId: "token-first", source: "token", label: "Token First [id:first]", organizationId: "org-token" },
+			{ accountId: "org-preferred", source: "org", label: "Org Preferred [id:ferred]", organizationId: "org-preferred" },
 		]);
 		vi.mocked(accountsModule.selectBestAccountCandidate).mockImplementationOnce((candidates) =>
 			candidates.find((candidate) => candidate.accountId === "org-preferred") ?? candidates[0],
@@ -1486,6 +1491,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			"token-first",
 		]);
 		expect(mockStorage.accounts[1]?.accountIdSource).toBe("token");
+		expect(mockStorage.accounts.map((account) => account.organizationId)).toEqual([
+			"org-preferred",
+			"org-token",
+		]);
 	});
 
 	it("collapses duplicate organization candidates during persistence", async () => {
@@ -1556,7 +1565,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			});
 		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValue([]);
 		vi.mocked(accountsModule.extractAccountId)
-			.mockReturnValueOnce("account-fallback")
+			.mockReturnValueOnce("account-1")
 			.mockReturnValueOnce(undefined);
 
 		const mockClient = createMockClient();
@@ -1571,7 +1580,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts[0]?.organizationId).toBeUndefined();
-		expect(mockStorage.accounts[0]?.accountId).toBe("account-fallback");
+		expect(mockStorage.accounts[0]?.accountId).toBe("account-1");
 		expect(mockStorage.accounts[0]?.refreshToken).toBe("refresh-shared");
 		expect(mockStorage.accounts[0]?.accessToken).toBe("access-no-org-2");
 	});
