@@ -29,6 +29,7 @@ export const HTTP_STATUS = {
 export const OPENAI_HEADERS = {
 	BETA: "OpenAI-Beta",
 	ACCOUNT_ID: "chatgpt-account-id",
+	ORGANIZATION_ID: "openai-organization",
 	ORIGINATOR: "originator",
 	SESSION_ID: "session_id",
 	CONVERSATION_ID: "conversation_id",
