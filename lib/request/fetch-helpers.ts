@@ -500,13 +500,14 @@ export async function transformRequestForCodex(
  * @param init - Request init options
  * @param accountId - ChatGPT account ID
  * @param accessToken - OAuth access token
+ * @param opts - Optional parameters including model, promptCacheKey, and organizationId
  * @returns Headers object with all required Codex headers
  */
 export function createCodexHeaders(
     init: RequestInit | undefined,
     accountId: string,
     accessToken: string,
-    opts?: { model?: string; promptCacheKey?: string },
+    opts?: { model?: string; promptCacheKey?: string; organizationId?: string },
 ): Headers {
 	const headers = new Headers(init?.headers ?? {});
 	headers.delete("x-api-key"); // Remove any existing API key
@@ -523,6 +524,12 @@ export function createCodexHeaders(
         headers.delete(OPENAI_HEADERS.CONVERSATION_ID);
         headers.delete(OPENAI_HEADERS.SESSION_ID);
     }
+
+    const organizationId = opts?.organizationId;
+    if (organizationId) {
+        headers.set(OPENAI_HEADERS.ORGANIZATION_ID, organizationId);
+    }
+
     headers.set("accept", "text/event-stream");
     return headers;
 }
