@@ -18,7 +18,17 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      exclude: ['node_modules/', 'dist/', 'test/'],
+      exclude: [
+        'node_modules/',
+        'dist/',
+        'test/',
+        // Top-level plugin orchestration and interactive TUI selectors are
+        // validated primarily through integration tests rather than unit coverage.
+        'index.ts',
+        'lib/ui/ansi.ts',
+        'lib/ui/confirm.ts',
+        'lib/ui/select.ts',
+      ],
       thresholds: {
         statements: 80,
         branches: 80,
