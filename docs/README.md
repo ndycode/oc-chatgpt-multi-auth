@@ -18,6 +18,7 @@ Explore the engineering depth behind this plugin:
 - **[Config Fields Guide](development/CONFIG_FIELDS.md)** - Understanding config keys, `id`, and `name`
 - **[Testing Guide](development/TESTING.md)** - Test scenarios, verification procedures, integration testing
 - **[TUI Parity Checklist](development/TUI_PARITY_CHECKLIST.md)** - Auth dashboard/UI parity requirements for future changes
+- **[Audit Artifacts (2026-03-01)](audits/2026-03-01-full-main/README.md)** - Findings ledger, IA map, naming guide, validation evidence
 
 ## Key Architectural Decisions
 
@@ -33,7 +34,7 @@ This plugin bridges OpenCode and the ChatGPT Codex backend with explicit mode co
 8. **Beginner Operations Layer** - Setup checklist/wizard, guided doctor flow, next-step recommender, and startup preflight summaries.
 9. **Safety-First Account Backup Flow** - Timestamped exports, import dry-run previews, and pre-import snapshots before apply when existing accounts are present.
 
-**Testing**: 1,767 tests plus integration coverage.
+**Testing**: 1,700+ tests plus integration coverage.
 
 ---
 
