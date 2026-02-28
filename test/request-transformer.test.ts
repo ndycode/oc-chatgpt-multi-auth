@@ -1703,7 +1703,7 @@ describe('Request Transformer Module', () => {
 			expect(result.input![2].type).toBe('function_call_output');
 		});
 
-		it('should treat local_shell_call as a match for function_call_output', async () => {
+		it('should preserve function_call_output and still inject local_shell_call_output for local_shell_call', async () => {
 			const body: RequestBody = {
 				model: 'gpt-5-codex',
 				input: [
@@ -1719,9 +1719,10 @@ describe('Request Transformer Module', () => {
 
 			const result = await transformRequestBody(body, codexInstructions);
 
-			expect(result.input).toHaveLength(3);
+			expect(result.input).toHaveLength(4);
 			expect(result.input![1].type).toBe('local_shell_call');
-			expect(result.input![2].type).toBe('function_call_output');
+			expect(result.input![2].type).toBe('local_shell_call_output');
+			expect(result.input![3].type).toBe('function_call_output');
 		});
 
 		it('should keep matching custom_tool_call_output items', async () => {

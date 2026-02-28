@@ -95,6 +95,10 @@ function normalizeToolUseId(rawId: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function getStoredPartCallId(part: StoredPart): string | undefined {
   if ("callID" in part) {
     const callId = normalizeToolUseId(part.callID);
@@ -109,8 +113,12 @@ function getStoredPartInput(part: StoredPart): Record<string, unknown> | undefin
     return undefined;
   }
 
-  const state = (part as { state?: { input?: Record<string, unknown> } }).state;
-  return state?.input;
+  const state = (part as { state?: { input?: unknown } }).state;
+  const input = state?.input;
+  if (isRecord(input)) {
+    return input;
+  }
+  return undefined;
 }
 
 function toRecoveryMessagePart(part: StoredPart): MessagePart {
@@ -131,11 +139,10 @@ function extractToolUseIds(parts: MessagePart[]): string[] {
   for (const part of parts) {
     if (part.type !== "tool_use") continue;
 
-    const partId = normalizeToolUseId(part.id);
-    if (partId) ids.add(partId);
-
     const callId = normalizeToolUseId(part.callID);
-    if (callId) ids.add(callId);
+    const partId = normalizeToolUseId(part.id);
+    const canonicalId = callId ?? partId;
+    if (canonicalId) ids.add(canonicalId);
   }
 
   return Array.from(ids);

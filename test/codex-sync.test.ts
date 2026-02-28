@@ -757,6 +757,61 @@ describe("codex-sync", () => {
 		expect(account?.accessToken).toBe(newAccess);
 	});
 
+	it("preserves explicit enabled=true updates when merging an existing account", async () => {
+		const codexDir = await createCodexDir("codex-sync-pool-enable-account");
+		const poolDir = join(codexDir, "multi-auth");
+		await mkdir(poolDir, { recursive: true });
+		const poolPath = join(poolDir, "openai-codex-accounts.json");
+
+		await writeFile(
+			poolPath,
+			JSON.stringify(
+				{
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0, "gpt-5-codex": 0, "codex-max": 0 },
+					accounts: [
+						{
+							accountId: "pool-acc-enabled",
+							refreshToken: "pool-refresh-enabled",
+							accessToken: "old-access-enabled",
+							enabled: false,
+							addedAt: Date.now() - 1000,
+							lastUsed: Date.now() - 1000,
+						},
+					],
+				},
+				null,
+				2,
+			),
+			"utf-8",
+		);
+
+		const refreshedAccessToken = createJwt({
+			exp: Math.floor(Date.now() / 1000) + 7200,
+			"https://api.openai.com/auth": {
+				chatgpt_account_id: "pool-acc-enabled",
+			},
+		});
+
+		await writeCodexMultiAuthPool(
+			{
+				accessToken: refreshedAccessToken,
+				refreshToken: "pool-refresh-enabled",
+				accountId: "pool-acc-enabled",
+				enabled: true,
+			},
+			{ codexDir },
+		);
+
+		const saved = JSON.parse(await readFile(poolPath, "utf-8")) as {
+			accounts: Array<{ enabled?: boolean; accessToken?: string }>;
+		};
+		const account = saved.accounts[0];
+		expect(account?.enabled).toBe(true);
+		expect(account?.accessToken).toBe(refreshedAccessToken);
+	});
+
 	it("creates a new pool account when only organization matches but account identities differ", async () => {
 		const codexDir = await createCodexDir("codex-sync-pool-org-collision");
 		const poolDir = join(codexDir, "multi-auth");

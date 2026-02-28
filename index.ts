@@ -1471,6 +1471,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const sanitizeAuditPaths = (paths: string[]): string[] =>
 			paths.map((value) => sanitizeAuditPath(value) ?? "<unknown>");
 
+		const sanitizeAuditErrorMessage = (error: unknown): string => {
+			const rawMessage = error instanceof Error ? error.message : String(error);
+			if (!rawMessage) {
+				return "<unknown>";
+			}
+
+			const normalized = rawMessage.replace(/\\/g, "/");
+			return normalized.replace(
+				/[A-Za-z]:\/[^\s"'`<>()]+|(?<![A-Za-z][A-Za-z0-9+.-]*:)\/[^\s"'`<>()]+/g,
+				(match) => sanitizeAuditPath(match) ?? "<path>",
+			);
+		};
+
 		const syncFromCodexToPlugin = async (): Promise<SyncSummary> => {
 			try {
 				const codexAccount = await readCodexCurrentAccount();
@@ -1603,7 +1616,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					"plugin-accounts",
 					AuditOutcome.FAILURE,
 					{
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeAuditErrorMessage(error),
 					},
 				);
 				throw error;
@@ -1762,7 +1775,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					"codex-auth",
 					AuditOutcome.FAILURE,
 					{
-						error: error instanceof Error ? error.message : String(error),
+						error: sanitizeAuditErrorMessage(error),
 					},
 				);
 				throw error;

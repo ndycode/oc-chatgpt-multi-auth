@@ -6,6 +6,7 @@ Scope: direct runtime dependency posture, alternatives, compatibility, migration
 ## Capability: OpenCode Plugin Integration
 
 ### Candidates
+
 | Package | Version | Downloads/wk | Last Commit/Publish | License | Stars |
 |---|---:|---:|---|---|---:|
 | `@opencode-ai/plugin` | 1.2.15 | 1,826,527 | Published 2026-02-26; upstream repo push 2026-02-28 (inferred) | MIT | 113,016 (upstream) |
@@ -33,6 +34,7 @@ Scope: direct runtime dependency posture, alternatives, compatibility, migration
 ## Capability: OAuth / OIDC Utilities
 
 ### Candidates
+
 | Package | Version | Downloads/wk | Last Commit/Publish | License | Stars |
 |---|---:|---:|---|---|---:|
 | `@openauthjs/openauth` | 0.4.3 | 1,089,383 | Published 2025-03-04; upstream repo push 2025-07-18 | npm metadata missing; upstream MIT | 6,688 |
@@ -60,6 +62,7 @@ Scope: direct runtime dependency posture, alternatives, compatibility, migration
 ## Capability: HTTP Server / Routing
 
 ### Candidates
+
 | Package | Version | Downloads/wk | Last Commit/Publish | License | Stars |
 |---|---:|---:|---|---|---:|
 | `hono` | 4.12.3 | 23,472,737 | Published 2026-02-26; GitHub push 2026-02-26 | MIT | 29,085 |
@@ -85,6 +88,7 @@ Scope: direct runtime dependency posture, alternatives, compatibility, migration
 ## Capability: Runtime Schema Validation
 
 ### Candidates
+
 | Package | Version | Downloads/wk | Last Commit/Publish | License | Stars |
 |---|---:|---:|---|---|---:|
 | `zod` | 4.3.6 | 101,522,159 | GitHub push 2026-02-15 | MIT | 41,992 |

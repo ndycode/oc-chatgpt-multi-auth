@@ -609,7 +609,7 @@ function buildPoolAccountPayload(payload: CodexSyncAccountPayload): AccountMetad
 		refreshToken: payload.refreshToken,
 		accessToken: payload.accessToken,
 		expiresAt: extractExpiresAt(payload.accessToken),
-		enabled: payload.enabled === false ? false : undefined,
+		enabled: typeof payload.enabled === "boolean" ? payload.enabled : undefined,
 		addedAt: now,
 		lastUsed: now,
 	};
@@ -731,14 +731,17 @@ export async function writeCodexMultiAuthPool(
 		merged[existingIndex] = {
 			...existingAccount,
 			...candidate,
-			accountId: candidate.accountId ?? existingAccount?.accountId,
-			organizationId: candidate.organizationId ?? existingAccount?.organizationId,
-			accountIdSource: candidate.accountIdSource ?? existingAccount?.accountIdSource,
-			accountLabel: candidate.accountLabel ?? existingAccount?.accountLabel,
-			email: candidate.email ?? existingAccount?.email,
-			enabled: candidate.enabled ?? existingAccount?.enabled,
-			addedAt: existingAccount?.addedAt ?? candidate.addedAt,
-		};
+				accountId: candidate.accountId ?? existingAccount?.accountId,
+				organizationId: candidate.organizationId ?? existingAccount?.organizationId,
+				accountIdSource: candidate.accountIdSource ?? existingAccount?.accountIdSource,
+				accountLabel: candidate.accountLabel ?? existingAccount?.accountLabel,
+				email: candidate.email ?? existingAccount?.email,
+				enabled:
+					typeof candidate.enabled === "boolean"
+						? candidate.enabled
+						: existingAccount?.enabled,
+				addedAt: existingAccount?.addedAt ?? candidate.addedAt,
+			};
 	} else {
 		merged.push(candidate);
 		candidateIndex = merged.length - 1;

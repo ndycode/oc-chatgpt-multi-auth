@@ -237,14 +237,21 @@ type ToolOutputType =
 function toToolOutputType(type: InputItem["type"]): ToolOutputType | null {
 	switch (type) {
 		case "function_call":
+		case "function_call_output":
 			return "function_call_output";
 		case "local_shell_call":
+		case "local_shell_call_output":
 			return "local_shell_call_output";
 		case "custom_tool_call":
+		case "custom_tool_call_output":
 			return "custom_tool_call_output";
 		default:
 			return null;
 	}
+}
+
+function buildOutputCallKey(outputType: ToolOutputType, callId: string): string {
+	return `${outputType}:${callId}`;
 }
 
 function collectOutputCallIds(input: InputItem[]): Set<string> {
@@ -255,8 +262,10 @@ function collectOutputCallIds(input: InputItem[]): Set<string> {
 			item.type === "local_shell_call_output" ||
 			item.type === "custom_tool_call_output"
 		) {
+			const outputType = toToolOutputType(item.type);
+			if (!outputType) continue;
 			const callId = getCallId(item);
-			if (callId) outputCallIds.add(callId);
+			if (callId) outputCallIds.add(buildOutputCallKey(outputType, callId));
 		}
 	}
 	return outputCallIds;
@@ -274,16 +283,17 @@ export function injectMissingToolOutputs(input: InputItem[]): InputItem[] {
 			continue;
 		}
 
-		const callId = getCallId(item);
-		if (callId && !outputCallIds.has(callId)) {
-			result.push({
-				type: outputType,
-				call_id: callId,
-				output: CANCELLED_TOOL_OUTPUT,
-			} as unknown as InputItem);
-			outputCallIds.add(callId);
+			const callId = getCallId(item);
+			const outputCallKey = callId ? buildOutputCallKey(outputType, callId) : null;
+			if (callId && outputCallKey && !outputCallIds.has(outputCallKey)) {
+				result.push({
+					type: outputType,
+					call_id: callId,
+					output: CANCELLED_TOOL_OUTPUT,
+				} as unknown as InputItem);
+				outputCallIds.add(outputCallKey);
+			}
 		}
-	}
 
 	return result;
 }

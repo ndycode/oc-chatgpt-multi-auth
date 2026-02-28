@@ -92,6 +92,21 @@ describe("Tool Output Normalization", () => {
 			expect(outputs).toHaveLength(2);
 		});
 
+		it("tracks existing outputs by type and call_id", () => {
+			const input: InputItem[] = [
+				{ type: "function_call", role: "assistant", call_id: "shared_call", name: "fn_tool" },
+				{ type: "custom_tool_call", role: "assistant", call_id: "shared_call", name: "custom_tool" },
+				{ type: "function_call_output", role: "tool", call_id: "shared_call", output: "done" },
+			];
+			const result = injectMissingToolOutputs(input);
+			expect(result).toHaveLength(4);
+			const functionOutputs = result.filter(i => i.type === "function_call_output");
+			const customOutputs = result.filter(i => i.type === "custom_tool_call_output");
+			expect(functionOutputs).toHaveLength(1);
+			expect(customOutputs).toHaveLength(1);
+			expect((customOutputs[0] as { call_id?: string }).call_id).toBe("shared_call");
+		});
+
 		it("skips calls without call_id", () => {
 			const input: InputItem[] = [
 				{ type: "function_call", role: "assistant", name: "no_id_tool" },

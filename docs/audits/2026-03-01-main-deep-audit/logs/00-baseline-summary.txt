@@ -1,9 +1,9 @@
-01-npm-ci.log=System.Object[]
-02-lint.log=System.Object[]
-03-typecheck.log=System.Object[]
-04-build.log=System.Object[]
-05-test.log=System.Object[]
-06-coverage.log=System.Object[]
-07-audit-ci.log=System.Object[]
-08-outdated-json.log=System.Object[]
-09-audit-prod-json.log=System.Object[]
+01-npm-ci.log | exit=0 | npm ci installed 214 packages; audit reported 4 vulnerabilities (1 moderate, 3 high).
+02-lint.log | exit=0 | lint:ts and lint:scripts completed with no eslint violations.
+03-typecheck.log | exit=0 | tsc --noEmit passed.
+04-build.log | exit=0 | build completed (tsc + copy-oauth-success.js).
+05-test.log | exit=0 | vitest run completed successfully.
+06-coverage.log | exit=0 | vitest --coverage completed successfully.
+07-audit-ci.log | exit=1 | audit:prod failed on hono advisory GHSA-xh87-mx6m-69f3 (1 high vulnerability).
+08-outdated-json.log | exit=1 | outdated runtime deps include @opencode-ai/plugin, @opencode-ai/sdk, and @types/node.
+09-audit-prod-json.log | exit=1 | npm audit --omit=dev JSON confirms hono high-severity vulnerability (CVSS 8.2).

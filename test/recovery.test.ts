@@ -502,6 +502,40 @@ describe("handleSessionRecovery", () => {
       });
     });
 
+    it("prefers callID over id when both tool_use identifiers exist", async () => {
+      const client = createMockClient();
+      client.session.messages.mockResolvedValue({
+        data: [{
+          info: { id: "msg-1", role: "assistant" },
+          parts: [
+            { type: "tool_use", id: "legacy-id", callID: "canonical-id", name: "read" },
+          ],
+        }],
+      });
+
+      const hook = createSessionRecoveryHook(
+        { client: client as never, directory: "/test" },
+        { sessionRecovery: true, autoResume: false }
+      );
+
+      const result = await hook?.handleSessionRecovery({
+        role: "assistant",
+        error: "tool_use without tool_result",
+        sessionID: "session-1",
+        id: "msg-1",
+      } as never);
+
+      expect(result).toBe(true);
+      expect(client.session.prompt).toHaveBeenCalledWith({
+        path: { id: "session-1" },
+        body: {
+          parts: [
+            { type: "tool_result", tool_use_id: "canonical-id", content: "Operation cancelled by user (ESC pressed)" },
+          ],
+        },
+      });
+    });
+
     it("reads parts from storage when parts array is empty", async () => {
       const client = createMockClient();
       client.session.messages.mockResolvedValue({
@@ -530,6 +564,42 @@ describe("handleSessionRecovery", () => {
 
       expect(mockedReadParts).toHaveBeenCalledWith("msg-1");
       expect(result).toBe(true);
+    });
+
+    it("ignores malformed stored tool input values during recovery mapping", async () => {
+      const client = createMockClient();
+      client.session.messages.mockResolvedValue({
+        data: [{
+          info: { id: "msg-1", role: "assistant" },
+          parts: [],
+        }],
+      });
+
+      mockedReadParts.mockReturnValue([
+        { type: "tool", id: "tool-part-1", callID: "tool-1", tool: "read", state: { input: "invalid-input" } },
+      ] as never);
+
+      const hook = createSessionRecoveryHook(
+        { client: client as never, directory: "/test" },
+        { sessionRecovery: true, autoResume: false }
+      );
+
+      const result = await hook?.handleSessionRecovery({
+        role: "assistant",
+        error: "tool_use without tool_result",
+        sessionID: "session-1",
+        id: "msg-1",
+      } as never);
+
+      expect(result).toBe(true);
+      expect(client.session.prompt).toHaveBeenCalledWith({
+        path: { id: "session-1" },
+        body: {
+          parts: [
+            { type: "tool_result", tool_use_id: "tool-1", content: "Operation cancelled by user (ESC pressed)" },
+          ],
+        },
+      });
     });
 
     it("returns false when no tool_use parts found", async () => {
