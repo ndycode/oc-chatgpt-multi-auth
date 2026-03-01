@@ -92,6 +92,21 @@ function checkOmxOnHost(checks, runner) {
   }
 }
 
+function checkOmxOnHostAdvisory(checks, runner) {
+  const omxHelp = runner(getShellCommand("omx"), ["--help"]);
+  if (omxHelp.code === 0) {
+    addCheck(checks, "pass", "info", "omx host runtime", "omx is available in current host runtime.");
+  } else {
+    addCheck(
+      checks,
+      "warn",
+      "info",
+      "omx host runtime",
+      "omx is not available on host. Team mode can still run in WSL; fallback should run via WSL omx.",
+    );
+  }
+}
+
 function checkHookConfig(checks, cwd, fsDeps) {
   const hookPath = join(cwd, ".omx", "tmux-hook.json");
   if (!fsDeps.existsSync(hookPath)) {
@@ -127,7 +142,7 @@ function checkHookConfig(checks, cwd, fsDeps) {
 }
 
 function runWindowsChecks(checks, requestedDistro, runner) {
-  checkOmxOnHost(checks, runner);
+  checkOmxOnHostAdvisory(checks, runner);
 
   const wsl = runner("wsl", ["-l", "-q"]);
   if (wsl.code !== 0) {
@@ -182,12 +197,13 @@ function runWindowsChecks(checks, requestedDistro, runner) {
     addCheck(checks, "fail", "team_hard", "omx team in WSL", "omx team --help failed in selected distro.");
   }
 
-  const tmuxSession = runInWsl("[ -n \"${TMUX:-}\" ]");
-  if (tmuxSession.code === 0) {
-    addCheck(checks, "pass", "info", "tmux leader session", "Current WSL shell is inside tmux.");
-  } else {
-    addCheck(checks, "fail", "fixable", "tmux leader session", "Attach/start tmux in WSL before running omx team.");
-  }
+  addCheck(
+    checks,
+    "warn",
+    "info",
+    "tmux leader session check",
+    "Windows preflight cannot reliably assert existing tmux attachment. Rerun preflight from inside WSL tmux session before team launch.",
+  );
 
   return { distro: selectedDistro };
 }

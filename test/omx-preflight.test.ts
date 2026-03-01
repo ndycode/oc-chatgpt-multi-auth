@@ -23,7 +23,7 @@ describe("omx-preflight-wsl2 script", () => {
     expect(mod.parseDistroList(output)).toEqual(["docker-desktop", "Ubuntu"]);
   });
 
-  it("routes to blocked when omx is missing on host", async () => {
+  it("warns on missing host omx in windows mode when WSL checks pass", async () => {
     const mod = await import("../scripts/omx-preflight-wsl2.js");
 
     const result = mod.runPreflight(
@@ -36,6 +36,29 @@ describe("omx-preflight-wsl2 script", () => {
         runProcess: (command: string, args: string[]) => {
           if (command === "omx") return { code: 1, stdout: "", stderr: "missing" };
           if (command === "wsl" && args[0] === "-l") return { code: 0, stdout: "Ubuntu\n", stderr: "" };
+          if (command === "wsl" && args[0] === "-d") return { code: 0, stdout: "", stderr: "" };
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+
+    expect(result.mode).toBe("team_ready");
+    expect(result.exitCode).toBe(0);
+    expect(result.checks.some((entry: { name: string; status: string }) => entry.name === "omx host runtime" && entry.status === "warn")).toBe(true);
+  });
+
+  it("routes to blocked when omx is missing on unix host", async () => {
+    const mod = await import("../scripts/omx-preflight-wsl2.js");
+
+    const result = mod.runPreflight(
+      { distro: "" },
+      {
+        platform: "linux",
+        cwd: process.cwd(),
+        existsSync: () => false,
+        readFileSync: () => "",
+        runProcess: (command: string) => {
+          if (command === "omx") return { code: 1, stdout: "", stderr: "missing" };
           return { code: 0, stdout: "", stderr: "" };
         },
       },

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -182,6 +182,25 @@ function ensureRepoRoot(cwd) {
   }
 }
 
+function checkRalphCleanup(cwd) {
+  const statePath = join(cwd, ".omx", "state", "ralph-state.json");
+  if (!existsSync(statePath)) {
+    return { passed: true, detail: "ralph state file not present (treated as cleaned)." };
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    const active = parsed && typeof parsed === "object" && "active" in parsed ? parsed.active : undefined;
+    const phase = parsed && typeof parsed === "object" && "current_phase" in parsed ? parsed.current_phase : undefined;
+    if (active === false) {
+      return { passed: true, detail: `ralph state inactive${phase ? ` (${String(phase)})` : ""}.` };
+    }
+    return { passed: false, detail: "ralph state is still active; run `omx cancel` before final evidence capture." };
+  } catch {
+    return { passed: false, detail: "ralph state file unreadable; fix state file or run `omx cancel`." };
+  }
+}
+
 function buildOutputPath(options, cwd, runId) {
   if (options.output) return options.output;
   const filename = `${runId}-${options.mode}-evidence.md`;
@@ -224,6 +243,8 @@ export function runEvidence(options, deps = {}) {
         teamCounts.failed === 0
       : true;
 
+  const ralphCleanup = options.mode === "ralph" ? checkRalphCleanup(cwd) : { passed: true, detail: "Not applicable (mode=team)" };
+
   const architectPassed = options.architectTier.trim().length > 0 && options.architectRef.trim().length > 0;
 
   const gates = [
@@ -246,6 +267,11 @@ export function runEvidence(options, deps = {}) {
       passed: architectPassed,
       detail: `tier=${options.architectTier}; ref=${options.architectRef}`,
     },
+    {
+      name: "Ralph cleanup state",
+      passed: ralphCleanup.passed,
+      detail: ralphCleanup.detail,
+    },
   ];
 
   const overallPassed =
@@ -254,7 +280,8 @@ export function runEvidence(options, deps = {}) {
     build.code === 0 &&
     diagnostics.code === 0 &&
     teamStatePassed &&
-    architectPassed;
+    architectPassed &&
+    ralphCleanup.passed;
 
   const runId = nowStamp();
   const outputPath = buildOutputPath(options, cwd, runId);

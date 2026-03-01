@@ -93,7 +93,7 @@ npm run omx:preflight -- --distro Ubuntu
 | Exit Code | Mode | Meaning | Required Action |
 | --- | --- | --- | --- |
 | `0` | `team_ready` | Team prerequisites are satisfied | Continue with team mode |
-| `2` | `team_blocked` | Fixable blockers (for example tmux session or hook config) | Fix blockers, rerun preflight |
+| `2` | `team_blocked` | Fixable blockers (for example hook config) | Fix blockers, rerun preflight |
 | `3` | `fallback_ralph` | Team-only prerequisites failed | Execute controlled Ralph fallback |
 | `4` | `blocked` | Fatal blocker for both team and fallback (for example missing `omx`) | Stop and fix fatal prerequisite |
 | `1` | script error | Invocation/runtime failure | Fix command/environment |
@@ -142,6 +142,12 @@ Capture evidence before shutdown/handoff:
 
 ```bash
 npm run omx:evidence -- --mode team --team <team-name> --architect-tier standard --architect-ref "<architect verdict reference>" --architect-note "<optional note>"
+```
+
+Ralph cleanup before fallback evidence:
+
+```bash
+omx cancel
 ```
 
 Fallback evidence:
@@ -256,7 +262,7 @@ rm -rf ".omx/state/team/<team-name>"
 - [ ] Fresh quality gates passed (`typecheck`, `test`, `build`, diagnostics).
 - [ ] Architect verification recorded with tier + reference.
 - [ ] Evidence file created under `.omx/evidence/`.
-- [ ] `omx cancel` executed for Ralph cleanup.
+- [ ] Ralph cleanup state is inactive in evidence output (`omx cancel` done before final ralph evidence).
 - [ ] Team shutdown + cleanup verified (team mode only).
 
 ## Command Reference
