@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const __filename = fileURLToPath(import.meta.url);
+const REDACTION_PLACEHOLDER = "***REDACTED***";
+const WRITE_RETRY_ATTEMPTS = 6;
+const WRITE_RETRY_BASE_DELAY_MS = 40;
 
 function normalizePathForCompare(path) {
   const resolved = resolve(path);
@@ -125,6 +128,45 @@ function clampText(text, maxLength = 12000) {
   return `${text.slice(0, maxLength)}\n...[truncated]`;
 }
 
+export function redactSensitiveText(text) {
+  let redacted = text;
+  const replacementRules = [
+    {
+      pattern: /\b(Authorization\s*:\s*Bearer\s+)([^\s\r\n]+)/gi,
+      replace: (_match, prefix, _secret) => `${prefix}${REDACTION_PLACEHOLDER}`,
+    },
+    {
+      pattern: /("(?:token|secret|password|api[_-]?key|authorization|access_token)"\s*:\s*")([^"]+)(")/gi,
+      replace: (_match, start, _secret, end) => `${start}${REDACTION_PLACEHOLDER}${end}`,
+    },
+    {
+      pattern: /\b((?:token|secret|password|api[_-]?key|authorization|access_token)\b[^\S\r\n]*[:=][^\S\r\n]*)([^\s\r\n]+)/gi,
+      replace: (_match, prefix, _secret) => `${prefix}${REDACTION_PLACEHOLDER}`,
+    },
+    {
+      pattern: /\b(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi,
+      replace: (_match, prefix, _secret) => `${prefix}${REDACTION_PLACEHOLDER}`,
+    },
+    {
+      pattern: /([?&](?:token|api[_-]?key|access_token|password)=)([^&\s]+)/gi,
+      replace: (_match, prefix, _secret) => `${prefix}${REDACTION_PLACEHOLDER}`,
+    },
+    {
+      pattern: /\bsk-[A-Za-z0-9]{20,}\b/g,
+      replace: REDACTION_PLACEHOLDER,
+    },
+    {
+      pattern: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+      replace: REDACTION_PLACEHOLDER,
+    },
+  ];
+
+  for (const rule of replacementRules) {
+    redacted = redacted.replace(rule.pattern, rule.replace);
+  }
+  return redacted;
+}
+
 function parseCount(text, keyAliases) {
   for (const key of keyAliases) {
     const patterns = [
@@ -172,7 +214,43 @@ export function parseTeamCounts(statusOutput) {
 function formatOutput(result) {
   const combined = [result.stdout, result.stderr].filter((value) => value.length > 0).join("\n");
   if (!combined) return "(no output)";
-  return clampText(combined);
+  return clampText(redactSensitiveText(combined));
+}
+
+function getErrorCode(error) {
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
+    return error.code;
+  }
+  return "";
+}
+
+function isRetryableWriteError(error) {
+  const code = getErrorCode(error);
+  return code === "EBUSY" || code === "EPERM";
+}
+
+function sleepSync(milliseconds) {
+  const waitMs = Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 0;
+  if (waitMs === 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+}
+
+export function writeFileWithRetry(outputPath, content, deps = {}) {
+  const writeFn = deps.writeFileSyncFn ?? writeFileSync;
+  const sleepFn = deps.sleepSyncFn ?? sleepSync;
+  const maxAttempts = Number.isInteger(deps.maxAttempts) ? deps.maxAttempts : WRITE_RETRY_ATTEMPTS;
+  const baseDelayMs = Number.isFinite(deps.baseDelayMs) ? deps.baseDelayMs : WRITE_RETRY_BASE_DELAY_MS;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      writeFn(outputPath, content, "utf8");
+      return;
+    } catch (error) {
+      const isRetryable = isRetryableWriteError(error);
+      if (!isRetryable || attempt === maxAttempts) throw error;
+      sleepFn(baseDelayMs * attempt);
+    }
+  }
 }
 
 function ensureRepoRoot(cwd) {
@@ -307,6 +385,9 @@ export function runEvidence(options, deps = {}) {
   lines.push("");
   lines.push(`## Overall Result: ${overallPassed ? "PASS" : "FAIL"}`);
   lines.push("");
+  lines.push("## Redaction Strategy");
+  lines.push(`- Command output is sanitized before writing evidence; keys matching token/secret/password/api key patterns are replaced with ${REDACTION_PLACEHOLDER}.`);
+  lines.push("");
   lines.push("## Command Output");
 
   const commandResults = [
@@ -334,7 +415,7 @@ export function runEvidence(options, deps = {}) {
   lines.push("```");
   lines.push("");
 
-  writeFileSync(outputPath, lines.join("\n"), "utf8");
+  writeFileWithRetry(outputPath, lines.join("\n"));
   return { overallPassed, outputPath };
 }
 

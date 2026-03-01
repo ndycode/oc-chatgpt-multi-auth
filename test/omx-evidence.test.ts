@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -42,6 +43,99 @@ describe("omx-capture-evidence script", () => {
       inProgress: 1,
       failed: 0,
     });
+  });
+
+  it("redacts sensitive command output before writing evidence", async () => {
+    const mod = await import("../scripts/omx-capture-evidence.js");
+    const root = await mkdtemp(join(tmpdir(), "omx-evidence-redaction-"));
+    await writeFile(join(root, "package.json"), '{"name":"tmp"}', "utf8");
+
+    try {
+      const outputPath = join(root, ".omx", "evidence", "redacted.md");
+      mod.runEvidence(
+        {
+          mode: "ralph",
+          team: "",
+          architectTier: "standard",
+          architectRef: "architect://verdict/ok",
+          architectNote: "",
+          output: outputPath,
+        },
+        {
+          cwd: root,
+          runCommand: (command: string, args: string[]) => {
+            if (command === "git" && args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
+              return { command: "git rev-parse --abbrev-ref HEAD", code: 0, stdout: "feature/test", stderr: "" };
+            }
+            if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
+              return { command: "git rev-parse HEAD", code: 0, stdout: "abc123", stderr: "" };
+            }
+            return {
+              command: `${command} ${args.join(" ")}`,
+              code: 0,
+              stdout: "token=secret-value Authorization: Bearer bearer-value sk-1234567890123456789012",
+              stderr: "",
+            };
+          },
+        },
+      );
+
+      const markdown = await readFile(outputPath, "utf8");
+      expect(markdown).toContain("***REDACTED***");
+      expect(markdown).not.toContain("secret-value");
+      expect(markdown).not.toContain("bearer-value");
+      expect(markdown).toContain("## Redaction Strategy");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("handles 100 concurrent retry-prone writes without EBUSY throw", async () => {
+    const mod = await import("../scripts/omx-capture-evidence.js");
+    const root = await mkdtemp(join(tmpdir(), "omx-evidence-concurrency-"));
+    const sharedPath = join(root, "shared-evidence.md");
+    const seenPayloadAttempts = new Map<string, number>();
+
+    const makeBusyError = () => {
+      const error = new Error("file busy");
+      Object.assign(error, { code: "EBUSY" });
+      return error;
+    };
+
+    try {
+      const concurrencyCount = 100;
+      const writes = Array.from({ length: concurrencyCount }, (_value, index) => {
+        return new Promise<void>((resolve, reject) => {
+          setTimeout(() => {
+            try {
+              mod.writeFileWithRetry(sharedPath, `write-${index}`, {
+                writeFileSyncFn: (path: string, content: string, encoding: BufferEncoding) => {
+                  const attempts = seenPayloadAttempts.get(content) ?? 0;
+                  if (attempts === 0) {
+                    seenPayloadAttempts.set(content, 1);
+                    throw makeBusyError();
+                  }
+                  seenPayloadAttempts.set(content, attempts + 1);
+                  writeFileSync(path, content, encoding);
+                },
+                sleepSyncFn: () => undefined,
+                maxAttempts: 5,
+                baseDelayMs: 0,
+              });
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          }, 0);
+        });
+      });
+
+      await expect(Promise.all(writes)).resolves.toHaveLength(concurrencyCount);
+      const finalContent = await readFile(sharedPath, "utf8");
+      expect(finalContent.startsWith("write-")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("writes evidence markdown when gates pass in ralph mode", async () => {
