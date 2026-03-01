@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 
 describe("omx-capture-evidence script", () => {
   it("parses required args", async () => {
-    const mod = await import("../scripts/omx-capture-evidence.js");
+    const mod = await import("../scripts/omx-capture-evidence-core.js");
     expect(
       mod.parseArgs([
         "--mode",
@@ -27,12 +27,12 @@ describe("omx-capture-evidence script", () => {
   });
 
   it("requires architect args", async () => {
-    const mod = await import("../scripts/omx-capture-evidence.js");
+    const mod = await import("../scripts/omx-capture-evidence-core.js");
     expect(() => mod.parseArgs(["--mode", "ralph"])).toThrow("`--architect-tier` is required.");
   });
 
   it("parses team status counts from json and text", async () => {
-    const mod = await import("../scripts/omx-capture-evidence.js");
+    const mod = await import("../scripts/omx-capture-evidence-core.js");
     expect(mod.parseTeamCounts('{"task_counts":{"pending":0,"in_progress":0,"failed":1}}')).toEqual({
       pending: 0,
       inProgress: 0,
@@ -46,7 +46,7 @@ describe("omx-capture-evidence script", () => {
   });
 
   it("redacts sensitive command output before writing evidence", async () => {
-    const mod = await import("../scripts/omx-capture-evidence.js");
+    const mod = await import("../scripts/omx-capture-evidence-core.js");
     const root = await mkdtemp(join(tmpdir(), "omx-evidence-redaction-"));
     await writeFile(join(root, "package.json"), '{"name":"tmp"}', "utf8");
 
@@ -94,7 +94,7 @@ describe("omx-capture-evidence script", () => {
   });
 
   it("handles 100 concurrent retry-prone writes without EBUSY throw", async () => {
-    const mod = await import("../scripts/omx-capture-evidence.js");
+    const mod = await import("../scripts/omx-capture-evidence-core.js");
     const root = await mkdtemp(join(tmpdir(), "omx-evidence-concurrency-"));
     const sharedPath = join(root, "shared-evidence.md");
     const seenPayloadAttempts = new Map<string, number>();
@@ -137,7 +137,7 @@ describe("omx-capture-evidence script", () => {
   });
 
   it("retries EBUSY with built-in sleep implementation", async () => {
-    const mod = await import("../scripts/omx-capture-evidence.js");
+    const mod = await import("../scripts/omx-capture-evidence-core.js");
     const root = await mkdtemp(join(tmpdir(), "omx-evidence-sleep-"));
     const outputPath = join(root, "retry-output.md");
     let calls = 0;
@@ -170,7 +170,7 @@ describe("omx-capture-evidence script", () => {
   });
 
   it("writes evidence markdown when gates pass in ralph mode", async () => {
-    const mod = await import("../scripts/omx-capture-evidence.js");
+    const mod = await import("../scripts/omx-capture-evidence-core.js");
     const root = await mkdtemp(join(tmpdir(), "omx-evidence-"));
     await writeFile(join(root, "package.json"), '{"name":"tmp"}', "utf8");
 
@@ -209,7 +209,7 @@ describe("omx-capture-evidence script", () => {
   });
 
   it("fails ralph mode evidence when cleanup state is still active", async () => {
-    const mod = await import("../scripts/omx-capture-evidence.js");
+    const mod = await import("../scripts/omx-capture-evidence-core.js");
     const root = await mkdtemp(join(tmpdir(), "omx-evidence-active-"));
     await writeFile(join(root, "package.json"), '{"name":"tmp"}', "utf8");
     await mkdir(join(root, ".omx", "state"), { recursive: true });

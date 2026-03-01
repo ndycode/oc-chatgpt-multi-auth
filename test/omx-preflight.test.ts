@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 
 describe("omx-preflight-wsl2 script", () => {
   it("parses cli args", async () => {
-    const mod = await import("../scripts/omx-preflight-wsl2.js");
+    const mod = await import("../scripts/omx-preflight-wsl2-core.js");
     expect(mod.parseArgs(["--json", "--distro", "Ubuntu"])).toEqual({
       json: true,
       distro: "Ubuntu",
@@ -13,18 +13,18 @@ describe("omx-preflight-wsl2 script", () => {
   });
 
   it("throws on unknown args", async () => {
-    const mod = await import("../scripts/omx-preflight-wsl2.js");
+    const mod = await import("../scripts/omx-preflight-wsl2-core.js");
     expect(() => mod.parseArgs(["--wat"])).toThrow("Unknown option");
   });
 
   it("normalizes WSL distro output that contains null chars", async () => {
-    const mod = await import("../scripts/omx-preflight-wsl2.js");
+    const mod = await import("../scripts/omx-preflight-wsl2-core.js");
     const output = "d\u0000o\u0000c\u0000k\u0000e\u0000r\u0000-\u0000d\u0000e\u0000s\u0000k\u0000t\u0000o\u0000p\u0000\r\n\u0000Ubuntu\r\n";
     expect(mod.parseDistroList(output)).toEqual(["docker-desktop", "Ubuntu"]);
   });
 
   it("warns on missing host omx in windows mode when WSL checks pass", async () => {
-    const mod = await import("../scripts/omx-preflight-wsl2.js");
+    const mod = await import("../scripts/omx-preflight-wsl2-core.js");
 
     const result = mod.runPreflight(
       { distro: "" },
@@ -48,7 +48,7 @@ describe("omx-preflight-wsl2 script", () => {
   });
 
   it("routes to blocked when omx is missing on unix host", async () => {
-    const mod = await import("../scripts/omx-preflight-wsl2.js");
+    const mod = await import("../scripts/omx-preflight-wsl2-core.js");
 
     const result = mod.runPreflight(
       { distro: "" },
@@ -69,7 +69,7 @@ describe("omx-preflight-wsl2 script", () => {
   });
 
   it("routes to fallback when team-only prerequisites fail", async () => {
-    const mod = await import("../scripts/omx-preflight-wsl2.js");
+    const mod = await import("../scripts/omx-preflight-wsl2-core.js");
 
     const result = mod.runPreflight(
       { distro: "" },
@@ -91,7 +91,7 @@ describe("omx-preflight-wsl2 script", () => {
   });
 
   it("routes to blocked on windows when omx is missing in host and WSL", async () => {
-    const mod = await import("../scripts/omx-preflight-wsl2.js");
+    const mod = await import("../scripts/omx-preflight-wsl2-core.js");
 
     const result = mod.runPreflight(
       { distro: "" },
@@ -119,7 +119,7 @@ describe("omx-preflight-wsl2 script", () => {
   });
 
   it("detects placeholder tmux hook pane target as fixable", async () => {
-    const mod = await import("../scripts/omx-preflight-wsl2.js");
+    const mod = await import("../scripts/omx-preflight-wsl2-core.js");
     const root = await mkdtemp(join(tmpdir(), "omx-preflight-"));
     const omxDir = join(root, ".omx");
     await mkdir(omxDir, { recursive: true });
