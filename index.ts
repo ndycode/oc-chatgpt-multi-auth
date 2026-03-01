@@ -26,7 +26,7 @@
 import { tool } from "@opencode-ai/plugin/tool";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
-import { createHash, randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import {
@@ -307,6 +307,29 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const processSessionId = randomUUID();
 	const operationSequenceCounter = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
+	const RESERVED_OPERATION_METADATA_KEYS = new Set<string>([
+		"event_version",
+		"operation_id",
+		"process_session_id",
+		"operation_class",
+		"operation_name",
+		"attempt_no",
+		"retry_count",
+		"manual_recovery_required",
+		"beginner_safe_mode",
+		"model_family",
+		"retry_profile",
+	]);
+
+	const stripReservedOperationMetadata = (
+		input: Record<string, unknown> | undefined,
+	): Record<string, unknown> => {
+		if (!input) return {};
+		return Object.fromEntries(
+			Object.entries(input).filter(([key]) => !RESERVED_OPERATION_METADATA_KEYS.has(key)),
+		);
+	};
+
 	type OperationTracker = {
 		operationId: string;
 		operationClass: OperationClass;
@@ -375,8 +398,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		beginner_safe_mode: beginnerSafeModeEnabled,
 		...(state.modelFamily ? { model_family: state.modelFamily } : {}),
 		...(state.retryProfile ? { retry_profile: state.retryProfile } : {}),
-		...(state.extraMetadata ?? {}),
-		...overrides,
+		...stripReservedOperationMetadata(state.extraMetadata),
+		...stripReservedOperationMetadata(overrides as Record<string, unknown>),
 	});
 
 	const startOperation = ({
@@ -1840,15 +1863,34 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
-		const hashSyncAuditValue = (
-			raw: string | undefined,
-			prefix: "email" | "account",
-		): string | undefined => {
-			const normalized = raw?.trim();
-			if (!normalized) return undefined;
-			const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 12);
-			return `${prefix}:${digest}`;
-		};
+	let cachedAuditHashSecret: string | null | undefined;
+	let auditHashSecretWarningLogged = false;
+
+	const resolveAuditHashSecret = (): string | null => {
+		if (cachedAuditHashSecret !== undefined) return cachedAuditHashSecret;
+		const secretCandidate =
+			process.env.CODEX_AUDIT_HASH_KEY?.trim() ?? process.env.SYNC_AUDIT_SECRET?.trim() ?? null;
+		if (!secretCandidate && !auditHashSecretWarningLogged) {
+			logWarn(
+				"Sync audit identity hashing disabled: set CODEX_AUDIT_HASH_KEY or SYNC_AUDIT_SECRET to enable anonymized telemetry.",
+			);
+			auditHashSecretWarningLogged = true;
+		}
+		cachedAuditHashSecret = secretCandidate && secretCandidate.length > 0 ? secretCandidate : null;
+		return cachedAuditHashSecret;
+	};
+
+	const hashSyncAuditValue = (
+		raw: string | undefined,
+		prefix: "email" | "account",
+	): string | undefined => {
+		const normalized = raw?.trim();
+		if (!normalized) return undefined;
+		const secret = resolveAuditHashSecret();
+		if (!secret) return undefined;
+		const digest = createHmac("sha256", secret).update(normalized).digest("hex").slice(0, 24);
+		return `${prefix}:${digest}`;
+	};
 
 		const buildSyncAuditIdentity = (
 			email: string | undefined,

@@ -4,9 +4,9 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
-import { AccountManager } from "../dist/lib/accounts.js";
-import { convertSseToJson } from "../dist/lib/request/response-handler.js";
-import { cleanupToolDefinitions } from "../dist/lib/request/helpers/tool-utils.js";
+let AccountManager;
+let convertSseToJson;
+let cleanupToolDefinitions;
 
 const HOTSPOT_SCENARIOS = new Set([
 	"selection_degraded_n200",
@@ -370,6 +370,10 @@ async function main() {
 		console.error("dist build artifacts not found. Run `npm run build` first.");
 		process.exit(1);
 	}
+
+	({ AccountManager } = await import("../dist/lib/accounts.js"));
+	({ convertSseToJson } = await import("../dist/lib/request/response-handler.js"));
+	({ cleanupToolDefinitions } = await import("../dist/lib/request/helpers/tool-utils.js"));
 
 	const scenarios = [
 		await benchmarkScenario({

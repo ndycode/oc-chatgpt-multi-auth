@@ -26,7 +26,7 @@ Full repository deep audit focused on high-impact risk classes:
   - `hono`: `^4.12.3`
   - `rollup`: `^4.59.0`
   - `minimatch`: `^10.2.4`
-  - `@typescript-eslint/typescript-estree` nested `minimatch`: `^9.0.9`
+  - `@typescript-eslint/typescript-estree` nested `minimatch`: `^9.0.5`
 
 **Outcome:**
 - Initial pass cleared all high/critical findings.
