@@ -291,7 +291,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	};
 
 	const processSessionId = randomUUID();
-	let operationSequence = 0;
+	const operationSequenceCounter = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
 	type OperationTracker = {
 		operationId: string;
@@ -339,9 +339,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const toPercent = (numerator: number, denominator: number): number | null =>
 		denominator > 0 ? (numerator / denominator) * 100 : null;
 
+	const nextOperationSequence = (): number => Atomics.add(operationSequenceCounter, 0, 1) + 1;
+
 	const createOperationId = (operationClass: OperationClass): string => {
-		operationSequence += 1;
-		return `${operationClass}-${Date.now()}-${operationSequence}-${randomUUID().slice(0, 8)}`;
+		const sequence = nextOperationSequence();
+		return `${operationClass}-${Date.now()}-${sequence}-${randomUUID().slice(0, 8)}`;
 	};
 
 	const buildOperationMetadata = (
