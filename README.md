@@ -906,6 +906,7 @@ CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=0 opencode    # Disable only the legacy gpt-5
 CODEX_AUTH_FETCH_TIMEOUT_MS=120000 opencode      # Override request timeout
 CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=60000 opencode # Override SSE stall timeout
 CODEX_AUTH_STORAGE_KEY="your strong passphrase" opencode # Encrypt multi-account storage on disk (AES-256-GCM)
+CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT=1 opencode         # Allow OAuth loopback redirect to use fallback callback ports (advanced)
 ```
 
 For all options, see [docs/configuration.md](docs/configuration.md).

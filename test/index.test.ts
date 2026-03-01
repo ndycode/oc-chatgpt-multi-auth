@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { FlaggedAccountMetadataV1 } from "../lib/storage.js";
 
 vi.mock("@opencode-ai/plugin/tool", () => {
 	const makeSchema = () => ({
@@ -16,19 +17,22 @@ vi.mock("@opencode-ai/plugin/tool", () => {
 	return { tool };
 });
 
+
+const mockExchangeAuthorizationCode = vi.fn(async () => ({
+	type: "success" as const,
+	access: "access-token",
+	refresh: "refresh-token",
+	expires: Date.now() + 3600_000,
+	idToken: "id-token",
+}));
+
 vi.mock("../lib/auth/auth.js", () => ({
 	createAuthorizationFlow: vi.fn(async () => ({
 		pkce: { verifier: "test-verifier", challenge: "test-challenge" },
 		state: "test-state",
 		url: "https://auth.openai.com/test",
 	})),
-	exchangeAuthorizationCode: vi.fn(async () => ({
-		type: "success" as const,
-		access: "access-token",
-		refresh: "refresh-token",
-		expires: Date.now() + 3600_000,
-		idToken: "id-token",
-	})),
+	exchangeAuthorizationCode: mockExchangeAuthorizationCode,
 	parseAuthorizationInput: vi.fn((input: string) => {
 		const codeMatch = input.match(/code=([^&]+)/);
 		const stateMatch = input.match(/state=([^&#]+)/);
@@ -67,12 +71,17 @@ vi.mock("../lib/auth/browser.js", () => ({
 	openBrowserUrl: vi.fn(),
 }));
 
+const defaultOAuthServerResponse = () => ({
+	port: 1455,
+	ready: true,
+	close: vi.fn(),
+	waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+});
+
+const mockStartLocalOAuthServer = vi.fn(async () => defaultOAuthServerResponse());
+
 vi.mock("../lib/auth/server.js", () => ({
-	startLocalOAuthServer: vi.fn(async () => ({
-		ready: true,
-		close: vi.fn(),
-		waitForCode: vi.fn(async () => ({ code: "auth-code" })),
-	})),
+	startLocalOAuthServer: mockStartLocalOAuthServer,
 }));
 
 vi.mock("../lib/cli.js", () => ({
@@ -197,25 +206,28 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 	})),
 }));
 
+type MockAccountEntry = {
+	accountId?: string;
+	organizationId?: string;
+	accountIdSource?: string;
+	accountLabel?: string;
+	email?: string;
+	refreshToken: string;
+	accessToken?: string;
+	expiresAt?: number;
+	enabled?: boolean;
+	addedAt?: number;
+	lastUsed?: number;
+	coolingDownUntil?: number;
+	cooldownReason?: string;
+	rateLimitResetTimes?: Record<string, number>;
+	lastSwitchReason?: string;
+	[key: string]: unknown;
+};
+
 const mockStorage = {
 	version: 3 as const,
-	accounts: [] as Array<{
-		accountId?: string;
-		organizationId?: string;
-		accountIdSource?: string;
-		accountLabel?: string;
-		email?: string;
-		refreshToken: string;
-		accessToken?: string;
-		expiresAt?: number;
-		enabled?: boolean;
-		addedAt?: number;
-		lastUsed?: number;
-		coolingDownUntil?: number;
-		cooldownReason?: string;
-		rateLimitResetTimes?: Record<string, number>;
-		lastSwitchReason?: string;
-	}>,
+	accounts: [] as MockAccountEntry[],
 	activeIndex: 0,
 	activeIndexByFamily: {} as Record<string, number>,
 };
@@ -450,7 +462,11 @@ describe("OpenAIOAuthPlugin", () => {
 	let mockClient: ReturnType<typeof createMockClient>;
 
 	beforeEach(async () => {
+		vi.resetModules();
 		vi.clearAllMocks();
+		mockStartLocalOAuthServer.mockClear();
+		mockStartLocalOAuthServer.mockImplementation(async () => defaultOAuthServerResponse());
+		mockExchangeAuthorizationCode.mockClear();
 		mockClient = createMockClient();
 
 		mockStorage.accounts = [];
@@ -559,6 +575,59 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("invalid_response");
 			expect(result.message).toContain("Invalid callback URL protocol");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("updates redirect URI when OAuth server uses a fallback port", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const previous = process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT = "1";
+			mockStartLocalOAuthServer.mockResolvedValueOnce({
+				port: 14556,
+				ready: true,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+			});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
+
+			await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
+			if (previous === undefined) {
+				delete process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			} else {
+				process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT = previous;
+			}
+
+			const calls = vi.mocked(authModule.exchangeAuthorizationCode).mock.calls;
+			const lastCall = calls[calls.length - 1];
+			expect(lastCall?.[2]).toBe("http://127.0.0.1:14556/auth/callback");
+		});
+
+		it("fails fast on fallback port when dynamic redirect is not enabled", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const previous = process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			delete process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			mockStartLocalOAuthServer.mockResolvedValueOnce({
+				port: 14556,
+				ready: true,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+			});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
+
+			const result = await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
+			if (previous === undefined) {
+				delete process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			} else {
+				process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT = previous;
+			}
+
+			expect(result.instructions).toBe("Authentication failed.");
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 	});
@@ -769,16 +838,17 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("renders best-effort 24h reliability percentages from local audit events", async () => {
 			const auditModule = await import("../lib/audit.js");
+			const { AuditAction, AuditOutcome } = auditModule;
 			const readAuditEntriesMock = vi.mocked(auditModule.readAuditEntries);
 			const timestamp = new Date().toISOString();
 			readAuditEntriesMock.mockReturnValue([
 				{
 					timestamp,
 					correlationId: null,
-					action: "operation.start",
+					action: AuditAction.OPERATION_START,
 					actor: "plugin",
 					resource: "request.fetch",
-					outcome: "partial",
+					outcome: AuditOutcome.PARTIAL,
 					metadata: {
 						event_version: "1.0",
 						operation_id: "req-1",
@@ -795,10 +865,10 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					timestamp,
 					correlationId: null,
-					action: "operation.success",
+					action: AuditAction.OPERATION_SUCCESS,
 					actor: "plugin",
 					resource: "request.fetch",
-					outcome: "success",
+					outcome: AuditOutcome.SUCCESS,
 					metadata: {
 						event_version: "1.0",
 						operation_id: "req-1",
@@ -815,10 +885,10 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					timestamp,
 					correlationId: null,
-					action: "operation.start",
+					action: AuditAction.OPERATION_START,
 					actor: "plugin",
 					resource: "auth.refresh-token",
-					outcome: "partial",
+					outcome: AuditOutcome.PARTIAL,
 					metadata: {
 						event_version: "1.0",
 						operation_id: "auth-1",
@@ -834,10 +904,10 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					timestamp,
 					correlationId: null,
-					action: "operation.success",
+					action: AuditAction.OPERATION_SUCCESS,
 					actor: "plugin",
 					resource: "auth.refresh-token",
-					outcome: "success",
+					outcome: AuditOutcome.SUCCESS,
 					metadata: {
 						event_version: "1.0",
 						operation_id: "auth-1",
@@ -860,16 +930,17 @@ describe("OpenAIOAuthPlugin", () => {
 
 		it("excludes request.exhausted from class-level request success denominator", async () => {
 			const auditModule = await import("../lib/audit.js");
+			const { AuditAction, AuditOutcome } = auditModule;
 			const readAuditEntriesMock = vi.mocked(auditModule.readAuditEntries);
 			const timestamp = new Date().toISOString();
 			readAuditEntriesMock.mockReturnValue([
 				{
 					timestamp,
 					correlationId: null,
-					action: "operation.start",
+					action: AuditAction.OPERATION_START,
 					actor: "plugin",
 					resource: "request.fetch",
-					outcome: "partial",
+					outcome: AuditOutcome.PARTIAL,
 					metadata: {
 						event_version: "1.0",
 						operation_id: "req-1",
@@ -886,10 +957,10 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					timestamp,
 					correlationId: null,
-					action: "operation.success",
+					action: AuditAction.OPERATION_SUCCESS,
 					actor: "plugin",
 					resource: "request.fetch",
-					outcome: "success",
+					outcome: AuditOutcome.SUCCESS,
 					metadata: {
 						event_version: "1.0",
 						operation_id: "req-1",
@@ -906,10 +977,10 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					timestamp,
 					correlationId: null,
-					action: "operation.start",
+					action: AuditAction.OPERATION_START,
 					actor: "plugin",
 					resource: "request.exhausted",
-					outcome: "partial",
+					outcome: AuditOutcome.PARTIAL,
 					metadata: {
 						event_version: "1.0",
 						operation_id: "req-x",
@@ -926,10 +997,10 @@ describe("OpenAIOAuthPlugin", () => {
 				{
 					timestamp,
 					correlationId: null,
-					action: "operation.failure",
+					action: AuditAction.OPERATION_FAILURE,
 					actor: "plugin",
 					resource: "request.exhausted",
-					outcome: "failure",
+					outcome: AuditOutcome.FAILURE,
 					metadata: {
 						event_version: "1.0",
 						operation_id: "req-x",
@@ -2784,9 +2855,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const refreshQueueModule = await import("../lib/refresh-queue.js");
 
-		const flaggedAccounts = [
-			{
-				refreshToken: "flagged-refresh-cache",
+	const flaggedAccounts: FlaggedAccountMetadataV1[] = [
+		{
+			refreshToken: "flagged-refresh-cache",
 				organizationId: "org-cache",
 				accountId: "flagged-cache",
 				accountIdSource: "manual",
@@ -2874,6 +2945,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 describe("OpenAIOAuthPlugin showToast error handling", () => {
 	beforeEach(() => {
+		vi.resetModules();
 		vi.clearAllMocks();
 		mockStorage.accounts = [
 			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-1" },
@@ -2905,6 +2977,7 @@ describe("OpenAIOAuthPlugin showToast error handling", () => {
 
 describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	beforeEach(() => {
+		vi.resetModules();
 		vi.clearAllMocks();
 		mockStorage.accounts = [
 			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },

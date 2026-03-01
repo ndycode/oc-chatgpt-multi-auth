@@ -934,38 +934,67 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	): Promise<TokenResult> => {
 		const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
 		logInfo(`OAuth authorization flow initialized at ${AUTHORIZE_URL}`);
-
-                let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
-                try {
-                        serverInfo = await startLocalOAuthServer({ state });
-                } catch (err) {
-                        logDebug(`[${PLUGIN_NAME}] Failed to start OAuth server: ${(err as Error)?.message ?? String(err)}`);
-                        serverInfo = null;
-                }
-                openBrowserUrl(url);
-
-                if (!serverInfo || !serverInfo.ready) {
-                        serverInfo?.close();
-                        const message =
-                                `\n[${PLUGIN_NAME}] OAuth callback server failed to start. ` +
-                                `Please retry with "${AUTH_LABELS.OAUTH_MANUAL}".\n`;
-				logWarn(message);
-                        return { type: "failed" as const };
-                }
-
-                const result = await serverInfo.waitForCode(state);
-                serverInfo.close();
-
-		if (!result) {
-			return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
+		const authorizeUrl = new URL(url);
+		const defaultRedirectUrl = new URL(REDIRECT_URI);
+		const allowDynamicRedirect = process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT === "1";
+		let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
+		try {
+			serverInfo = await startLocalOAuthServer({ state });
+		} catch (err) {
+			logDebug(`[${PLUGIN_NAME}] Failed to start OAuth server: ${(err as Error)?.message ?? String(err)}`);
+			serverInfo = null;
 		}
 
-                return await exchangeAuthorizationCode(
-                        result.code,
-                        pkce.verifier,
-                        REDIRECT_URI,
-                );
-        };
+		if (!serverInfo || !serverInfo.ready) {
+			serverInfo?.close();
+			const details = serverInfo?.errorCode
+				? ` [${serverInfo.errorCode}] ${serverInfo.errorMessage ?? "Unknown error"}.`
+				: "";
+			const message =
+				`\n[${PLUGIN_NAME}] OAuth callback server failed to start.${details ? `${details}` : ""} ` +
+				`Please retry with "${AUTH_LABELS.OAUTH_MANUAL}".\n`;
+			logWarn(message.trimEnd());
+			return { type: "failed" as const };
+		}
+
+		const resolvedRedirectUrl = new URL(defaultRedirectUrl.toString());
+		if (typeof serverInfo.port === "number" && serverInfo.port > 0) {
+			resolvedRedirectUrl.port = String(serverInfo.port);
+		}
+		const resolvedRedirectUri = resolvedRedirectUrl.toString();
+		const redirectPortChanged = resolvedRedirectUrl.port !== defaultRedirectUrl.port;
+		if (redirectPortChanged && !allowDynamicRedirect) {
+			serverInfo.close();
+			logWarn(
+				`[${PLUGIN_NAME}] OAuth callback server bound to fallback port ${serverInfo.port}, but OpenAI OAuth redirect URI is fixed to ${REDIRECT_URI}. ` +
+				`Stop the process using port ${defaultRedirectUrl.port || "1455"} and retry, or use "${AUTH_LABELS.OAUTH_MANUAL}". ` +
+				`Set CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT=1 only if your OAuth workspace allows loopback redirect ports.`,
+			);
+			return { type: "failed" as const };
+		}
+
+		authorizeUrl.searchParams.set("redirect_uri", resolvedRedirectUri);
+		if (redirectPortChanged) {
+			logWarn(
+				`[${PLUGIN_NAME}] OAuth callback server bound to fallback port ${serverInfo.port}; redirect URI updated to ${resolvedRedirectUri}. ` +
+				`If browser login fails with invalid_redirect_uri, retry on port ${defaultRedirectUrl.port || "1455"} or use manual URL paste.`,
+			);
+		}
+
+		try {
+			openBrowserUrl(authorizeUrl.toString());
+
+			const result = await serverInfo.waitForCode(state);
+
+			if (!result) {
+				return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
+			}
+
+			return await exchangeAuthorizationCode(result.code, pkce.verifier, resolvedRedirectUri);
+		} finally {
+			serverInfo.close();
+		}
+	};
 
 	        const persistAccountPool = async (
 	                results: TokenSuccessWithAccount[],

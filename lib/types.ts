@@ -37,6 +37,8 @@ export interface OAuthServerInfo {
 	ready: boolean;
 	close: () => void;
 	waitForCode: (state: string) => Promise<{ code: string } | null>;
+	errorCode?: string;
+	errorMessage?: string;
 }
 
 export interface PKCEPair {
