@@ -10,6 +10,7 @@ import {
 	getAuditConfig,
 	getAuditLogPath,
 	listAuditLogFiles,
+	readAuditEntries,
 } from "../lib/audit.js";
 
 describe("Audit logging", () => {
@@ -247,6 +248,58 @@ describe("Audit logging", () => {
 		});
 	});
 
+	describe("readAuditEntries", () => {
+		it("returns parsed entries filtered by sinceMs", () => {
+			const now = Date.now();
+			const logPath = getAuditLogPath();
+			writeFileSync(
+				logPath,
+				[
+					JSON.stringify({
+						timestamp: new Date(now - 60_000).toISOString(),
+						correlationId: null,
+						action: AuditAction.OPERATION_START,
+						actor: "actor",
+						resource: "request.fetch",
+						outcome: AuditOutcome.PARTIAL,
+					}),
+					JSON.stringify({
+						timestamp: new Date(now).toISOString(),
+						correlationId: null,
+						action: AuditAction.OPERATION_SUCCESS,
+						actor: "actor",
+						resource: "request.fetch",
+						outcome: AuditOutcome.SUCCESS,
+					}),
+				].join("\n") + "\n",
+			);
+
+			const entries = readAuditEntries({ sinceMs: now - 1000 });
+			expect(entries).toHaveLength(1);
+			expect(entries[0]?.action).toBe(AuditAction.OPERATION_SUCCESS);
+		});
+
+		it("respects the limit option", () => {
+			auditLog(AuditAction.ACCOUNT_ADD, "actor", "r1", AuditOutcome.SUCCESS);
+			auditLog(AuditAction.ACCOUNT_REMOVE, "actor", "r2", AuditOutcome.SUCCESS);
+
+			const entries = readAuditEntries({ limit: 1 });
+			expect(entries).toHaveLength(1);
+			expect(entries[0]?.action).toBe(AuditAction.ACCOUNT_REMOVE);
+		});
+
+		it("returns empty array when audit files cannot be listed", () => {
+			const badPath = join(testLogDir, "blocked.log");
+			writeFileSync(badPath, "not-a-directory", "utf8");
+			configureAudit({
+				enabled: true,
+				logDir: badPath,
+			});
+
+			expect(readAuditEntries()).toEqual([]);
+		});
+	});
+
 	describe("AuditAction enum", () => {
 		it("should have all expected actions", () => {
 			expect(AuditAction.ACCOUNT_ADD).toBe("account.add");
@@ -254,6 +307,11 @@ describe("Audit logging", () => {
 			expect(AuditAction.CONFIG_LOAD).toBe("config.load");
 			expect(AuditAction.REQUEST_START).toBe("request.start");
 			expect(AuditAction.CIRCUIT_OPEN).toBe("circuit.open");
+			expect(AuditAction.OPERATION_START).toBe("operation.start");
+			expect(AuditAction.OPERATION_SUCCESS).toBe("operation.success");
+			expect(AuditAction.OPERATION_FAILURE).toBe("operation.failure");
+			expect(AuditAction.OPERATION_RETRY).toBe("operation.retry");
+			expect(AuditAction.OPERATION_RECOVERY).toBe("operation.recovery");
 		});
 	});
 

@@ -441,7 +441,7 @@ codex-status
 
 ### codex-metrics
 
-Show live runtime metrics (request counts, latency, errors, retries, and safe mode).
+Show live runtime metrics (request counts, latency, errors, retries, and safe mode), plus local-only reliability KPIs computed from local audit events in a best-effort 24h, retention-bounded window.
 
 ```text
 codex-metrics
