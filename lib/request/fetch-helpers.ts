@@ -8,7 +8,7 @@ import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
-import { convertSseToJson, ensureContentType } from "./response-handler.js";
+import { convertSseToJsonDetailed, ensureContentType } from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
 import { CodexAuthError } from "../errors.js";
 import { isRecord } from "../utils.js";
@@ -276,6 +276,11 @@ export interface ErrorDiagnostics {
 	correlationId?: string;
 	threadId?: string;
 	httpStatus?: number;
+}
+
+export interface SuccessResponseDetails {
+	response: Response;
+	parsedJson?: unknown;
 }
 
 /**
@@ -590,6 +595,15 @@ export async function handleSuccessResponse(
     isStreaming: boolean,
     options?: { streamStallTimeoutMs?: number },
 ): Promise<Response> {
+	const details = await handleSuccessResponseDetailed(response, isStreaming, options);
+	return details.response;
+}
+
+export async function handleSuccessResponseDetailed(
+	response: Response,
+	isStreaming: boolean,
+	options?: { streamStallTimeoutMs?: number },
+): Promise<SuccessResponseDetails> {
     // Check for deprecation headers (RFC 8594)
     const deprecation = response.headers.get("Deprecation");
     const sunset = response.headers.get("Sunset");
@@ -601,15 +615,22 @@ export async function handleSuccessResponse(
 
 	// For non-streaming requests (generateText), convert SSE to JSON
 	if (!isStreaming) {
-		return await convertSseToJson(response, responseHeaders, options);
+		const converted = await convertSseToJsonDetailed(response, responseHeaders, options);
+		return {
+			response: converted.response,
+			parsedJson: converted.parsedResponse,
+		};
 	}
 
 	// For streaming requests (streamText), return stream as-is
-	return new Response(response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: responseHeaders,
-	});
+	return {
+		response: new Response(response.body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: responseHeaders,
+		}),
+		parsedJson: undefined,
+	};
 }
 
 async function safeReadBody(response: Response): Promise<string> {

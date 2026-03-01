@@ -7,6 +7,12 @@ const log = createLogger("response-handler");
 const MAX_SSE_SIZE = 10 * 1024 * 1024; // 10MB limit to prevent memory exhaustion
 const DEFAULT_STREAM_STALL_TIMEOUT_MS = 45_000;
 const STREAM_ERROR_CODE = "stream_error";
+const TERMINAL_EVENT_TYPE_PATTERN =
+	/"type"\s*:\s*"(?:error|response\.error|response\.failed|response\.incomplete|response\.done|response\.completed)"/;
+const TERMINAL_SSE_LINE_PATTERN =
+	/response\.(?:error|failed|incomplete|done|completed)|"type"\s*:\s*"error"/;
+const RESPONSE_TYPE_PREFIX = "\"type\":\"response.";
+const RESPONSE_TYPE_PREFIX_LENGTH = RESPONSE_TYPE_PREFIX.length;
 
 type ParsedSseResult =
 	| {
@@ -21,6 +27,11 @@ type ParsedSseResult =
 				code?: string | number;
 			};
 	  };
+
+export interface SseConversionResult {
+	response: Response;
+	parsedResponse?: unknown;
+}
 
 function toRecord(value: unknown): Record<string, unknown> | null {
 	if (value && typeof value === "object") {
@@ -82,65 +93,171 @@ function extractResponseError(responseRecord: Record<string, unknown>): {
 
 function parseDataPayload(line: string): string | null {
 	if (!line.startsWith("data:")) return null;
-	const payload = line.slice(5).trimStart();
+	let payloadStart = 5;
+	while (payloadStart < line.length) {
+		const code = line.charCodeAt(payloadStart);
+		if (code !== 32 && code !== 9) break;
+		payloadStart += 1;
+	}
+	const payload = line.slice(payloadStart);
 	if (!payload || payload === "[DONE]") return null;
 	return payload;
 }
 
-/**
+function parseSsePayload(payload: string): ParsedSseResult | null {
+	// Fast path: most SSE events are non-terminal deltas we can skip without JSON parsing.
+	if (!TERMINAL_EVENT_TYPE_PATTERN.test(payload)) {
+		return null;
+	}
 
- * Parse SSE stream to extract final response
- * @param sseText - Complete SSE stream text
- * @returns Final response object or null if not found
- */
-function parseSseStream(sseText: string): ParsedSseResult | null {
-	const lines = sseText.split(/\r?\n/);
+	try {
+		const data = JSON.parse(payload) as SSEEventData;
+		const responseRecord = toRecord((data as { response?: unknown }).response);
 
-	for (const line of lines) {
-		const trimmedLine = line.trim();
-		const payload = parseDataPayload(trimmedLine);
-		if (payload) {
-			try {
-				const data = JSON.parse(payload) as SSEEventData;
-				const responseRecord = toRecord((data as { response?: unknown }).response);
+		if (data.type === "error" || data.type === "response.error") {
+			const parsedError = extractStreamError(data);
+			log.error("SSE error event received", { error: parsedError });
+			return { kind: "error", error: parsedError };
+		}
 
-				if (data.type === "error" || data.type === "response.error") {
-					const parsedError = extractStreamError(data);
-					log.error("SSE error event received", { error: parsedError });
-					return { kind: "error", error: parsedError };
-				}
+		if (data.type === "response.failed" || data.type === "response.incomplete") {
+			const parsedError =
+				(responseRecord && extractResponseError(responseRecord)) ??
+				extractStreamError(data);
+			log.error("SSE response terminal error event received", {
+				type: data.type,
+				error: parsedError,
+			});
+			return { kind: "error", error: parsedError };
+		}
 
-				if (data.type === "response.failed" || data.type === "response.incomplete") {
-					const parsedError =
-						(responseRecord && extractResponseError(responseRecord)) ??
-						extractStreamError(data);
-					log.error("SSE response terminal error event received", {
-						type: data.type,
+		if (data.type === "response.done" || data.type === "response.completed") {
+			if (responseRecord) {
+				const parsedError = extractResponseError(responseRecord);
+				if (parsedError) {
+					log.error("SSE response completed with terminal error", {
 						error: parsedError,
+						status: responseRecord.status,
 					});
 					return { kind: "error", error: parsedError };
 				}
+			}
+			return { kind: "response", response: data.response };
+		}
+	} catch {
+		// Skip malformed JSON
+	}
 
-				if (data.type === "response.done" || data.type === "response.completed") {
-					if (responseRecord) {
-						const parsedError = extractResponseError(responseRecord);
-						if (parsedError) {
-							log.error("SSE response completed with terminal error", {
-								error: parsedError,
-								status: responseRecord.status,
-							});
-							return { kind: "error", error: parsedError };
-						}
-					}
-					return { kind: "response", response: data.response };
-				}
-			} catch {
-				// Skip malformed JSON
+	return null;
+}
+
+function isPotentialTerminalSseLine(line: string): boolean {
+	const responseTypePrefixIndex = line.indexOf(RESPONSE_TYPE_PREFIX);
+	if (responseTypePrefixIndex >= 0) {
+		const terminalInitial = line.charCodeAt(
+			responseTypePrefixIndex + RESPONSE_TYPE_PREFIX_LENGTH,
+		);
+		// done/completed/failed/incomplete/error
+		return (
+			terminalInitial === 100 ||
+			terminalInitial === 99 ||
+			terminalInitial === 102 ||
+			terminalInitial === 105 ||
+			terminalInitial === 101
+		);
+	}
+
+	if (line.includes("\"type\":\"error\"") || line.includes("\"type\": \"error\"")) {
+		return true;
+	}
+
+	return line.includes("\"type\"") && TERMINAL_SSE_LINE_PATTERN.test(line);
+}
+
+function consumeSseBuffer(
+	buffer: string,
+	options?: { flush?: boolean },
+): { parsed: ParsedSseResult | null; remainder: string } {
+	let cursor = 0;
+	while (true) {
+		const lineEnd = buffer.indexOf("\n", cursor);
+		if (lineEnd < 0) break;
+		let line = buffer.slice(cursor, lineEnd);
+		if (line.endsWith("\r")) {
+			line = line.slice(0, -1);
+		}
+		if (!isPotentialTerminalSseLine(line)) {
+			cursor = lineEnd + 1;
+			continue;
+		}
+		const payload = parseDataPayload(line);
+		if (payload) {
+			const parsed = parseSsePayload(payload);
+			if (parsed) {
+				return {
+					parsed,
+					remainder: "",
+				};
+			}
+		}
+		cursor = lineEnd + 1;
+	}
+
+	const remainder = buffer.slice(cursor);
+	const trimmedRemainder = remainder.trim();
+	if (options?.flush && trimmedRemainder.length > 0) {
+		if (!isPotentialTerminalSseLine(trimmedRemainder)) {
+			return {
+				parsed: null,
+				remainder: "",
+			};
+		}
+		const payload = parseDataPayload(trimmedRemainder);
+		if (payload) {
+			const parsed = parseSsePayload(payload);
+			if (parsed) {
+				return {
+					parsed,
+					remainder: "",
+				};
 			}
 		}
 	}
 
-	return null;
+	return {
+		parsed: null,
+		remainder: options?.flush ? "" : remainder,
+	};
+}
+
+function buildErrorResponse(
+	parsedError: { message: string; type?: string; code?: string | number },
+	response: Response,
+	headers: Headers,
+): Response {
+	log.warn("SSE stream returned an error event", parsedError);
+	logRequest("stream-error", {
+		error: parsedError.message,
+		type: parsedError.type,
+		code: parsedError.code,
+	});
+
+	const jsonHeaders = new Headers(headers);
+	jsonHeaders.set("content-type", "application/json; charset=utf-8");
+	const status = response.status >= 400 ? response.status : 502;
+	const payload = {
+		error: {
+			message: parsedError.message,
+			type: parsedError.type ?? STREAM_ERROR_CODE,
+			code: parsedError.code ?? STREAM_ERROR_CODE,
+		},
+	};
+
+	return new Response(JSON.stringify(payload), {
+		status,
+		statusText: status === 502 ? "Bad Gateway" : response.statusText,
+		headers: jsonHeaders,
+	});
 }
 
 /**
@@ -154,59 +271,64 @@ export async function convertSseToJson(
 	headers: Headers,
 	options?: { streamStallTimeoutMs?: number },
 ): Promise<Response> {
+	const result = await convertSseToJsonDetailed(response, headers, options);
+	return result.response;
+}
+
+export async function convertSseToJsonDetailed(
+	response: Response,
+	headers: Headers,
+	options?: { streamStallTimeoutMs?: number },
+): Promise<SseConversionResult> {
 	if (!response.body) {
 		throw new Error('[openai-codex-plugin] Response has no body');
 	}
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
-	let fullText = '';
+	let fullText = "";
+	let parseBuffer = "";
+	let parsedResult: ParsedSseResult | null = null;
 	const streamStallTimeoutMs = Math.max(
 		1_000,
 		Math.floor(options?.streamStallTimeoutMs ?? DEFAULT_STREAM_STALL_TIMEOUT_MS),
 	);
 
 	try {
-		// Consume the entire stream
+		// Consume stream incrementally and stop early once terminal event is parsed.
 		while (true) {
 			const { done, value } = await readWithTimeout(reader, streamStallTimeoutMs);
-			if (done) break;
-			fullText += decoder.decode(value, { stream: true });
+			const chunkText = done
+				? decoder.decode()
+				: decoder.decode(value, { stream: true });
+			if (chunkText) {
+				fullText += chunkText;
+				parseBuffer += chunkText;
+			}
 			if (fullText.length > MAX_SSE_SIZE) {
 				throw new Error(`SSE response exceeds ${MAX_SSE_SIZE} bytes limit`);
 			}
+
+			const consumed = consumeSseBuffer(parseBuffer, { flush: done });
+			parseBuffer = consumed.remainder;
+			if (consumed.parsed) {
+				parsedResult = consumed.parsed;
+				if (!done && typeof reader.cancel === "function") {
+					await reader.cancel("terminal SSE event parsed").catch(() => {});
+				}
+				break;
+			}
+			if (done) break;
 		}
 
 		if (LOGGING_ENABLED) {
 			logRequest("stream-full", { fullContent: fullText });
 		}
 
-		// Parse SSE events to extract the final response
-		const parsedResult = parseSseStream(fullText);
-
 		if (parsedResult?.kind === "error") {
-			log.warn("SSE stream returned an error event", parsedResult.error);
-			logRequest("stream-error", {
-				error: parsedResult.error.message,
-				type: parsedResult.error.type,
-				code: parsedResult.error.code,
-			});
-
-			const jsonHeaders = new Headers(headers);
-			jsonHeaders.set("content-type", "application/json; charset=utf-8");
-			const status = response.status >= 400 ? response.status : 502;
-			const payload = {
-				error: {
-					message: parsedResult.error.message,
-					type: parsedResult.error.type ?? STREAM_ERROR_CODE,
-					code: parsedResult.error.code ?? STREAM_ERROR_CODE,
-				},
+			return {
+				response: buildErrorResponse(parsedResult.error, response, headers),
+				parsedResponse: undefined,
 			};
-
-			return new Response(JSON.stringify(payload), {
-				status,
-				statusText: status === 502 ? "Bad Gateway" : response.statusText,
-				headers: jsonHeaders,
-			});
 		}
 
 		const finalResponse =
@@ -218,22 +340,28 @@ export async function convertSseToJson(
 			logRequest("stream-error", { error: "No response.done event found" });
 
 			// Return original stream if we can't parse
-			return new Response(fullText, {
-				status: response.status,
-				statusText: response.statusText,
-				headers: headers,
-			});
+			return {
+				response: new Response(fullText, {
+					status: response.status,
+					statusText: response.statusText,
+					headers: headers,
+				}),
+				parsedResponse: undefined,
+			};
 		}
 
 		// Return as plain JSON (not SSE)
 		const jsonHeaders = new Headers(headers);
 		jsonHeaders.set('content-type', 'application/json; charset=utf-8');
 
-		return new Response(JSON.stringify(finalResponse), {
-			status: response.status,
-			statusText: response.statusText,
-			headers: jsonHeaders,
-		});
+		return {
+			response: new Response(JSON.stringify(finalResponse), {
+				status: response.status,
+				statusText: response.statusText,
+				headers: jsonHeaders,
+			}),
+			parsedResponse: finalResponse,
+		};
 
 	} catch (error) {
 		log.error("Error converting stream", { error: String(error) });
@@ -246,7 +374,6 @@ export async function convertSseToJson(
 		// Release the reader lock to prevent resource leaks
 		reader.releaseLock();
 	}
-
 }
 
 /**
