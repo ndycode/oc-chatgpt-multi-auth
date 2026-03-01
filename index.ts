@@ -131,7 +131,7 @@ import {
 	createCodexHeaders,
 	extractRequestUrl,
         handleErrorResponse,
-        handleSuccessResponse,
+        handleSuccessResponseDetailed,
 	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
         refreshAndUpdateToken,
@@ -2771,20 +2771,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										let restartAccountTraversalWithFallback = false;
 
 while (attempted.size < Math.max(1, accountCount)) {
-				const selectionExplainability = accountManager.getSelectionExplainability(
+				const selectionNow = Date.now();
+				const selection = accountManager.getSelectionExplainabilityAndNextForFamilyHybrid(
 					modelFamily,
 					model,
-					Date.now(),
+					selectionNow,
+					{ pidOffsetEnabled },
 				);
 				runtimeMetrics.lastSelectionSnapshot = {
-					timestamp: Date.now(),
+					timestamp: selectionNow,
 					family: modelFamily,
 					model: model ?? null,
 					selectedAccountIndex: null,
 					quotaKey,
-					explainability: selectionExplainability,
+					explainability: selection.explainability,
 				};
-				const account = accountManager.getCurrentOrNextForFamilyHybrid(modelFamily, model, { pidOffsetEnabled });
+				const account = selection.account;
 				if (!account || attempted.has(account.index)) {
 					break;
 				}
@@ -3231,9 +3233,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					resetRateLimitBackoff(account.index, quotaKey);
 					runtimeMetrics.cumulativeLatencyMs += fetchLatencyMs;
-					const successResponse = await handleSuccessResponse(response, isStreaming, {
+					const successResult = await handleSuccessResponseDetailed(response, isStreaming, {
 						streamStallTimeoutMs,
 					});
+					const successResponse = successResult.response;
 
 					if (!successResponse.ok) {
 						runtimeMetrics.failedRequests++;
@@ -3243,10 +3246,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 
 					if (!isStreaming && emptyResponseMaxRetries > 0) {
-						const clonedResponse = successResponse.clone();
 						try {
-							const bodyText = await clonedResponse.text();
-							const parsedBody = bodyText ? JSON.parse(bodyText) as unknown : null;
+							let parsedBody: unknown = successResult.parsedJson;
+							if (parsedBody === undefined) {
+								const bodyText = await successResponse.clone().text();
+								parsedBody = bodyText ? JSON.parse(bodyText) as unknown : null;
+							}
 							if (isEmptyResponse(parsedBody)) {
 								if (
 									emptyResponseRetries < emptyResponseMaxRetries &&

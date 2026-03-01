@@ -13,6 +13,7 @@ import {
 	getHealthTracker,
 	getTokenTracker,
 	selectHybridAccount,
+	DEFAULT_HYBRID_SELECTION_CONFIG,
 	type AccountWithMetrics,
 	type HybridSelectionOptions,
 } from "./rotation.js";
@@ -166,6 +167,11 @@ export interface AccountSelectionExplainability {
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
 	lastUsed: number;
+}
+
+export interface AccountSelectionResult {
+	explainability: AccountSelectionExplainability[];
+	account: ManagedAccount | null;
 }
 
 export class AccountManager {
@@ -439,6 +445,147 @@ export class AccountManager {
 				lastUsed: account.lastUsed,
 			};
 		});
+	}
+
+	getSelectionExplainabilityAndNextForFamilyHybrid(
+		family: ModelFamily,
+		model?: string | null,
+		now = nowMs(),
+		options?: HybridSelectionOptions,
+	): AccountSelectionResult {
+		const count = this.accounts.length;
+		if (count === 0) {
+			return {
+				explainability: [],
+				account: null,
+			};
+		}
+
+		const quotaKey = model ? `${family}:${model}` : family;
+		const baseQuotaKey = getQuotaKey(family);
+		const modelQuotaKey = model ? getQuotaKey(family, model) : null;
+		const currentIndex = this.currentAccountIndexByFamily[family];
+		const healthTracker = getHealthTracker();
+		const tokenTracker = getTokenTracker();
+		const cfg = DEFAULT_HYBRID_SELECTION_CONFIG;
+		const pidBonus = options?.pidOffsetEnabled ? (process.pid % 100) * 0.01 : 0;
+
+		const explainability: AccountSelectionExplainability[] = [];
+		let selectedAccount: ManagedAccount | null = null;
+		let leastRecentlyUsedEnabled: ManagedAccount | null = null;
+		let availableCount = 0;
+		let bestScore = -Infinity;
+		let currentEligibleSelected = false;
+
+		for (const account of this.accounts) {
+			clearExpiredRateLimits(account);
+			const enabled = account.enabled !== false;
+			const reasons: string[] = [];
+			let rateLimitedUntil: number | undefined;
+			const baseRateLimit = account.rateLimitResetTimes[baseQuotaKey];
+			const modelRateLimit = modelQuotaKey ? account.rateLimitResetTimes[modelQuotaKey] : undefined;
+			if (typeof baseRateLimit === "number" && baseRateLimit > now) {
+				rateLimitedUntil = baseRateLimit;
+			}
+			if (
+				typeof modelRateLimit === "number" &&
+				modelRateLimit > now &&
+				(rateLimitedUntil === undefined || modelRateLimit > rateLimitedUntil)
+			) {
+				rateLimitedUntil = modelRateLimit;
+			}
+
+			const coolingDownUntil =
+				typeof account.coolingDownUntil === "number" && account.coolingDownUntil > now
+					? account.coolingDownUntil
+					: undefined;
+
+			if (!enabled) reasons.push("disabled");
+			if (rateLimitedUntil !== undefined) reasons.push("rate-limited");
+			if (coolingDownUntil !== undefined) {
+				reasons.push(
+					account.cooldownReason ? `cooldown:${account.cooldownReason}` : "cooldown",
+				);
+			}
+
+			const tokensAvailable = tokenTracker.getTokens(account.index, quotaKey);
+			if (tokensAvailable < 1) reasons.push("token-bucket-empty");
+
+			const eligible =
+				enabled &&
+				rateLimitedUntil === undefined &&
+				coolingDownUntil === undefined &&
+				tokensAvailable >= 1;
+			if (reasons.length === 0) reasons.push("eligible");
+
+			const healthScore = healthTracker.getScore(account.index, quotaKey);
+			explainability.push({
+				index: account.index,
+				enabled,
+				isCurrentForFamily: currentIndex === account.index,
+				eligible,
+				reasons,
+				healthScore,
+				tokensAvailable,
+				rateLimitedUntil,
+				coolingDownUntil,
+				cooldownReason: coolingDownUntil !== undefined ? account.cooldownReason : undefined,
+				lastUsed: account.lastUsed,
+			});
+
+			if (!enabled) {
+				continue;
+			}
+			if (!leastRecentlyUsedEnabled || account.lastUsed < leastRecentlyUsedEnabled.lastUsed) {
+				leastRecentlyUsedEnabled = account;
+			}
+			if (!eligible) {
+				continue;
+			}
+
+			if (account.index === currentIndex) {
+				selectedAccount = account;
+				currentEligibleSelected = true;
+				continue;
+			}
+
+			if (currentEligibleSelected) {
+				continue;
+			}
+
+			availableCount += 1;
+			const hoursSinceUsed = (now - account.lastUsed) / (1000 * 60 * 60);
+			let score =
+				healthScore * cfg.healthWeight +
+				tokensAvailable * cfg.tokenWeight +
+				hoursSinceUsed * cfg.freshnessWeight;
+			if (options?.pidOffsetEnabled) {
+				score += ((account.index * 0.131 + pidBonus) % 1) * cfg.freshnessWeight * 0.1;
+			}
+			if (availableCount === 1 || score > bestScore) {
+				bestScore = score;
+				selectedAccount = account;
+			}
+		}
+
+		if (!selectedAccount) {
+			selectedAccount = availableCount === 0 ? leastRecentlyUsedEnabled : null;
+		}
+
+		if (!selectedAccount) {
+			return {
+				explainability,
+				account: null,
+			};
+		}
+
+		this.currentAccountIndexByFamily[family] = selectedAccount.index;
+		this.cursorByFamily[family] = (selectedAccount.index + 1) % count;
+		selectedAccount.lastUsed = now;
+		return {
+			explainability,
+			account: selectedAccount,
+		};
 	}
 
 	setActiveIndex(index: number): ManagedAccount | null {

@@ -42,6 +42,8 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
     "coverage": "vitest run --coverage",
+    "perf:bench:baseline": "npm run build && node scripts/perf-bench.mjs --output .omx/perf/baseline.json --baseline .omx/perf/baseline.json --write-baseline --gate-hotspot 0.4 --gate-nonhot 0.03",
+    "perf:bench": "npm run build && node scripts/perf-bench.mjs --output .omx/perf/current.json --baseline .omx/perf/baseline.json --gate-hotspot 0.4 --gate-nonhot 0.03",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "audit:all": "npm audit --audit-level=high",
     "audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",

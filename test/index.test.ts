@@ -191,6 +191,10 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 	resolveUnsupportedCodexFallbackModel: vi.fn(() => undefined),
 	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
 	handleSuccessResponse: vi.fn(async (response: Response) => response),
+	handleSuccessResponseDetailed: vi.fn(async (response: Response) => ({
+		response,
+		parsedJson: undefined,
+	})),
 }));
 
 const mockStorage = {
@@ -304,6 +308,13 @@ vi.mock("../lib/accounts.js", () => {
 				tokensAvailable: 50,
 				lastUsed: Date.now(),
 			}));
+		}
+
+		getSelectionExplainabilityAndNextForFamilyHybrid() {
+			return {
+				explainability: this.getSelectionExplainability(),
+				account: this.getCurrentOrNextForFamilyHybrid(),
+			};
 		}
 
 		recordSuccess() {}
@@ -1653,6 +1664,31 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 						lastUsed: Date.now(),
 					},
 				],
+				getSelectionExplainabilityAndNextForFamilyHybrid: (_family: string, currentModel?: string) => ({
+					explainability: [
+						{
+							index: 0,
+							enabled: true,
+							isCurrentForFamily: true,
+							eligible: true,
+							reasons: ["eligible"],
+							healthScore: 100,
+							tokensAvailable: 50,
+							lastUsed: Date.now(),
+						},
+						{
+							index: 1,
+							enabled: true,
+							isCurrentForFamily: false,
+							eligible: true,
+							reasons: ["eligible"],
+							healthScore: 100,
+							tokensAvailable: 50,
+							lastUsed: Date.now(),
+						},
+					],
+					account: customManager.getCurrentOrNextForFamilyHybrid(_family, currentModel),
+				}),
 				toAuthDetails: (account: { accountId?: string }) => ({
 					type: "oauth" as const,
 					access: `access-${account.accountId ?? "unknown"}`,
