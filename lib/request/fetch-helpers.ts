@@ -8,7 +8,7 @@ import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
-import { convertSseToJson, ensureContentType } from "./response-handler.js";
+import { convertSseToJsonDetailed, ensureContentType } from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
 import { CodexAuthError } from "../errors.js";
 import { isRecord } from "../utils.js";
@@ -276,6 +276,11 @@ export interface ErrorDiagnostics {
 	correlationId?: string;
 	threadId?: string;
 	httpStatus?: number;
+}
+
+export interface SuccessResponseDetails {
+	response: Response;
+	parsedJson?: unknown;
 }
 
 /**
@@ -590,6 +595,15 @@ export async function handleSuccessResponse(
     isStreaming: boolean,
     options?: { streamStallTimeoutMs?: number },
 ): Promise<Response> {
+	const details = await handleSuccessResponseDetailed(response, isStreaming, options);
+	return details.response;
+}
+
+export async function handleSuccessResponseDetailed(
+	response: Response,
+	isStreaming: boolean,
+	options?: { streamStallTimeoutMs?: number },
+): Promise<SuccessResponseDetails> {
     // Check for deprecation headers (RFC 8594)
     const deprecation = response.headers.get("Deprecation");
     const sunset = response.headers.get("Sunset");
@@ -601,15 +615,22 @@ export async function handleSuccessResponse(
 
 	// For non-streaming requests (generateText), convert SSE to JSON
 	if (!isStreaming) {
-		return await convertSseToJson(response, responseHeaders, options);
+		const converted = await convertSseToJsonDetailed(response, responseHeaders, options);
+		return {
+			response: converted.response,
+			parsedJson: converted.parsedResponse,
+		};
 	}
 
 	// For streaming requests (streamText), return stream as-is
-	return new Response(response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers: responseHeaders,
-	});
+	return {
+		response: new Response(response.body, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: responseHeaders,
+		}),
+		parsedJson: undefined,
+	};
 }
 
 async function safeReadBody(response: Response): Promise<string> {
@@ -691,15 +712,21 @@ interface RateLimitErrorBody {
 
 function parseRateLimitBody(
 	body: string,
-): { code?: string; resetsAt?: number; retryAfterMs?: number } | undefined {
+): {
+	code?: string;
+	resetsAt?: number;
+	retryAfterMs?: number;
+	retryAfterSeconds?: number;
+} | undefined {
 	if (!body) return undefined;
 	try {
 		const parsed = JSON.parse(body) as RateLimitErrorBody;
 		const error = parsed?.error ?? {};
 		const code = (error.code ?? error.type ?? "").toString();
 		const resetsAt = toNumber(error.resets_at ?? error.reset_at);
-		const retryAfterMs = toNumber(error.retry_after_ms ?? error.retry_after);
-		return { code, resetsAt, retryAfterMs };
+		const retryAfterMs = toNumber(error.retry_after_ms);
+		const retryAfterSeconds = toNumber(error.retry_after);
+		return { code, resetsAt, retryAfterMs, retryAfterSeconds };
 	} catch {
 		return undefined;
 	}
@@ -824,17 +851,25 @@ function ensureJsonErrorResponse(response: Response, payload: ErrorPayload): Res
 
 function parseRetryAfterMs(
         response: Response,
-        parsedBody?: { resetsAt?: number; retryAfterMs?: number },
+        parsedBody?: {
+		resetsAt?: number;
+		retryAfterMs?: number;
+		retryAfterSeconds?: number;
+	},
 ): number | null {
         if (parsedBody?.retryAfterMs !== undefined) {
-                return normalizeRetryAfter(parsedBody.retryAfterMs);
+                return normalizeRetryAfterMilliseconds(parsedBody.retryAfterMs);
+        }
+
+	if (parsedBody?.retryAfterSeconds !== undefined) {
+		return normalizeRetryAfterSeconds(parsedBody.retryAfterSeconds);
         }
 
         const retryAfterMsHeader = response.headers.get("retry-after-ms");
         if (retryAfterMsHeader) {
                 const parsed = Number.parseInt(retryAfterMsHeader, 10);
                 if (!Number.isNaN(parsed) && parsed > 0) {
-                        return parsed;
+                        return normalizeRetryAfterMilliseconds(parsed);
                 }
         }
 
@@ -842,7 +877,7 @@ function parseRetryAfterMs(
         if (retryAfterHeader) {
                 const parsed = Number.parseInt(retryAfterHeader, 10);
                 if (!Number.isNaN(parsed) && parsed > 0) {
-                        return parsed * 1000;
+                        return normalizeRetryAfterSeconds(parsed);
                 }
         }
 
@@ -881,16 +916,20 @@ function parseRetryAfterMs(
         return null;
 }
 
-function normalizeRetryAfter(value: number): number {
+function normalizeRetryAfterMilliseconds(value: number): number {
         if (!Number.isFinite(value)) return 60000;
-        let ms: number;
-        if (value > 0 && value < 1000) {
-                ms = Math.floor(value * 1000);
-        } else {
-                ms = Math.floor(value);
-        }
+        const ms = Math.floor(value);
+        const MIN_RETRY_DELAY_MS = 1;
         const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
-        return Math.min(ms, MAX_RETRY_DELAY_MS);
+        return Math.min(Math.max(ms, MIN_RETRY_DELAY_MS), MAX_RETRY_DELAY_MS);
+}
+
+function normalizeRetryAfterSeconds(value: number): number {
+	if (!Number.isFinite(value)) return 60000;
+	const ms = Math.floor(value * 1000);
+	const MIN_RETRY_DELAY_MS = 1;
+	const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+	return Math.min(Math.max(ms, MIN_RETRY_DELAY_MS), MAX_RETRY_DELAY_MS);
 }
 
 function toNumber(value: unknown): number | undefined {

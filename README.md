@@ -390,8 +390,10 @@ codex-setup
 Open guided wizard (menu-driven when terminal supports it, checklist fallback otherwise):
 
 ```text
-codex-setup wizard=true
+codex-setup mode="wizard"
 ```
+
+Legacy compatibility: `codex-setup wizard=true` is still supported.
 
 ---
 
@@ -401,7 +403,7 @@ Run diagnostics with actionable findings.
 
 ```text
 codex-doctor
-codex-doctor deep=true
+codex-doctor mode="deep"
 ```
 
 Apply safe auto-fixes (`--fix` equivalent):
@@ -410,8 +412,10 @@ Apply safe auto-fixes (`--fix` equivalent):
 - Switches active account to the healthiest eligible account
 
 ```text
-codex-doctor fix=true
+codex-doctor mode="fix"
 ```
+
+Legacy compatibility: `deep=true` / `fix=true` flags remain supported.
 
 ---
 
@@ -437,7 +441,7 @@ codex-status
 
 ### codex-metrics
 
-Show live runtime metrics (request counts, latency, errors, retries, and safe mode).
+Show live runtime metrics (request counts, latency, errors, retries, and safe mode), plus local-only reliability KPIs computed from local audit events in a best-effort 24h, retention-bounded window.
 
 ```text
 codex-metrics
@@ -523,6 +527,26 @@ Before apply, the plugin creates an automatic timestamped pre-import backup when
 
 ---
 
+### codex-sync
+
+Sync accounts between this plugin and Codex CLI auth storage.
+
+Pull from Codex CLI into plugin storage:
+
+```text
+codex-sync direction="pull"
+```
+
+Push current plugin account into Codex CLI auth:
+
+```text
+codex-sync direction="push"
+```
+
+Use this to keep OpenCode plugin accounts and Codex CLI auth aligned across workflows.
+
+---
+
 ### codex-dashboard
 
 Show live account eligibility, retry budget usage, refresh queue metrics, and the recommended next step.
@@ -538,9 +562,9 @@ codex-dashboard
 | Tool | What It Does | Example |
 |------|--------------|---------|
 | `codex-help` | Command guide by topic | `codex-help topic="setup"` |
-| `codex-setup` | Readiness checklist/wizard | `codex-setup wizard=true` |
+| `codex-setup` | Readiness checklist/wizard | `codex-setup mode="wizard"` |
 | `codex-next` | Best next action | `codex-next` |
-| `codex-doctor` | Diagnostics and optional safe fixes | `codex-doctor fix=true` |
+| `codex-doctor` | Diagnostics and optional safe fixes | `codex-doctor mode="fix"` |
 | `codex-list` | List/filter accounts | `codex-list tag="work"` |
 | `codex-switch` | Switch active account | `codex-switch index=2` |
 | `codex-label` | Set/clear display label | `codex-label index=2 label="Work"` |
@@ -554,6 +578,7 @@ codex-dashboard
 | `codex-remove` | Remove account entry | `codex-remove index=3` |
 | `codex-export` | Export account backups | `codex-export` |
 | `codex-import` | Dry-run or apply imports | `codex-import path="~/backup/accounts.json" dryRun=true` |
+| `codex-sync` | Manual bidirectional sync with Codex CLI auth | `codex-sync direction="pull"` |
 
 ---
 
@@ -866,6 +891,7 @@ CODEX_TUI_V2=0 opencode                          # Disable Codex-style UI (legac
 CODEX_TUI_COLOR_PROFILE=ansi16 opencode          # Force UI color profile
 CODEX_TUI_GLYPHS=unicode opencode                # Override glyph mode (ascii|unicode|auto)
 CODEX_AUTH_PREWARM=0 opencode                    # Disable startup prewarm (prompt/instruction cache warmup)
+CODEX_AUTH_AUTO_UPDATE=0 opencode                # Skip npm registry calls at startup (no update check)
 CODEX_AUTH_FAST_SESSION=1 opencode               # Enable faster response defaults
 CODEX_AUTH_FAST_SESSION_STRATEGY=always opencode # Force fast mode for all prompts
 CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS=24 opencode # Tune fast-mode history window
@@ -879,6 +905,8 @@ CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL=1 opencode # Legacy fallback toggle (prefe
 CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=0 opencode    # Disable only the legacy gpt-5.3 -> gpt-5.2 edge
 CODEX_AUTH_FETCH_TIMEOUT_MS=120000 opencode      # Override request timeout
 CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=60000 opencode # Override SSE stall timeout
+CODEX_AUTH_STORAGE_KEY="your strong passphrase" opencode # Encrypt multi-account storage on disk (AES-256-GCM)
+CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT=1 opencode         # Allow OAuth loopback redirect to use fallback callback ports (advanced)
 ```
 
 For all options, see [docs/configuration.md](docs/configuration.md).

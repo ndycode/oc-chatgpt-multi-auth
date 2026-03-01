@@ -26,10 +26,14 @@
 import { tool } from "@opencode-ai/plugin/tool";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
+import { createHmac, randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { homedir } from "node:os";
 import {
         createAuthorizationFlow,
         exchangeAuthorizationCode,
         parseAuthorizationInput,
+        AUTHORIZE_URL,
         REDIRECT_URI,
 } from "./lib/auth/auth.js";
 import { queuedRefresh, getRefreshQueueMetrics } from "./lib/refresh-queue.js";
@@ -127,7 +131,7 @@ import {
 	createCodexHeaders,
 	extractRequestUrl,
         handleErrorResponse,
-        handleSuccessResponse,
+        handleSuccessResponseDetailed,
 	getUnsupportedCodexModelInfo,
 	resolveUnsupportedCodexFallbackModel,
         refreshAndUpdateToken,
@@ -169,6 +173,26 @@ import {
 	type ModelFamily,
 } from "./lib/prompts/codex.js";
 import { prewarmOpenCodeCodexPrompt } from "./lib/prompts/opencode-codex.js";
+import {
+	CodexSyncError,
+	buildSyncFamilyIndexMap,
+	collectSyncIdentityKeys,
+	findSyncIndexByIdentity,
+	readCodexCurrentAccount,
+	writeCodexAuthJsonSession,
+	writeCodexMultiAuthPool,
+	type CodexSyncAccountPayload,
+	type CodexWriteResult,
+} from "./lib/codex-sync.js";
+import {
+	auditLog,
+	AuditAction,
+	AuditOutcome,
+	readAuditEntries,
+	OPERATION_EVENT_VERSION,
+	type OperationClass,
+	type ReliabilityAuditMetadata,
+} from "./lib/audit.js";
 import type {
 	AccountIdSource,
 	OAuthAuthDetails,
@@ -280,6 +304,430 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		lastSelectionSnapshot: null,
 	};
 
+	const processSessionId = randomUUID();
+	const operationSequenceCounter = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+
+	const RESERVED_OPERATION_METADATA_KEYS = new Set<string>([
+		"event_version",
+		"operation_id",
+		"process_session_id",
+		"operation_class",
+		"operation_name",
+		"attempt_no",
+		"retry_count",
+		"manual_recovery_required",
+		"beginner_safe_mode",
+		"model_family",
+		"retry_profile",
+	]);
+
+	const stripReservedOperationMetadata = (
+		input: Record<string, unknown> | undefined,
+	): Record<string, unknown> => {
+		if (!input) return {};
+		return Object.fromEntries(
+			Object.entries(input).filter(([key]) => !RESERVED_OPERATION_METADATA_KEYS.has(key)),
+		);
+	};
+
+	type OperationTracker = {
+		operationId: string;
+		operationClass: OperationClass;
+		operationName: string;
+		startedAt: number;
+		attemptNo: number;
+		retryCount: number;
+		manualRecoveryRequired: boolean;
+		modelFamily?: string;
+		retryProfile?: string;
+		extraMetadata?: Record<string, unknown>;
+	};
+
+	type OperationStartOptions = {
+		operationClass: OperationClass;
+		operationName: string;
+		attemptNo?: number;
+		retryCount?: number;
+		manualRecoveryRequired?: boolean;
+		modelFamily?: string;
+		retryProfile?: string;
+		extraMetadata?: Record<string, unknown>;
+	};
+
+	type OperationStatusOptions = {
+		errorCategory?: string;
+		httpStatus?: number;
+		manualRecoveryRequired?: boolean;
+		extraMetadata?: Record<string, unknown>;
+	};
+
+	type ReliabilityKpiSnapshot = {
+		requestStarts24h: number;
+		uninterruptedCompletionRate24h: number | null;
+		firstAttemptSuccessRate24h: number | null;
+		autoRecoverySuccessRate24h: number | null;
+		tokenRefreshSuccessRate24h: number | null;
+		operationSuccessRateByClass24h: Record<string, number | null>;
+	};
+
+	const formatPercent = (value: number | null): string =>
+		value === null ? "n/a" : `${value.toFixed(1)}%`;
+
+	const toPercent = (numerator: number, denominator: number): number | null =>
+		denominator > 0 ? (numerator / denominator) * 100 : null;
+
+	const nextOperationSequence = (): number => Atomics.add(operationSequenceCounter, 0, 1) + 1;
+
+	const createOperationId = (operationClass: OperationClass): string => {
+		const sequence = nextOperationSequence();
+		return `${operationClass}-${Date.now()}-${sequence}-${randomUUID().slice(0, 8)}`;
+	};
+
+	const buildOperationMetadata = (
+		state: OperationTracker,
+		overrides: Partial<ReliabilityAuditMetadata> = {},
+	): ReliabilityAuditMetadata => ({
+		event_version: OPERATION_EVENT_VERSION,
+		operation_id: state.operationId,
+		process_session_id: processSessionId,
+		operation_class: state.operationClass,
+		operation_name: state.operationName,
+		attempt_no: state.attemptNo,
+		retry_count: state.retryCount,
+		manual_recovery_required: state.manualRecoveryRequired,
+		beginner_safe_mode: beginnerSafeModeEnabled,
+		...(state.modelFamily ? { model_family: state.modelFamily } : {}),
+		...(state.retryProfile ? { retry_profile: state.retryProfile } : {}),
+		...stripReservedOperationMetadata(state.extraMetadata),
+		...stripReservedOperationMetadata(overrides as Record<string, unknown>),
+	});
+
+	const startOperation = ({
+		operationClass,
+		operationName,
+		attemptNo = 1,
+		retryCount = 0,
+		manualRecoveryRequired = false,
+		modelFamily,
+		retryProfile: operationRetryProfile,
+		extraMetadata,
+	}: OperationStartOptions): OperationTracker => {
+		const state: OperationTracker = {
+			operationId: createOperationId(operationClass),
+			operationClass,
+			operationName,
+			startedAt: Date.now(),
+			attemptNo,
+			retryCount,
+			manualRecoveryRequired,
+			modelFamily,
+			retryProfile: operationRetryProfile,
+			extraMetadata,
+		};
+		auditLog(
+			AuditAction.OPERATION_START,
+			"plugin",
+			operationName,
+			AuditOutcome.PARTIAL,
+			buildOperationMetadata(state),
+		);
+		return state;
+	};
+
+	const markOperationRetry = (state: OperationTracker, options: OperationStatusOptions = {}): void => {
+		state.retryCount += 1;
+		auditLog(
+			AuditAction.OPERATION_RETRY,
+			"plugin",
+			state.operationName,
+			AuditOutcome.PARTIAL,
+			buildOperationMetadata(state, {
+				...(options.errorCategory ? { error_category: options.errorCategory } : {}),
+				...(typeof options.httpStatus === "number" ? { http_status: options.httpStatus } : {}),
+				...(options.extraMetadata ?? {}),
+			}),
+		);
+	};
+
+	const markOperationRecovery = (
+		state: OperationTracker,
+		options: OperationStatusOptions & { recoveryStep: string },
+	): void => {
+		auditLog(
+			AuditAction.OPERATION_RECOVERY,
+			"plugin",
+			state.operationName,
+			AuditOutcome.PARTIAL,
+			buildOperationMetadata(state, {
+				...(options.errorCategory ? { error_category: options.errorCategory } : {}),
+				...(typeof options.httpStatus === "number" ? { http_status: options.httpStatus } : {}),
+				recovery_step: options.recoveryStep,
+				...(options.extraMetadata ?? {}),
+			}),
+		);
+	};
+
+	const completeOperationSuccess = (
+		state: OperationTracker,
+		options: OperationStatusOptions = {},
+	): void => {
+		if (options.manualRecoveryRequired === true) {
+			state.manualRecoveryRequired = true;
+		}
+		auditLog(
+			AuditAction.OPERATION_SUCCESS,
+			"plugin",
+			state.operationName,
+			AuditOutcome.SUCCESS,
+			buildOperationMetadata(state, {
+				duration_ms: Math.max(0, Date.now() - state.startedAt),
+				...(options.errorCategory ? { error_category: options.errorCategory } : {}),
+				...(typeof options.httpStatus === "number" ? { http_status: options.httpStatus } : {}),
+				...(options.extraMetadata ?? {}),
+			}),
+		);
+	};
+
+	const completeOperationFailure = (
+		state: OperationTracker,
+		options: OperationStatusOptions = {},
+	): void => {
+		if (options.manualRecoveryRequired === true) {
+			state.manualRecoveryRequired = true;
+		}
+		auditLog(
+			AuditAction.OPERATION_FAILURE,
+			"plugin",
+			state.operationName,
+			AuditOutcome.FAILURE,
+			buildOperationMetadata(state, {
+				duration_ms: Math.max(0, Date.now() - state.startedAt),
+				error_category: options.errorCategory ?? "unknown",
+				...(typeof options.httpStatus === "number" ? { http_status: options.httpStatus } : {}),
+				...(options.extraMetadata ?? {}),
+			}),
+		);
+	};
+
+	const computeReliabilityKpis = (nowMs: number): ReliabilityKpiSnapshot => {
+		const sinceMs = nowMs - 24 * 60 * 60 * 1000;
+		const entries = readAuditEntries({ sinceMs });
+		const operationEntries = entries.filter((entry) =>
+			entry.action === AuditAction.OPERATION_START ||
+			entry.action === AuditAction.OPERATION_SUCCESS ||
+			entry.action === AuditAction.OPERATION_FAILURE ||
+			entry.action === AuditAction.OPERATION_RETRY ||
+			entry.action === AuditAction.OPERATION_RECOVERY,
+		);
+
+		const requestStarts = operationEntries.filter((entry) => {
+			const metadata = entry.metadata as ReliabilityAuditMetadata | undefined;
+			return (
+				entry.action === AuditAction.OPERATION_START &&
+				metadata?.operation_class === "request" &&
+				metadata.operation_name === "request.fetch" &&
+				metadata.attempt_no === 1
+			);
+		});
+
+		const requestSuccesses = operationEntries.filter((entry) => {
+			const metadata = entry.metadata as ReliabilityAuditMetadata | undefined;
+			return (
+				entry.action === AuditAction.OPERATION_SUCCESS &&
+				metadata?.operation_class === "request" &&
+				metadata.operation_name === "request.fetch"
+			);
+		});
+
+		const uninterruptedSuccesses = requestSuccesses.filter((entry) => {
+			const metadata = entry.metadata as ReliabilityAuditMetadata | undefined;
+			return metadata?.manual_recovery_required === false;
+		});
+
+		const firstAttemptStarts = requestStarts.filter((entry) => {
+			const metadata = entry.metadata as ReliabilityAuditMetadata | undefined;
+			return metadata?.attempt_no === 1;
+		});
+		const firstAttemptSuccesses = requestSuccesses.filter((entry) => {
+			const metadata = entry.metadata as ReliabilityAuditMetadata | undefined;
+			return metadata?.attempt_no === 1 && metadata.retry_count === 0;
+		});
+
+		type RequestFlowState = {
+			firstAttemptFailed: boolean;
+			eventualSuccess: boolean;
+			manualRecoveryRequired: boolean;
+		};
+		const requestFlowStates = new Map<string, RequestFlowState>();
+		for (const entry of operationEntries) {
+			const metadata = entry.metadata as (ReliabilityAuditMetadata & { request_flow_id?: string }) | undefined;
+			if (
+				metadata?.operation_class !== "request" ||
+				metadata.operation_name !== "request.fetch" ||
+				!metadata.request_flow_id
+			) {
+				continue;
+			}
+
+			const flow = requestFlowStates.get(metadata.request_flow_id) ?? {
+				firstAttemptFailed: false,
+				eventualSuccess: false,
+				manualRecoveryRequired: false,
+			};
+			if (entry.action === AuditAction.OPERATION_FAILURE && metadata.attempt_no === 1) {
+				flow.firstAttemptFailed = true;
+			}
+			if (entry.action === AuditAction.OPERATION_SUCCESS) {
+				flow.eventualSuccess = true;
+			}
+			if (metadata.manual_recovery_required) {
+				flow.manualRecoveryRequired = true;
+			}
+			requestFlowStates.set(metadata.request_flow_id, flow);
+		}
+		const flowsWithFirstFailure = [...requestFlowStates.values()].filter((flow) => flow.firstAttemptFailed);
+		const autoRecoveredFlows = flowsWithFirstFailure.filter(
+			(flow) => flow.eventualSuccess && !flow.manualRecoveryRequired,
+		);
+
+		const authRefreshStarts = operationEntries.filter((entry) => {
+			const metadata = entry.metadata as ReliabilityAuditMetadata | undefined;
+			return (
+				entry.action === AuditAction.OPERATION_START &&
+				metadata?.operation_class === "auth" &&
+				metadata.operation_name === "auth.refresh-token"
+			);
+		});
+		const authRefreshSuccesses = operationEntries.filter((entry) => {
+			const metadata = entry.metadata as ReliabilityAuditMetadata | undefined;
+			return (
+				entry.action === AuditAction.OPERATION_SUCCESS &&
+				metadata?.operation_class === "auth" &&
+				metadata.operation_name === "auth.refresh-token"
+			);
+		});
+
+		const startsByClass = new Map<string, number>();
+		const successesByClass = new Map<string, number>();
+		for (const entry of operationEntries) {
+			const metadata = entry.metadata as ReliabilityAuditMetadata | undefined;
+			if (!metadata) continue;
+			if (
+				metadata.operation_class === "request" &&
+				metadata.operation_name === "request.exhausted"
+			) {
+				continue;
+			}
+			if (entry.action === AuditAction.OPERATION_START) {
+				startsByClass.set(
+					metadata.operation_class,
+					(startsByClass.get(metadata.operation_class) ?? 0) + 1,
+				);
+			}
+			if (entry.action === AuditAction.OPERATION_SUCCESS) {
+				successesByClass.set(
+					metadata.operation_class,
+					(successesByClass.get(metadata.operation_class) ?? 0) + 1,
+				);
+			}
+		}
+		const operationSuccessRateByClass24h: Record<string, number | null> = {};
+		for (const [operationClass, startCount] of startsByClass.entries()) {
+			const successCount = successesByClass.get(operationClass) ?? 0;
+			operationSuccessRateByClass24h[operationClass] = toPercent(successCount, startCount);
+		}
+
+		return {
+			requestStarts24h: requestStarts.length,
+			uninterruptedCompletionRate24h: toPercent(
+				uninterruptedSuccesses.length,
+				requestStarts.length,
+			),
+			firstAttemptSuccessRate24h: toPercent(
+				firstAttemptSuccesses.length,
+				firstAttemptStarts.length,
+			),
+			autoRecoverySuccessRate24h: toPercent(
+				autoRecoveredFlows.length,
+				flowsWithFirstFailure.length,
+			),
+			tokenRefreshSuccessRate24h: toPercent(
+				authRefreshSuccesses.length,
+				authRefreshStarts.length,
+			),
+			operationSuccessRateByClass24h,
+		};
+	};
+
+	const instrumentToolRegistry = <TTools extends Record<string, unknown>>(tools: TTools): TTools => {
+		for (const [toolName, toolDefinition] of Object.entries(tools)) {
+			const candidate = toolDefinition as {
+				execute?: (input: unknown) => Promise<unknown> | unknown;
+			};
+			if (typeof candidate.execute !== "function") continue;
+			const originalExecute = candidate.execute.bind(candidate);
+			candidate.execute = async (input: unknown) => {
+				const dryRunValue =
+					typeof input === "object" &&
+					input !== null &&
+					"dryRun" in input &&
+					typeof (input as { dryRun?: unknown }).dryRun === "boolean"
+						? (input as { dryRun: boolean }).dryRun
+						: undefined;
+				const op = startOperation({
+					operationClass: "tool",
+					operationName: `tool.${toolName}`,
+					retryProfile: runtimeMetrics.retryProfile,
+					extraMetadata:
+						typeof dryRunValue === "boolean"
+							? { operation_mode: dryRunValue ? "dry_run" : "apply" }
+							: undefined,
+				});
+				try {
+					const result = await originalExecute(input);
+					completeOperationSuccess(op);
+					return result;
+				} catch (error) {
+					completeOperationFailure(op, {
+						errorCategory: "tool-execution",
+					});
+					throw error;
+				}
+			};
+		}
+		return tools;
+	};
+
+	const instrumentAuthMethods = <TMethods extends unknown[]>(methods: TMethods): TMethods => {
+		for (const methodDefinition of methods) {
+			const candidate = methodDefinition as {
+				label?: unknown;
+				authorize?: (input?: Record<string, string>) => Promise<unknown>;
+			};
+			if (typeof candidate.authorize !== "function") continue;
+			const originalAuthorize = candidate.authorize.bind(candidate);
+			candidate.authorize = async (input?: Record<string, string>) => {
+				const label = typeof candidate.label === "string" ? candidate.label : "oauth";
+				const authOperation = startOperation({
+					operationClass: "auth",
+					operationName: `auth.method.${label.toLowerCase().replace(/\s+/g, "-")}`,
+					retryProfile: runtimeMetrics.retryProfile,
+				});
+				try {
+					const result = await originalAuthorize(input);
+					completeOperationSuccess(authOperation);
+					return result;
+				} catch (error) {
+					completeOperationFailure(authOperation, {
+						errorCategory: "auth-method",
+					});
+					throw error;
+				}
+			};
+		}
+		return methods;
+	};
+
 		type TokenSuccess = Extract<TokenResult, { type: "success" }>;
 		type TokenSuccessWithAccount = TokenSuccess & {
 				accountIdOverride?: string;
@@ -377,6 +825,43 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				};
 		};
 
+		const MANUAL_OAUTH_REDIRECT_URL = new URL(REDIRECT_URI);
+		const MANUAL_OAUTH_ALLOWED_HOSTS = new Set([
+			MANUAL_OAUTH_REDIRECT_URL.hostname.toLowerCase(),
+		]);
+
+		const getManualOAuthUrlValidationError = (
+			input: string,
+		): string | undefined => {
+			const raw = input.trim();
+			if (!raw) return undefined;
+
+			let parsedUrl: URL;
+			try {
+				parsedUrl = new URL(raw);
+			} catch {
+				return `Invalid callback URL. Use ${REDIRECT_URI}`;
+			}
+
+			if (parsedUrl.protocol !== MANUAL_OAUTH_REDIRECT_URL.protocol) {
+				return `Invalid callback URL protocol. Use ${REDIRECT_URI}`;
+			}
+			const parsedHost = parsedUrl.hostname.toLowerCase();
+			if (
+				!MANUAL_OAUTH_ALLOWED_HOSTS.has(parsedHost) ||
+				parsedHost !== MANUAL_OAUTH_REDIRECT_URL.hostname.toLowerCase()
+			) {
+				return `Invalid callback URL host. Use ${REDIRECT_URI}`;
+			}
+			if (parsedUrl.port !== MANUAL_OAUTH_REDIRECT_URL.port) {
+				return `Invalid callback URL port. Use ${REDIRECT_URI}`;
+			}
+			if (parsedUrl.pathname !== MANUAL_OAUTH_REDIRECT_URL.pathname) {
+				return `Invalid callback URL path. Use ${REDIRECT_URI}`;
+			}
+			return undefined;
+		};
+
 		const buildManualOAuthFlow = (
 				pkce: { verifier: string },
 				url: string,
@@ -387,10 +872,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 method: "code" as const,
                 instructions: AUTH_LABELS.INSTRUCTIONS_MANUAL,
                 validate: (input: string): string | undefined => {
-                        const parsed = parseAuthorizationInput(input);
-                        if (!parsed.code) {
-                                return "No authorization code found. Paste the full callback URL (e.g., http://localhost:1455/auth/callback?code=...)";
+                        const callbackValidationError = getManualOAuthUrlValidationError(input);
+                        if (callbackValidationError) {
+                                return callbackValidationError;
                         }
+                        const parsed = parseAuthorizationInput(input);
+						if (!parsed.code) {
+								return `No authorization code found. Paste the full callback URL (e.g., ${REDIRECT_URI}?code=...)`;
+						}
                         if (!parsed.state) {
                                 return "Missing OAuth state. Paste the full callback URL including both code and state parameters.";
                         }
@@ -400,6 +889,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         return undefined;
                 },
                 callback: async (input: string) => {
+                        const callbackValidationError = getManualOAuthUrlValidationError(input);
+                        if (callbackValidationError) {
+                                return {
+                                        type: "failed" as const,
+                                        reason: "invalid_response" as const,
+                                        message: callbackValidationError,
+                                };
+                        }
                         const parsed = parseAuthorizationInput(input);
                         if (!parsed.code || !parsed.state) {
                                 return {
@@ -437,39 +934,68 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		forceNewLogin: boolean = false,
 	): Promise<TokenResult> => {
 		const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
-		logInfo(`OAuth URL: ${url}`);
-
-                let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
-                try {
-                        serverInfo = await startLocalOAuthServer({ state });
-                } catch (err) {
-                        logDebug(`[${PLUGIN_NAME}] Failed to start OAuth server: ${(err as Error)?.message ?? String(err)}`);
-                        serverInfo = null;
-                }
-                openBrowserUrl(url);
-
-                if (!serverInfo || !serverInfo.ready) {
-                        serverInfo?.close();
-                        const message =
-                                `\n[${PLUGIN_NAME}] OAuth callback server failed to start. ` +
-                                `Please retry with "${AUTH_LABELS.OAUTH_MANUAL}".\n`;
-				logWarn(message);
-                        return { type: "failed" as const };
-                }
-
-                const result = await serverInfo.waitForCode(state);
-                serverInfo.close();
-
-		if (!result) {
-			return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
+		logInfo(`OAuth authorization flow initialized at ${AUTHORIZE_URL}`);
+		const authorizeUrl = new URL(url);
+		const defaultRedirectUrl = new URL(REDIRECT_URI);
+		const allowDynamicRedirect = process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT === "1";
+		let serverInfo: Awaited<ReturnType<typeof startLocalOAuthServer>> | null = null;
+		try {
+			serverInfo = await startLocalOAuthServer({ state });
+		} catch (err) {
+			logDebug(`[${PLUGIN_NAME}] Failed to start OAuth server: ${(err as Error)?.message ?? String(err)}`);
+			serverInfo = null;
 		}
 
-                return await exchangeAuthorizationCode(
-                        result.code,
-                        pkce.verifier,
-                        REDIRECT_URI,
-                );
-        };
+		if (!serverInfo || !serverInfo.ready) {
+			serverInfo?.close();
+			const details = serverInfo?.errorCode
+				? ` [${serverInfo.errorCode}] ${serverInfo.errorMessage ?? "Unknown error"}.`
+				: "";
+			const message =
+				`\n[${PLUGIN_NAME}] OAuth callback server failed to start.${details ? `${details}` : ""} ` +
+				`Please retry with "${AUTH_LABELS.OAUTH_MANUAL}".\n`;
+			logWarn(message.trimEnd());
+			return { type: "failed" as const };
+		}
+
+		const resolvedRedirectUrl = new URL(defaultRedirectUrl.toString());
+		if (typeof serverInfo.port === "number" && serverInfo.port > 0) {
+			resolvedRedirectUrl.port = String(serverInfo.port);
+		}
+		const resolvedRedirectUri = resolvedRedirectUrl.toString();
+		const redirectPortChanged = resolvedRedirectUrl.port !== defaultRedirectUrl.port;
+		if (redirectPortChanged && !allowDynamicRedirect) {
+			serverInfo.close();
+			logWarn(
+				`[${PLUGIN_NAME}] OAuth callback server bound to fallback port ${serverInfo.port}, but OpenAI OAuth redirect URI is fixed to ${REDIRECT_URI}. ` +
+				`Stop the process using port ${defaultRedirectUrl.port || "1455"} and retry, or use "${AUTH_LABELS.OAUTH_MANUAL}". ` +
+				`Set CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT=1 only if your OAuth workspace allows loopback redirect ports.`,
+			);
+			return { type: "failed" as const };
+		}
+
+		authorizeUrl.searchParams.set("redirect_uri", resolvedRedirectUri);
+		if (redirectPortChanged) {
+			logWarn(
+				`[${PLUGIN_NAME}] OAuth callback server bound to fallback port ${serverInfo.port}; redirect URI updated to ${resolvedRedirectUri}. ` +
+				`If browser login fails with invalid_redirect_uri, retry on port ${defaultRedirectUrl.port || "1455"} or use manual URL paste.`,
+			);
+		}
+
+		try {
+			openBrowserUrl(authorizeUrl.toString());
+
+			const result = await serverInfo.waitForCode(state);
+
+			if (!result) {
+				return { type: "failed" as const, reason: "unknown" as const, message: "OAuth callback timeout or cancelled" };
+			}
+
+			return await exchangeAuthorizationCode(result.code, pkce.verifier, resolvedRedirectUri);
+		} finally {
+			serverInfo.close();
+		}
+	};
 
 	        const persistAccountPool = async (
 	                results: TokenSuccessWithAccount[],
@@ -1195,6 +1721,547 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				return Math.max(0, Math.min(raw, total - 1));
 		};
 
+		type SyncDirection = "pull" | "push";
+		type SyncSummary = {
+			direction: SyncDirection;
+			sourcePath: string;
+			targetPaths: string[];
+			backupPaths: string[];
+			totalAccounts: number;
+			activeIndex: number;
+			activeSwitched: boolean;
+			created: number;
+			updated: number;
+			notes: string[];
+		};
+
+		const buildSyncSummaryLines = (summary: SyncSummary): string[] => {
+			const directionLabel =
+				summary.direction === "pull" ? "Codex -> plugin" : "plugin -> Codex";
+			const lines: string[] = [
+				`Direction: ${directionLabel}`,
+				`Source: ${summary.sourcePath}`,
+				`Targets: ${summary.targetPaths.join(", ")}`,
+				`Changes: created=${summary.created}, updated=${summary.updated}`,
+				`Plugin total accounts: ${summary.totalAccounts}`,
+				`Plugin active account: ${summary.activeIndex + 1}${summary.activeSwitched ? " (switched)" : ""}`,
+			];
+			if (summary.backupPaths.length > 0) {
+				lines.push(`Backups: ${summary.backupPaths.join(", ")}`);
+			}
+			for (const note of summary.notes) {
+				lines.push(`Note: ${note}`);
+			}
+			return lines;
+		};
+
+		const renderSyncSummary = (
+			ui: UiRuntimeOptions,
+			title: string,
+			summary: SyncSummary,
+		): string => {
+			if (!ui.v2Enabled) {
+				return [title, "", ...buildSyncSummaryLines(summary)].join("\n");
+			}
+
+			const directionLabel =
+				summary.direction === "pull" ? "Codex -> plugin" : "plugin -> Codex";
+			const lines: string[] = [
+				...formatUiHeader(ui, title),
+				"",
+				formatUiKeyValue(ui, "Direction", directionLabel, "accent"),
+				formatUiKeyValue(ui, "Source", summary.sourcePath, "muted"),
+				formatUiKeyValue(ui, "Targets", summary.targetPaths.join(", "), "muted"),
+				formatUiKeyValue(
+					ui,
+					"Changes",
+					`created=${summary.created}, updated=${summary.updated}`,
+					summary.created > 0 ? "success" : "muted",
+				),
+				formatUiKeyValue(ui, "Plugin total", String(summary.totalAccounts)),
+				formatUiKeyValue(
+					ui,
+					"Plugin active",
+					`${summary.activeIndex + 1}${summary.activeSwitched ? " (switched)" : ""}`,
+					summary.activeSwitched ? "success" : "muted",
+				),
+			];
+
+			if (summary.backupPaths.length > 0) {
+				lines.push(formatUiKeyValue(ui, "Backups", summary.backupPaths.join(", "), "muted"));
+			}
+			for (const note of summary.notes) {
+				lines.push(formatUiItem(ui, note, "muted"));
+			}
+			return lines.join("\n");
+		};
+
+		const runAndPrintSync = async (
+			label: "from Codex" | "to Codex",
+			run: () => Promise<SyncSummary>,
+		): Promise<void> => {
+			try {
+				const summary = await run();
+				console.log("");
+				for (const line of buildSyncSummaryLines(summary)) {
+					console.log(line);
+				}
+				console.log("");
+			} catch (error) {
+				const message =
+					error instanceof CodexSyncError || error instanceof Error
+						? error.message
+						: String(error);
+				console.log("");
+				console.log(`Sync ${label} failed: ${message}`);
+				console.log("");
+			}
+		};
+
+		const WINDOWS_SYNC_RETRY_ATTEMPTS = 6;
+		const WINDOWS_SYNC_RETRY_BASE_DELAY_MS = 25;
+
+		const isWindowsSyncLockError = (error: unknown): boolean => {
+			const code = (error as NodeJS.ErrnoException)?.code;
+			return code === "EPERM" || code === "EBUSY";
+		};
+
+		const runWithWindowsSyncRetry = async <T>(operation: () => Promise<T>): Promise<T> => {
+			let lastError: unknown;
+			for (let attempt = 0; attempt < WINDOWS_SYNC_RETRY_ATTEMPTS; attempt += 1) {
+				try {
+					return await operation();
+				} catch (error) {
+					if (!isWindowsSyncLockError(error) || attempt === WINDOWS_SYNC_RETRY_ATTEMPTS - 1) {
+						throw error;
+					}
+					lastError = error;
+					await new Promise<void>((resolve) =>
+						setTimeout(resolve, WINDOWS_SYNC_RETRY_BASE_DELAY_MS * 2 ** attempt),
+					);
+				}
+			}
+			throw lastError;
+		};
+
+		const rollbackPartialCodexAuthWrite = async (
+			authWrite: CodexWriteResult | undefined,
+		): Promise<string | null> => {
+			return rollbackPartialCodexWrite(authWrite, "Codex auth.json");
+		};
+
+		const rollbackPartialCodexMultiAuthPoolWrite = async (
+			poolWrite: CodexWriteResult | undefined,
+		): Promise<string | null> => {
+			return rollbackPartialCodexWrite(poolWrite, "Codex multi-auth pool");
+		};
+
+		const rollbackPartialCodexWrite = async (
+			writeResult: CodexWriteResult | undefined,
+			label: string,
+		): Promise<string | null> => {
+			if (!writeResult) return null;
+
+			try {
+				const backupPath = writeResult.backupPath;
+				if (backupPath) {
+					await runWithWindowsSyncRetry(() => fs.copyFile(backupPath, writeResult.path));
+					try {
+						await runWithWindowsSyncRetry(() => fs.unlink(backupPath));
+					} catch {
+						// Best-effort cleanup of backup created by failed sync push.
+					}
+				} else {
+					try {
+						await runWithWindowsSyncRetry(() => fs.unlink(writeResult.path));
+					} catch (error) {
+						const code = (error as NodeJS.ErrnoException).code;
+						if (code !== "ENOENT") {
+							throw error;
+						}
+					}
+				}
+				return null;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				logWarn(`Failed to rollback partial ${label} write`, {
+					error: message,
+					path: writeResult.path,
+					backupPath: writeResult.backupPath,
+				});
+				return message;
+			}
+		};
+
+	let cachedAuditHashSecret: string | null | undefined;
+	let auditHashSecretWarningLogged = false;
+
+	const resolveAuditHashSecret = (): string | null => {
+		if (cachedAuditHashSecret !== undefined) return cachedAuditHashSecret;
+		const secretCandidate =
+			process.env.CODEX_AUDIT_HASH_KEY?.trim() ?? process.env.SYNC_AUDIT_SECRET?.trim() ?? null;
+		if (!secretCandidate && !auditHashSecretWarningLogged) {
+			logWarn(
+				"Sync audit identity hashing disabled: set CODEX_AUDIT_HASH_KEY or SYNC_AUDIT_SECRET to enable anonymized telemetry.",
+			);
+			auditHashSecretWarningLogged = true;
+		}
+		cachedAuditHashSecret = secretCandidate && secretCandidate.length > 0 ? secretCandidate : null;
+		return cachedAuditHashSecret;
+	};
+
+	const hashSyncAuditValue = (
+		raw: string | undefined,
+		prefix: "email" | "account",
+	): string | undefined => {
+		const normalized = raw?.trim();
+		if (!normalized) return undefined;
+		const secret = resolveAuditHashSecret();
+		if (!secret) return undefined;
+		const digest = createHmac("sha256", secret).update(normalized).digest("hex").slice(0, 24);
+		return `${prefix}:${digest}`;
+	};
+
+		const buildSyncAuditIdentity = (
+			email: string | undefined,
+			accountId: string | undefined,
+		): { hashedEmail?: string; hashedAccountId?: string } => ({
+			hashedEmail: hashSyncAuditValue(sanitizeEmail(email), "email"),
+			hashedAccountId: hashSyncAuditValue(accountId, "account"),
+		});
+
+		const homePathPrefix = homedir().replace(/\\/g, "/").toLowerCase();
+		const sanitizeAuditPath = (rawPath: string | undefined): string | undefined => {
+			const normalized = rawPath?.trim().replace(/\\/g, "/");
+			if (!normalized) return undefined;
+
+			const normalizedLower = normalized.toLowerCase();
+			if (
+				homePathPrefix &&
+				(normalizedLower === homePathPrefix || normalizedLower.startsWith(`${homePathPrefix}/`))
+			) {
+				const suffix = normalized.slice(homePathPrefix.length);
+				return `~${suffix || "/"}`;
+			}
+
+			const basename = normalized.split("/").filter(Boolean).pop();
+			return basename ?? normalized;
+		};
+
+		const sanitizeAuditPaths = (paths: string[]): string[] =>
+			paths.map((value) => sanitizeAuditPath(value) ?? "<unknown>");
+
+		const sanitizeAuditErrorMessage = (error: unknown): string => {
+			const rawMessage = error instanceof Error ? error.message : String(error);
+			if (!rawMessage) {
+				return "<unknown>";
+			}
+
+			const normalized = rawMessage.replace(/\\/g, "/");
+			return normalized.replace(
+				/[A-Za-z]:\/[^\s"'`<>()]+|(?<![A-Za-z][A-Za-z0-9+.-]*:)\/[^\s"'`<>()]+/g,
+				(match) => sanitizeAuditPath(match) ?? "<path>",
+			);
+		};
+
+		const syncFromCodexToPlugin = async (): Promise<SyncSummary> => {
+			try {
+				const codexAccount = await readCodexCurrentAccount();
+				const inferredAccountId =
+					codexAccount.accountId ?? extractAccountId(codexAccount.accessToken);
+				const inferredEmail =
+					codexAccount.email ??
+					sanitizeEmail(
+						extractAccountEmail(codexAccount.accessToken, codexAccount.idToken),
+					);
+				const identityKeys = collectSyncIdentityKeys({
+					accountId: inferredAccountId,
+					refreshToken: codexAccount.refreshToken,
+				});
+
+				let created = 0;
+				let updated = 0;
+				let previousActiveIndex = 0;
+
+				await withAccountStorageTransaction(async (loadedStorage, persist) => {
+					const workingStorage = loadedStorage
+						? {
+								...loadedStorage,
+								accounts: loadedStorage.accounts.map((account) => ({ ...account })),
+								activeIndexByFamily: loadedStorage.activeIndexByFamily
+									? { ...loadedStorage.activeIndexByFamily }
+									: {},
+						  }
+						: {
+								version: 3 as const,
+								accounts: [],
+								activeIndex: 0,
+								activeIndexByFamily: {},
+						  };
+					previousActiveIndex = resolveActiveIndex(workingStorage, "codex");
+
+					const existingIndex = findSyncIndexByIdentity(
+						workingStorage.accounts,
+						identityKeys,
+					);
+					const now = Date.now();
+					let candidateIndex = existingIndex;
+					if (existingIndex >= 0) {
+						const existingAccount = workingStorage.accounts[existingIndex];
+						if (existingAccount) {
+							if (inferredEmail) {
+								existingAccount.email = inferredEmail;
+							}
+							existingAccount.refreshToken = codexAccount.refreshToken;
+							existingAccount.accessToken = codexAccount.accessToken;
+							existingAccount.expiresAt = codexAccount.expiresAt;
+							existingAccount.enabled = true;
+							existingAccount.lastUsed = now;
+							if (inferredAccountId) {
+								existingAccount.accountId = inferredAccountId;
+								existingAccount.accountIdSource = "token";
+							}
+						}
+						created = 0;
+						updated = 1;
+					} else {
+						workingStorage.accounts.push({
+							accountId: inferredAccountId,
+							accountIdSource: inferredAccountId ? "token" : undefined,
+							email: inferredEmail,
+							refreshToken: codexAccount.refreshToken,
+							accessToken: codexAccount.accessToken,
+							expiresAt: codexAccount.expiresAt,
+							enabled: true,
+							addedAt: now,
+							lastUsed: now,
+						});
+						candidateIndex = workingStorage.accounts.length - 1;
+						created = 1;
+						updated = 0;
+					}
+
+					workingStorage.activeIndex = candidateIndex;
+					workingStorage.activeIndexByFamily = buildSyncFamilyIndexMap(candidateIndex);
+					await persist(workingStorage);
+				});
+
+				const reloadedStorage = await loadAccounts();
+				if (reloadedStorage) {
+					const reloadedManager = await AccountManager.loadFromDisk();
+					cachedAccountManager = reloadedManager;
+					accountManagerPromise = Promise.resolve(reloadedManager);
+				}
+				const totalAccounts = reloadedStorage?.accounts.length ?? 0;
+				const activeIndex = reloadedStorage
+					? resolveActiveIndex(reloadedStorage, "codex")
+					: 0;
+				const summary: SyncSummary = {
+					direction: "pull",
+					sourcePath: codexAccount.sourcePath,
+					targetPaths: [getStoragePath()],
+					backupPaths: [],
+					totalAccounts,
+					activeIndex,
+					activeSwitched: previousActiveIndex !== activeIndex,
+					created,
+					updated,
+					notes: [],
+				};
+				const syncIdentity = buildSyncAuditIdentity(inferredEmail, inferredAccountId);
+				const sanitizedSourcePath = sanitizeAuditPath(summary.sourcePath);
+				const sanitizedTargetPath = sanitizeAuditPath(summary.targetPaths[0]);
+				auditLog(
+					AuditAction.ACCOUNT_SYNC_PULL,
+					"sync",
+					"plugin-accounts",
+					AuditOutcome.SUCCESS,
+					{
+						direction: summary.direction,
+						sourcePath: sanitizedSourcePath,
+						targetPath: sanitizedTargetPath,
+						created: summary.created,
+						updated: summary.updated,
+						totalAccounts: summary.totalAccounts,
+						activeIndex: summary.activeIndex,
+						hashedEmail: syncIdentity.hashedEmail,
+						hashedAccountId: syncIdentity.hashedAccountId,
+					},
+				);
+				return summary;
+			} catch (error) {
+				auditLog(
+					AuditAction.ACCOUNT_SYNC_PULL,
+					"sync",
+					"plugin-accounts",
+					AuditOutcome.FAILURE,
+					{
+						error: sanitizeAuditErrorMessage(error),
+					},
+				);
+				throw error;
+			}
+		};
+
+		const syncFromPluginToCodex = async (): Promise<SyncSummary> => {
+			try {
+				const storage = await loadAccounts();
+				if (!storage || storage.accounts.length === 0) {
+					throw new Error("No plugin accounts available. Run: opencode auth login");
+				}
+
+				const activeIndex = resolveActiveIndex(storage, "codex");
+				const activeAccount = storage.accounts[activeIndex];
+				if (!activeAccount) {
+					throw new Error("Active plugin account not found.");
+				}
+				if (activeAccount.enabled === false) {
+					throw new Error(
+						`Active plugin account ${activeIndex + 1} is disabled. Enable it before syncing to Codex.`,
+					);
+				}
+
+				const flaggedStorage = await loadFlaggedAccounts();
+				const isFlagged = flaggedStorage.accounts.some(
+					(flagged) => flagged.refreshToken === activeAccount.refreshToken,
+				);
+				if (isFlagged) {
+					throw new Error(
+						`Active plugin account ${activeIndex + 1} is flagged. Verify flagged accounts before syncing to Codex.`,
+					);
+				}
+
+				const notes: string[] = [];
+				let accessToken = activeAccount.accessToken;
+				let refreshToken = activeAccount.refreshToken;
+				let idToken: string | undefined;
+				const isExpired =
+					typeof activeAccount.expiresAt === "number" &&
+					activeAccount.expiresAt <= Date.now();
+				if (!accessToken || isExpired) {
+					const refreshResult = await queuedRefresh(activeAccount.refreshToken);
+					if (refreshResult.type !== "success") {
+						throw new Error(
+							`Failed to refresh active account before sync (${refreshResult.message ?? refreshResult.reason ?? "refresh failed"}).`,
+						);
+					}
+					accessToken = refreshResult.access;
+					refreshToken = refreshResult.refresh;
+					idToken = refreshResult.idToken;
+					activeAccount.accessToken = refreshResult.access;
+					activeAccount.refreshToken = refreshResult.refresh;
+					activeAccount.expiresAt = refreshResult.expires;
+					await saveAccounts(storage);
+					invalidateAccountManagerCache();
+					notes.push("Refreshed active plugin account before syncing.");
+				}
+
+				if (!accessToken) {
+					throw new Error(
+						"Active plugin account is missing access token and refresh failed. Re-authenticate the account first.",
+					);
+				}
+
+				const payload: CodexSyncAccountPayload = {
+					accessToken,
+					refreshToken,
+					idToken,
+					accountId: activeAccount.accountId ?? extractAccountId(accessToken),
+					email:
+						activeAccount.email ??
+						sanitizeEmail(extractAccountEmail(accessToken, idToken)),
+					accountIdSource: activeAccount.accountIdSource,
+					accountLabel: activeAccount.accountLabel,
+					organizationId: activeAccount.organizationId,
+					enabled: activeAccount.enabled,
+				};
+
+				let authWrite: Awaited<ReturnType<typeof writeCodexAuthJsonSession>> | undefined;
+				let poolWrite: Awaited<ReturnType<typeof writeCodexMultiAuthPool>> | undefined;
+				try {
+					authWrite = await writeCodexAuthJsonSession(payload);
+					poolWrite = await writeCodexMultiAuthPool(payload);
+				} catch (writeError) {
+					const rollbackErrors: string[] = [];
+					const poolRollbackError =
+						await rollbackPartialCodexMultiAuthPoolWrite(poolWrite);
+					if (poolRollbackError) {
+						rollbackErrors.push(
+							`multi-auth pool rollback failed: ${poolRollbackError}`,
+						);
+					}
+					const authRollbackError = await rollbackPartialCodexAuthWrite(authWrite);
+					if (authRollbackError) {
+						rollbackErrors.push(`auth.json rollback failed: ${authRollbackError}`);
+					}
+					if (rollbackErrors.length > 0) {
+						const writeMessage =
+							writeError instanceof Error ? writeError.message : String(writeError);
+						throw new Error(
+							`Failed to sync plugin account to Codex (${writeMessage}). ${rollbackErrors.join("; ")}`,
+							{
+								cause: writeError instanceof Error ? writeError : undefined,
+							},
+						);
+					}
+					throw writeError;
+				}
+
+				if (!authWrite || !poolWrite) {
+					throw new Error("Codex sync write did not complete.");
+				}
+
+				const backupPaths = [authWrite.backupPath, poolWrite.backupPath].filter(
+					(path): path is string => typeof path === "string" && path.length > 0,
+				);
+
+				const summary: SyncSummary = {
+					direction: "push",
+					sourcePath: getStoragePath(),
+					targetPaths: [authWrite.path, poolWrite.path],
+					backupPaths,
+					totalAccounts: storage.accounts.length,
+					activeIndex,
+					activeSwitched: false,
+					created: poolWrite.created ? 1 : 0,
+					updated: poolWrite.updated ? 1 : 0,
+					notes,
+				};
+				const syncIdentity = buildSyncAuditIdentity(payload.email, payload.accountId);
+				const sanitizedSourcePath = sanitizeAuditPath(summary.sourcePath);
+				const sanitizedTargetPaths = sanitizeAuditPaths(summary.targetPaths);
+				auditLog(
+					AuditAction.ACCOUNT_SYNC_PUSH,
+					"sync",
+					"codex-auth",
+					AuditOutcome.SUCCESS,
+					{
+						direction: summary.direction,
+						sourcePath: sanitizedSourcePath,
+						targetPaths: sanitizedTargetPaths,
+						created: summary.created,
+						updated: summary.updated,
+						totalAccounts: summary.totalAccounts,
+						activeIndex: summary.activeIndex,
+						hashedEmail: syncIdentity.hashedEmail,
+						hashedAccountId: syncIdentity.hashedAccountId,
+					},
+				);
+				return summary;
+			} catch (error) {
+				auditLog(
+					AuditAction.ACCOUNT_SYNC_PUSH,
+					"sync",
+					"codex-auth",
+					AuditOutcome.FAILURE,
+					{
+						error: sanitizeAuditErrorMessage(error),
+					},
+				);
+				throw error;
+			}
+		};
+
 	const hydrateEmails = async (
 			storage: AccountStorageV3 | null,
 	): Promise<AccountStorageV3 | null> => {
@@ -1545,7 +2612,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				lines.push("");
 				lines.push(...formatUiSection(ui, "Recommended next step"));
 				lines.push(formatUiItem(ui, state.nextAction, "accent"));
-				lines.push(formatUiItem(ui, "Guided wizard: codex-setup --wizard", "muted"));
+				lines.push(formatUiItem(ui, "Guided wizard: codex-setup mode=\"wizard\"", "muted"));
 				return lines.join("\n");
 			}
 
@@ -1563,7 +2630,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 			lines.push("");
 			lines.push(`Recommended next step: ${state.nextAction}`);
-			lines.push("Guided wizard: codex-setup --wizard");
+			lines.push("Guided wizard: codex-setup mode=\"wizard\"");
 			return lines.join("\n");
 		};
 
@@ -1678,7 +2745,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						"",
 						formatUiItem(ui, `Selected: ${selectedLabel}`, "accent"),
 						formatUiItem(ui, `Run: ${command}`, "success"),
-						formatUiItem(ui, "Run codex-setup --wizard again to choose another step.", "muted"),
+						formatUiItem(ui, "Run codex-setup mode=\"wizard\" again to choose another step.", "muted"),
 					].join("\n");
 				}
 				return [
@@ -1686,7 +2753,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					`Selected: ${selectedLabel}`,
 					`Run: ${command}`,
 					"",
-					"Run codex-setup --wizard again to choose another step.",
+					"Run codex-setup mode=\"wizard\" again to choose another step.",
 				].join("\n");
 			} catch (error) {
 				const reason = error instanceof Error ? error.message : String(error);
@@ -1706,6 +2773,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const runStartupPreflight = async (): Promise<void> => {
 			if (startupPreflightShown) return;
 			startupPreflightShown = true;
+			const startupOperation = startOperation({
+				operationClass: "startup",
+				operationName: "startup.preflight",
+				retryProfile: runtimeMetrics.retryProfile,
+			});
 			try {
 				const state = await buildSetupChecklistState();
 				const message =
@@ -1714,7 +2786,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					`Next: ${state.nextAction}`;
 				await showToast(message, state.summary.healthy > 0 ? "info" : "warning");
 				logInfo(message);
+				completeOperationSuccess(startupOperation, {
+					extraMetadata: {
+						healthy_accounts: state.summary.healthy,
+						total_accounts: state.summary.total,
+						blocked_accounts: state.summary.blocked,
+						rate_limited_accounts: state.summary.rateLimited,
+					},
+				});
 			} catch (error) {
+				completeOperationFailure(startupOperation, {
+					errorCategory: "startup-preflight",
+				});
 				logDebug(
 					`[${PLUGIN_NAME}] Startup preflight skipped: ${
 						error instanceof Error ? error.message : String(error)
@@ -1730,6 +2813,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
         // Event handler for session recovery and account selection
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
+          const eventType = input.event.type ?? "unknown";
+          const eventOperation = startOperation({
+                operationClass: "ui_event",
+                operationName: `ui-event.${eventType}`,
+                retryProfile: runtimeMetrics.retryProfile,
+                extraMetadata: { event_type: eventType },
+          });
           try {
                 const { event } = input;
                 // Handle TUI account selection events
@@ -1741,6 +2831,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         const props = event.properties as { index?: number; accountIndex?: number; provider?: string };
                         // Filter by provider if specified
                         if (props.provider && props.provider !== "openai" && props.provider !== PROVIDER_ID) {
+                                completeOperationSuccess(eventOperation, {
+                                        extraMetadata: { ignored_reason: "provider-mismatch" },
+                                });
                                 return;
                         }
 
@@ -1748,6 +2841,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         if (typeof index === "number") {
                                 const storage = await loadAccounts();
                                 if (!storage || index < 0 || index >= storage.accounts.length) {
+                                        completeOperationSuccess(eventOperation, {
+                                                extraMetadata: { ignored_reason: "invalid-account-index" },
+                                        });
                                         return;
                                 }
 
@@ -1776,7 +2872,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 await showToast(`Switched to account ${index + 1}`, "info");
                         }
                 }
+                completeOperationSuccess(eventOperation);
           } catch (error) {
+                completeOperationFailure(eventOperation, {
+                        errorCategory: "ui-event",
+                });
                 logDebug(`[${PLUGIN_NAME}] Event handler error: ${error instanceof Error ? error.message : String(error)}`);
           }
         };
@@ -1951,11 +3051,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						)
 					: null;
 
-			checkAndNotify(async (message, variant) => {
-				await showToast(message, variant);
-			}).catch((err) => {
-				logDebug(`Update check failed: ${err instanceof Error ? err.message : String(err)}`);
-			});
+			const autoUpdateEnabled = process.env.CODEX_AUTH_AUTO_UPDATE !== "0";
+			if (autoUpdateEnabled) {
+				checkAndNotify(async (message, variant) => {
+					await showToast(message, variant);
+				}).catch((err) => {
+					logDebug(`Update check failed: ${err instanceof Error ? err.message : String(err)}`);
+				});
+			}
 			await runStartupPreflight();
 
 
@@ -2173,6 +3276,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 							let allRateLimitedRetries = 0;
 							let emptyResponseRetries = 0;
+							const requestFlowId = randomUUID();
+							let requestAttemptNumber = 0;
 							const attemptedUnsupportedFallbackModels = new Set<string>();
 							if (model) {
 								attemptedUnsupportedFallbackModels.add(model);
@@ -2184,20 +3289,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 										let restartAccountTraversalWithFallback = false;
 
 while (attempted.size < Math.max(1, accountCount)) {
-				const selectionExplainability = accountManager.getSelectionExplainability(
+				const selectionNow = Date.now();
+				const selection = accountManager.getSelectionExplainabilityAndNextForFamilyHybrid(
 					modelFamily,
 					model,
-					Date.now(),
+					selectionNow,
+					{ pidOffsetEnabled },
 				);
 				runtimeMetrics.lastSelectionSnapshot = {
-					timestamp: Date.now(),
+					timestamp: selectionNow,
 					family: modelFamily,
 					model: model ?? null,
 					selectedAccountIndex: null,
 					quotaKey,
-					explainability: selectionExplainability,
+					explainability: selection.explainability,
 				};
-				const account = accountManager.getCurrentOrNextForFamilyHybrid(modelFamily, model, { pidOffsetEnabled });
+				const account = selection.account;
 				if (!account || attempted.has(account.index)) {
 					break;
 				}
@@ -2216,8 +3323,20 @@ while (attempted.size < Math.max(1, accountCount)) {
 							);
 
 											let accountAuth = accountManager.toAuthDetails(account) as OAuthAuthDetails;
+											let refreshOperation: OperationTracker | null = null;
 								try {
 						if (shouldRefreshToken(accountAuth, tokenRefreshSkewMs)) {
+							refreshOperation = startOperation({
+								operationClass: "auth",
+								operationName: "auth.refresh-token",
+								attemptNo: 1,
+								retryCount: 0,
+								modelFamily,
+								retryProfile,
+								extraMetadata: {
+									request_flow_id: requestFlowId,
+								},
+							});
 							accountAuth = (await refreshAndUpdateToken(
 								accountAuth,
 								client,
@@ -2225,8 +3344,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 							accountManager.updateFromAuth(account, accountAuth);
 							accountManager.clearAuthFailures(account);
 							accountManager.saveToDiskDebounced();
+							completeOperationSuccess(refreshOperation);
 						}
 			} catch (err) {
+				if (refreshOperation) {
+					completeOperationFailure(refreshOperation, {
+						errorCategory: "auth-refresh",
+					});
+				}
 				logDebug(`[${PLUGIN_NAME}] Auth refresh failed for account: ${(err as Error)?.message ?? String(err)}`);
 				if (
 					!consumeRetryBudget(
@@ -2336,10 +3461,23 @@ while (attempted.size < Math.max(1, accountCount)) {
 									logWarn(
 										`Skipping account ${account.index + 1}: local token bucket depleted for ${modelFamily}${model ? `:${model}` : ""}`,
 									);
-									break;
+									continue;
 								}
 
 							while (true) {
+								requestAttemptNumber++;
+								const requestOperation = startOperation({
+									operationClass: "request",
+									operationName: "request.fetch",
+									attemptNo: requestAttemptNumber,
+									retryCount: Math.max(0, requestAttemptNumber - 1),
+									modelFamily,
+									retryProfile,
+									extraMetadata: {
+										request_flow_id: requestFlowId,
+										quota_key: quotaKey,
+									},
+								});
 								let response: Response;
 								const fetchStart = performance.now();
 
@@ -2378,6 +3516,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 										`Network error on account ${account.index + 1}: ${errorMsg}`,
 									)
 								) {
+									completeOperationFailure(requestOperation, {
+										errorCategory: "network",
+										manualRecoveryRequired: true,
+										extraMetadata: { request_flow_id: requestFlowId },
+									});
 									accountManager.refundToken(account, modelFamily, model);
 									return new Response(
 										JSON.stringify({
@@ -2401,6 +3544,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 								runtimeMetrics.lastErrorCategory = "network";
 								accountManager.refundToken(account, modelFamily, model);
 								accountManager.recordFailure(account, modelFamily, model);
+								completeOperationFailure(requestOperation, {
+									errorCategory: "network",
+									extraMetadata: { request_flow_id: requestFlowId },
+								});
+								markOperationRecovery(requestOperation, {
+									errorCategory: "network",
+									recoveryStep: "account-rotation",
+									extraMetadata: { request_flow_id: requestFlowId },
+								});
 								break;
 								} finally {
 									clearTimeout(fetchTimeoutId);
@@ -2421,6 +3573,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 								if (!response.ok) {
 									const contextOverflowResult = await handleContextOverflow(response, model);
 									if (contextOverflowResult.handled) {
+										completeOperationSuccess(requestOperation, {
+											extraMetadata: {
+												request_flow_id: requestFlowId,
+												context_overflow_recovered: true,
+											},
+										});
 										return contextOverflowResult.response;
 									}
 
@@ -2443,6 +3601,22 @@ while (attempted.size < Math.max(1, accountCount)) {
 				account.lastSwitchReason = "rotation";
 				runtimeMetrics.lastError = `Unsupported model on account ${account.index + 1}: ${blockedModel}`;
 				runtimeMetrics.lastErrorCategory = "unsupported-model";
+				completeOperationFailure(requestOperation, {
+					errorCategory: "unsupported-model",
+					httpStatus: response.status,
+					extraMetadata: {
+						request_flow_id: requestFlowId,
+						blocked_model: blockedModel,
+					},
+				});
+				markOperationRecovery(requestOperation, {
+					errorCategory: "unsupported-model",
+					httpStatus: response.status,
+					recoveryStep: "account-rotation",
+					extraMetadata: {
+						request_flow_id: requestFlowId,
+					},
+				});
 				logWarn(
 					`Model ${blockedModel} is unsupported for account ${account.index + 1}. Trying next account/workspace before fallback.`,
 					{
@@ -2497,6 +3671,23 @@ while (attempted.size < Math.max(1, accountCount)) {
 				};
 				runtimeMetrics.lastError = `Model fallback: ${previousModel} -> ${model}`;
 				runtimeMetrics.lastErrorCategory = "model-fallback";
+				completeOperationFailure(requestOperation, {
+					errorCategory: "unsupported-model",
+					httpStatus: response.status,
+					extraMetadata: {
+						request_flow_id: requestFlowId,
+						blocked_model: previousModel,
+					},
+				});
+				markOperationRecovery(requestOperation, {
+					errorCategory: "model-fallback",
+					httpStatus: response.status,
+					recoveryStep: "model-fallback",
+					extraMetadata: {
+						request_flow_id: requestFlowId,
+						fallback_model: model,
+					},
+				});
 				logWarn(
 					`Model ${previousModel} is unsupported for this ChatGPT account. Falling back to ${model}.`,
 					{
@@ -2565,8 +3756,25 @@ while (attempted.size < Math.max(1, accountCount)) {
 								`Server error ${response.status} on account ${account.index + 1}`,
 							)
 						) {
+							completeOperationFailure(requestOperation, {
+								errorCategory: "server",
+								httpStatus: response.status,
+								manualRecoveryRequired: true,
+								extraMetadata: { request_flow_id: requestFlowId },
+							});
 							return errorResponse;
 						}
+						completeOperationFailure(requestOperation, {
+							errorCategory: "server",
+							httpStatus: response.status,
+							extraMetadata: { request_flow_id: requestFlowId },
+						});
+						markOperationRecovery(requestOperation, {
+							errorCategory: "server",
+							httpStatus: response.status,
+							recoveryStep: "account-rotation",
+							extraMetadata: { request_flow_id: requestFlowId },
+						});
 						break;
 					}
 
@@ -2601,6 +3809,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 
 															await sleep(addJitter(Math.max(MIN_BACKOFF_MS, delayMs), 0.2));
+															markOperationRetry(requestOperation, {
+																errorCategory: "rate-limit-short",
+																httpStatus: response.status,
+																extraMetadata: {
+																	request_flow_id: requestFlowId,
+																	backoff_ms: delayMs,
+																},
+															});
+															completeOperationFailure(requestOperation, {
+																errorCategory: "rate-limit-short",
+																httpStatus: response.status,
+																extraMetadata: { request_flow_id: requestFlowId },
+															});
 															continue;
 																																}
 
@@ -2616,6 +3837,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 				runtimeMetrics.accountRotations++;
 				runtimeMetrics.lastErrorCategory = "rate-limit";
 				accountManager.saveToDiskDebounced();
+				completeOperationFailure(requestOperation, {
+					errorCategory: "rate-limit",
+					httpStatus: response.status,
+					extraMetadata: { request_flow_id: requestFlowId, backoff_ms: delayMs },
+				});
+				markOperationRecovery(requestOperation, {
+					errorCategory: "rate-limit",
+					httpStatus: response.status,
+					recoveryStep: "account-rotation",
+					extraMetadata: { request_flow_id: requestFlowId, backoff_ms: delayMs },
+				});
 						logWarn(
 							`Rate limited. Rotating account ${account.index + 1} (${account.email ?? "unknown"}).`,
 						);
@@ -2639,27 +3871,42 @@ while (attempted.size < Math.max(1, accountCount)) {
 																													runtimeMetrics.failedRequests++;
 																													runtimeMetrics.lastError = `HTTP ${response.status}`;
 																													runtimeMetrics.lastErrorCategory = "http";
+																													completeOperationFailure(requestOperation, {
+																														errorCategory: "http",
+																														httpStatus: response.status,
+																														manualRecoveryRequired: true,
+																														extraMetadata: { request_flow_id: requestFlowId },
+																													});
 																													return errorResponse;
 																											}
 
 					resetRateLimitBackoff(account.index, quotaKey);
 					runtimeMetrics.cumulativeLatencyMs += fetchLatencyMs;
-					const successResponse = await handleSuccessResponse(response, isStreaming, {
+					const successResult = await handleSuccessResponseDetailed(response, isStreaming, {
 						streamStallTimeoutMs,
 					});
+					const successResponse = successResult.response;
 
 					if (!successResponse.ok) {
 						runtimeMetrics.failedRequests++;
 						runtimeMetrics.lastError = `HTTP ${successResponse.status}`;
 						runtimeMetrics.lastErrorCategory = "http";
+						completeOperationFailure(requestOperation, {
+							errorCategory: "http",
+							httpStatus: successResponse.status,
+							manualRecoveryRequired: true,
+							extraMetadata: { request_flow_id: requestFlowId },
+						});
 						return successResponse;
 					}
 
 					if (!isStreaming && emptyResponseMaxRetries > 0) {
-						const clonedResponse = successResponse.clone();
 						try {
-							const bodyText = await clonedResponse.text();
-							const parsedBody = bodyText ? JSON.parse(bodyText) as unknown : null;
+							let parsedBody: unknown = successResult.parsedJson;
+							if (parsedBody === undefined) {
+								const bodyText = await successResponse.clone().text();
+								parsedBody = bodyText ? JSON.parse(bodyText) as unknown : null;
+							}
 							if (isEmptyResponse(parsedBody)) {
 								if (
 									emptyResponseRetries < emptyResponseMaxRetries &&
@@ -2678,6 +3925,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 									);
 									accountManager.refundToken(account, modelFamily, model);
 									accountManager.recordFailure(account, modelFamily, model);
+									markOperationRetry(requestOperation, {
+										errorCategory: "empty-response",
+										extraMetadata: {
+											request_flow_id: requestFlowId,
+											retry_attempt: emptyResponseRetries,
+										},
+									});
+									completeOperationFailure(requestOperation, {
+										errorCategory: "empty-response",
+										extraMetadata: {
+											request_flow_id: requestFlowId,
+										},
+									});
 									await sleep(addJitter(emptyResponseRetryDelayMs, 0.2));
 									break;
 								}
@@ -2692,6 +3952,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 					runtimeMetrics.successfulRequests++;
 					runtimeMetrics.lastError = null;
 					runtimeMetrics.lastErrorCategory = null;
+					completeOperationSuccess(requestOperation, {
+						httpStatus: successResponse.status,
+						extraMetadata: { request_flow_id: requestFlowId },
+					});
 						return successResponse;
 																								}
 										if (restartAccountTraversalWithFallback) {
@@ -2734,6 +3998,24 @@ while (attempted.size < Math.max(1, accountCount)) {
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
 								runtimeMetrics.lastErrorCategory = waitMs > 0 ? "rate-limit" : "account-failure";
+								const exhaustedOperation = startOperation({
+									operationClass: "request",
+									operationName: "request.exhausted",
+									attemptNo: requestAttemptNumber + 1,
+									retryCount: requestAttemptNumber,
+									modelFamily,
+									retryProfile,
+									extraMetadata: {
+										request_flow_id: requestFlowId,
+									},
+								});
+								completeOperationFailure(exhaustedOperation, {
+									errorCategory: waitMs > 0 ? "rate-limit" : "account-failure",
+									manualRecoveryRequired: true,
+									extraMetadata: {
+										request_flow_id: requestFlowId,
+									},
+								});
 								return new Response(JSON.stringify({ error: { message } }), {
 									status: waitMs > 0 ? 429 : 503,
 											headers: {
@@ -2751,7 +4033,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					loaderMutex = null;
 				}
                         },
-				methods: [
+				methods: instrumentAuthMethods([
 					{
 						label: AUTH_LABELS.OAUTH,
 						type: "oauth" as const,
@@ -3471,6 +4753,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 										};
 									}
 
+									if (menuResult.mode === "sync-from-codex") {
+										await runAndPrintSync("from Codex", syncFromCodexToPlugin);
+										continue;
+									}
+									if (menuResult.mode === "sync-to-codex") {
+										await runAndPrintSync("to Codex", syncFromPluginToCodex);
+										continue;
+									}
+
 									if (menuResult.mode === "check") {
 										await runAccountCheck(false);
 										continue;
@@ -3751,9 +5042,9 @@ while (attempted.size < Math.max(1, accountCount)) {
                                                         });
                                                 },
                                         },
-                        ],
+                        ]),
                 },
-                tool: {
+                tool: instrumentToolRegistry({
                         "codex-list": tool({
                                 description:
                                         "List all Codex OAuth accounts and the current active index.",
@@ -3853,6 +5144,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 						lines.push("");
 						lines.push(...formatUiSection(ui, "Commands"));
 						lines.push(formatUiItem(ui, "Add account: opencode auth login", "accent"));
+						lines.push(formatUiItem(ui, "Sync from Codex: codex-sync direction=\"pull\""));
+						lines.push(formatUiItem(ui, "Sync to Codex: codex-sync direction=\"push\""));
 						lines.push(formatUiItem(ui, "Switch account: codex-switch index=2"));
 						lines.push(formatUiItem(ui, "Detailed status: codex-status"));
 						lines.push(formatUiItem(ui, "Live dashboard: codex-dashboard"));
@@ -3861,7 +5154,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						lines.push(formatUiItem(ui, "Set account note: codex-note index=2 note=\"weekday primary\""));
 						lines.push(formatUiItem(ui, "Doctor checks: codex-doctor"));
 						lines.push(formatUiItem(ui, "Onboarding checklist: codex-setup"));
-						lines.push(formatUiItem(ui, "Guided setup wizard: codex-setup --wizard"));
+						lines.push(formatUiItem(ui, "Guided setup wizard: codex-setup mode=\"wizard\""));
 						lines.push(formatUiItem(ui, "Best next action: codex-next"));
 						lines.push(formatUiItem(ui, "Rename account label: codex-label index=2 label=\"Work\""));
 						lines.push(formatUiItem(ui, "Command guide: codex-help"));
@@ -3910,6 +5203,8 @@ while (attempted.size < Math.max(1, accountCount)) {
                                         lines.push("");
                                         lines.push("Commands:");
                                         lines.push("  - Add account: opencode auth login");
+                                        lines.push("  - Sync from Codex: codex-sync direction=\"pull\"");
+                                        lines.push("  - Sync to Codex: codex-sync direction=\"push\"");
                                         lines.push("  - Switch account: codex-switch");
                                         lines.push("  - Status details: codex-status");
                                         lines.push("  - Live dashboard: codex-dashboard");
@@ -3918,7 +5213,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					lines.push("  - Set account note: codex-note");
                                         lines.push("  - Doctor checks: codex-doctor");
                                         lines.push("  - Setup checklist: codex-setup");
-                                        lines.push("  - Guided setup wizard: codex-setup --wizard");
+                                        lines.push("  - Guided setup wizard: codex-setup mode=\"wizard\"");
                                         lines.push("  - Best next action: codex-next");
                                         lines.push("  - Rename account label: codex-label");
                                         lines.push("  - Command guide: codex-help");
@@ -4238,6 +5533,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 					const total = runtimeMetrics.totalRequests;
 					const successful = runtimeMetrics.successfulRequests;
 					const refreshMetrics = getRefreshQueueMetrics();
+					const reliabilityKpis = computeReliabilityKpis(now);
+					const operationClassRates = Object.entries(
+						reliabilityKpis.operationSuccessRateByClass24h,
+					)
+						.sort(([classA], [classB]) => classA.localeCompare(classB))
+						.map(([operationClass, value]) => `${operationClass}=${formatPercent(value)}`)
+						.join(", ");
 					const successRate = total > 0 ? ((successful / total) * 100).toFixed(1) : "0.0";
 					const avgLatencyMs =
 						successful > 0
@@ -4279,6 +5581,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 							`${refreshMetrics.failed}/` +
 							`${refreshMetrics.pending}`,
 						`Last upstream request: ${lastRequest}`,
+						"",
+						"Local reliability KPIs (best-effort 24h, retention-bounded):",
+						`Request starts: ${reliabilityKpis.requestStarts24h}`,
+						`Uninterrupted completion rate: ${formatPercent(reliabilityKpis.uninterruptedCompletionRate24h)}`,
+						`First-attempt success rate: ${formatPercent(reliabilityKpis.firstAttemptSuccessRate24h)}`,
+						`Auto-recovery success rate: ${formatPercent(reliabilityKpis.autoRecoverySuccessRate24h)}`,
+						`Token refresh success rate: ${formatPercent(reliabilityKpis.tokenRefreshSuccessRate24h)}`,
+						`Operation success by class: ${operationClassRates || "n/a"}`,
 					];
 
 					if (runtimeMetrics.lastError) {
@@ -4339,6 +5649,39 @@ while (attempted.size < Math.max(1, accountCount)) {
 								"muted",
 							),
 							formatUiKeyValue(ui, "Last upstream request", lastRequest, "muted"),
+							"",
+							...formatUiSection(ui, "Local reliability KPIs (best-effort 24h, retention-bounded)"),
+							formatUiKeyValue(ui, "Request starts", String(reliabilityKpis.requestStarts24h)),
+							formatUiKeyValue(
+								ui,
+								"Uninterrupted completion",
+								formatPercent(reliabilityKpis.uninterruptedCompletionRate24h),
+								"accent",
+							),
+							formatUiKeyValue(
+								ui,
+								"First-attempt success",
+								formatPercent(reliabilityKpis.firstAttemptSuccessRate24h),
+								"accent",
+							),
+							formatUiKeyValue(
+								ui,
+								"Auto-recovery success",
+								formatPercent(reliabilityKpis.autoRecoverySuccessRate24h),
+								"accent",
+							),
+							formatUiKeyValue(
+								ui,
+								"Token refresh success",
+								formatPercent(reliabilityKpis.tokenRefreshSuccessRate24h),
+								"accent",
+							),
+							formatUiKeyValue(
+								ui,
+								"Operation success by class",
+								operationClassRates || "n/a",
+								"muted",
+							),
 						];
 						if (runtimeMetrics.lastError) {
 							styled.push(formatUiKeyValue(ui, "Last error", runtimeMetrics.lastError, "danger"));
@@ -4400,7 +5743,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								"2) Verify account health: codex-health",
 								"3) View account list: codex-list",
 								"4) Run checklist: codex-setup",
-								"5) Use guided wizard: codex-setup --wizard",
+								"5) Use guided wizard: codex-setup mode=\"wizard\"",
 								"6) Start requests and monitor: codex-dashboard",
 							],
 						},
@@ -4409,6 +5752,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 							title: "Daily account operations",
 							lines: [
 								"List accounts: codex-list",
+								"Sync from Codex CLI: codex-sync direction=\"pull\"",
+								"Sync to Codex CLI: codex-sync direction=\"push\"",
 								"Switch active account: codex-switch index=2",
 								"Show detailed status: codex-status",
 								"Set account label: codex-label index=2 label=\"Work\"",
@@ -4425,9 +5770,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 								"Verify token health: codex-health",
 								"Refresh all tokens: codex-refresh",
 								"Run diagnostics: codex-doctor",
-								"Run diagnostics with fixes: codex-doctor --fix",
+								"Run diagnostics with fixes: codex-doctor mode=\"fix\"",
 								"Show best next action: codex-next",
-								"Run guided wizard: codex-setup --wizard",
+								"Run guided wizard: codex-setup mode=\"wizard\"",
 							],
 						},
 						{
@@ -4447,6 +5792,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 								"Auto backup export: codex-export",
 								"Import preview: codex-import <path> --dryRun",
 								"Import apply: codex-import <path>",
+								"Sync pull from Codex: codex-sync direction=\"pull\"",
+								"Sync push to Codex: codex-sync direction=\"push\"",
 								"Setup checklist: codex-setup",
 							],
 						},
@@ -4480,7 +5827,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						}
 						lines.push(...formatUiSection(ui, "Tips"));
 						lines.push(formatUiItem(ui, "Run codex-setup after adding accounts."));
-						lines.push(formatUiItem(ui, "Use codex-setup --wizard for menu-driven onboarding."));
+						lines.push(formatUiItem(ui, "Use codex-setup mode=\"wizard\" for menu-driven onboarding."));
 						lines.push(formatUiItem(ui, "Use codex-doctor when request failures increase."));
 						return lines.join("\n").trimEnd();
 					}
@@ -4495,7 +5842,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 					lines.push("Tips:");
 					lines.push("  - Run codex-setup after adding accounts.");
-					lines.push("  - Use codex-setup --wizard for menu-driven onboarding.");
+					lines.push("  - Use codex-setup mode=\"wizard\" for menu-driven onboarding.");
 					lines.push("  - Use codex-doctor when request failures increase.");
 					return lines.join("\n");
 				},
@@ -4503,15 +5850,36 @@ while (attempted.size < Math.max(1, accountCount)) {
 			"codex-setup": tool({
 				description: "Beginner checklist for first-time setup and account readiness.",
 				args: {
+					mode: tool.schema
+						.string()
+						.optional()
+						.describe("Optional mode: checklist | wizard. Preferred over boolean wizard for clearer intent."),
 					wizard: tool.schema
 						.boolean()
 						.optional()
-						.describe("Launch menu-driven setup wizard when terminal supports it."),
+						.describe("Legacy alias for mode=\"wizard\" (backward compatible)."),
 				},
-				async execute({ wizard }: { wizard?: boolean } = {}) {
+				async execute({ mode, wizard }: { mode?: string; wizard?: boolean } = {}) {
+					const normalizedMode = mode?.trim().toLowerCase();
+					if (
+						mode !== undefined &&
+						(!normalizedMode || (normalizedMode !== "checklist" && normalizedMode !== "wizard"))
+					) {
+						return `Invalid mode: ${mode}\n\nValid modes: checklist, wizard`;
+					}
+					if (normalizedMode) {
+						const wizardFromMode = normalizedMode === "wizard";
+						if (wizard !== undefined && wizard !== wizardFromMode) {
+							return `Conflicting setup options: mode="${normalizedMode}" implies wizard=${wizardFromMode}, but wizard=${wizard} was provided.`;
+						}
+					}
+
+					const useWizard = normalizedMode
+						? normalizedMode === "wizard"
+						: !!wizard;
 					const ui = resolveUiRuntime();
 					const state = await buildSetupChecklistState();
-					if (wizard) {
+					if (useWizard) {
 						return runSetupWizard(ui, state);
 					}
 					return renderSetupChecklistOutput(ui, state);
@@ -4520,16 +5888,44 @@ while (attempted.size < Math.max(1, accountCount)) {
 			"codex-doctor": tool({
 				description: "Run beginner-friendly diagnostics with clear fixes.",
 				args: {
+					mode: tool.schema
+						.string()
+						.optional()
+						.describe("Optional mode: standard | deep | fix. Preferred over individual booleans for clearer intent."),
 					deep: tool.schema
 						.boolean()
 						.optional()
-						.describe("Include technical snapshot details (default: false)."),
+						.describe("Legacy flag. Equivalent to mode=\"deep\" (backward compatible)."),
 					fix: tool.schema
 						.boolean()
 						.optional()
-						.describe("Apply safe automated fixes (refresh tokens and switch to healthiest eligible account)."),
+						.describe("Legacy flag. Equivalent to mode=\"fix\" (backward compatible)."),
 				},
-				async execute({ deep, fix }: { deep?: boolean; fix?: boolean } = {}) {
+				async execute({ mode, deep, fix }: { mode?: string; deep?: boolean; fix?: boolean } = {}) {
+					const normalizedMode = mode?.trim().toLowerCase();
+					if (
+						mode !== undefined &&
+						(!normalizedMode ||
+							(normalizedMode !== "standard" && normalizedMode !== "deep" && normalizedMode !== "fix"))
+					) {
+						return `Invalid mode: ${mode}\n\nValid modes: standard, deep, fix`;
+					}
+
+					let deepMode = !!deep;
+					let fixMode = !!fix;
+					if (normalizedMode) {
+						const expectedDeep = normalizedMode === "deep";
+						const expectedFix = normalizedMode === "fix";
+						if (deep !== undefined && deep !== expectedDeep) {
+							return `Conflicting doctor options: mode="${normalizedMode}" implies deep=${expectedDeep}, but deep=${deep} was provided.`;
+						}
+						if (fix !== undefined && fix !== expectedFix) {
+							return `Conflicting doctor options: mode="${normalizedMode}" implies fix=${expectedFix}, but fix=${fix} was provided.`;
+						}
+						deepMode = expectedDeep;
+						fixMode = expectedFix;
+					}
+
 					const ui = resolveUiRuntime();
 					const storage = await loadAccounts();
 					const now = Date.now();
@@ -4551,7 +5947,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					const appliedFixes: string[] = [];
 					const fixErrors: string[] = [];
 
-					if (fix && storage && storage.accounts.length > 0) {
+					if (fixMode && storage && storage.accounts.length > 0) {
 						let changedByRefresh = false;
 						let refreshedCount = 0;
 						for (const account of storage.accounts) {
@@ -4653,7 +6049,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						lines.push("");
 						lines.push(...formatUiSection(ui, "Recommended next step"));
 						lines.push(formatUiItem(ui, nextAction, "accent"));
-						if (fix) {
+						if (fixMode) {
 							lines.push("");
 							lines.push(...formatUiSection(ui, "Auto-fix"));
 							if (appliedFixes.length === 0) {
@@ -4668,7 +6064,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							}
 						}
 
-						if (deep) {
+						if (deepMode) {
 							lines.push("");
 							lines.push(...formatUiSection(ui, "Technical snapshot"));
 							lines.push(formatUiKeyValue(ui, "Storage", getStoragePath(), "muted"));
@@ -4698,7 +6094,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 					lines.push("");
 					lines.push(`Recommended next step: ${nextAction}`);
-					if (fix) {
+					if (fixMode) {
 						lines.push("");
 						lines.push("Auto-fix:");
 						if (appliedFixes.length === 0) {
@@ -4712,7 +6108,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							lines.push(`  - warning: ${error}`);
 						}
 					}
-					if (deep) {
+					if (deepMode) {
 						lines.push("");
 						lines.push("Technical snapshot:");
 						lines.push(`  Storage: ${getStoragePath()}`);
@@ -5620,7 +7016,55 @@ while (attempted.size < Math.max(1, accountCount)) {
 			},
 		}),
 
-	},
+		"codex-sync": tool({
+			description:
+				"Manually sync current account between Codex CLI and plugin storage. direction=pull (Codex -> plugin) or direction=push (plugin -> Codex).",
+			args: {
+				direction: tool.schema
+					.string()
+					.describe("Sync direction: pull (Codex -> plugin) or push (plugin -> Codex)"),
+			},
+			async execute({ direction }: { direction: string }) {
+				const ui = resolveUiRuntime();
+				const normalizedDirection = direction.trim().toLowerCase();
+				if (normalizedDirection !== "pull" && normalizedDirection !== "push") {
+					if (ui.v2Enabled) {
+						return [
+							...formatUiHeader(ui, "Codex sync"),
+							"",
+							formatUiItem(ui, `Invalid direction: ${direction}`, "danger"),
+							formatUiItem(ui, "Use direction=pull (Codex -> plugin) or direction=push (plugin -> Codex).", "accent"),
+						].join("\n");
+					}
+					return `Invalid direction: ${direction}\n\nUse direction=pull (Codex -> plugin) or direction=push (plugin -> Codex).`;
+				}
+
+				try {
+					const summary =
+						normalizedDirection === "pull"
+							? await syncFromCodexToPlugin()
+							: await syncFromPluginToCodex();
+					return renderSyncSummary(ui, "Codex sync", summary);
+				} catch (error) {
+					const message =
+						error instanceof CodexSyncError || error instanceof Error
+							? error.message
+							: String(error);
+					if (ui.v2Enabled) {
+						return [
+							...formatUiHeader(ui, "Codex sync"),
+							"",
+							formatUiItem(ui, `${getStatusMarker(ui, "error")} Sync failed`, "danger"),
+							formatUiKeyValue(ui, "Direction", normalizedDirection, "muted"),
+							formatUiKeyValue(ui, "Error", message, "danger"),
+						].join("\n");
+					}
+					return `Sync failed (${normalizedDirection}): ${message}`;
+				}
+			},
+		}),
+
+	}),
 	};
 };
 

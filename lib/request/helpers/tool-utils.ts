@@ -14,6 +14,69 @@ export interface Tool {
 	function: ToolFunction;
 }
 
+const cleanedToolCache = new WeakMap<object, Tool>();
+const cleanedToolArrayCache = new WeakMap<readonly unknown[], unknown>();
+
+function cloneJsonLike(value: unknown, seen = new WeakSet<object>()): unknown {
+	if (value === null) return null;
+	if (value === undefined) return undefined;
+	if (
+		typeof value === "string" ||
+		typeof value === "number" ||
+		typeof value === "boolean"
+	) {
+		return value;
+	}
+
+	if (Array.isArray(value)) {
+		if (seen.has(value)) return null;
+		seen.add(value);
+		return value.map((item) => {
+			const cloned = cloneJsonLike(item, seen);
+			return cloned === undefined ? null : cloned;
+		});
+	}
+
+	if (typeof value === "object") {
+		if (seen.has(value as object)) return null;
+		seen.add(value as object);
+		const withJson = value as { toJSON?: () => unknown };
+		if (typeof withJson.toJSON === "function") {
+			return cloneJsonLike(withJson.toJSON(), seen);
+		}
+		const output: Record<string, unknown> = {};
+		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+			const cloned = cloneJsonLike(item, seen);
+			if (cloned !== undefined) {
+				output[key] = cloned;
+			}
+		}
+		return output;
+	}
+
+	return undefined;
+}
+
+function deepFreezeJson<T>(value: T, seen = new WeakSet<object>()): T {
+	if (!value || typeof value !== "object") return value;
+	if (seen.has(value as object)) return value;
+	seen.add(value as object);
+	Object.freeze(value);
+	if (Array.isArray(value)) {
+		for (const entry of value) {
+			deepFreezeJson(entry, seen);
+		}
+		return value;
+	}
+	for (const entry of Object.values(value as Record<string, unknown>)) {
+		deepFreezeJson(entry, seen);
+	}
+	return value;
+}
+
+const isCacheableObject = (value: unknown): value is object =>
+	typeof value === "object" && value !== null && Object.isFrozen(value);
+
 /**
  * Cleans up tool definitions to ensure strict JSON Schema compliance.
  *
@@ -30,19 +93,51 @@ export interface Tool {
 export function cleanupToolDefinitions(tools: unknown): unknown {
 	if (!Array.isArray(tools)) return tools;
 
-	return tools.map((tool) => {
+	const arrayCacheable = Object.isFrozen(tools);
+	if (arrayCacheable) {
+		const cachedArray = cleanedToolArrayCache.get(tools);
+		if (cachedArray) {
+			return cachedArray;
+		}
+	}
+
+	const cleaned = tools.map((tool) => {
 		if (tool?.type !== "function" || !tool.function) {
 			return tool;
 		}
 
+		const cacheableTool = isCacheableObject(tool);
+		if (cacheableTool) {
+			const cachedTool = cleanedToolCache.get(tool as object);
+			if (cachedTool) {
+				return cachedTool;
+			}
+		}
+
 		// Clone to avoid mutating original
-		const cleanedTool = JSON.parse(JSON.stringify(tool));
+		const cloned = cloneJsonLike(tool);
+		if (!cloned || typeof cloned !== "object") {
+			return tool;
+		}
+		const cleanedTool = cloned as Tool;
 		if (cleanedTool.function.parameters) {
 			cleanupSchema(cleanedTool.function.parameters);
+		}
+		if (cacheableTool) {
+			const frozenTool = deepFreezeJson(cleanedTool) as Tool;
+			cleanedToolCache.set(tool as object, frozenTool);
+			return frozenTool;
 		}
 
 		return cleanedTool;
 	});
+
+	if (arrayCacheable) {
+		const frozenArray = deepFreezeJson(cleaned) as unknown;
+		cleanedToolArrayCache.set(tools, frozenArray);
+		return frozenArray;
+	}
+	return cleaned;
 }
 
 /**

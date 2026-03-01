@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { FlaggedAccountMetadataV1 } from "../lib/storage.js";
 
 vi.mock("@opencode-ai/plugin/tool", () => {
 	const makeSchema = () => ({
@@ -16,19 +17,22 @@ vi.mock("@opencode-ai/plugin/tool", () => {
 	return { tool };
 });
 
+
+const mockExchangeAuthorizationCode = vi.fn(async () => ({
+	type: "success" as const,
+	access: "access-token",
+	refresh: "refresh-token",
+	expires: Date.now() + 3600_000,
+	idToken: "id-token",
+}));
+
 vi.mock("../lib/auth/auth.js", () => ({
 	createAuthorizationFlow: vi.fn(async () => ({
 		pkce: { verifier: "test-verifier", challenge: "test-challenge" },
 		state: "test-state",
 		url: "https://auth.openai.com/test",
 	})),
-	exchangeAuthorizationCode: vi.fn(async () => ({
-		type: "success" as const,
-		access: "access-token",
-		refresh: "refresh-token",
-		expires: Date.now() + 3600_000,
-		idToken: "id-token",
-	})),
+	exchangeAuthorizationCode: mockExchangeAuthorizationCode,
 	parseAuthorizationInput: vi.fn((input: string) => {
 		const codeMatch = input.match(/code=([^&]+)/);
 		const stateMatch = input.match(/state=([^&#]+)/);
@@ -37,6 +41,7 @@ vi.mock("../lib/auth/auth.js", () => ({
 			state: stateMatch?.[1],
 		};
 	}),
+	AUTHORIZE_URL: "https://auth.openai.com/oauth/authorize",
 	REDIRECT_URI: "http://127.0.0.1:1455/auth/callback",
 }));
 
@@ -66,12 +71,17 @@ vi.mock("../lib/auth/browser.js", () => ({
 	openBrowserUrl: vi.fn(),
 }));
 
+const defaultOAuthServerResponse = () => ({
+	port: 1455,
+	ready: true,
+	close: vi.fn(),
+	waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+});
+
+const mockStartLocalOAuthServer = vi.fn(async () => defaultOAuthServerResponse());
+
 vi.mock("../lib/auth/server.js", () => ({
-	startLocalOAuthServer: vi.fn(async () => ({
-		ready: true,
-		close: vi.fn(),
-		waitForCode: vi.fn(async () => ({ code: "auth-code" })),
-	})),
+	startLocalOAuthServer: mockStartLocalOAuthServer,
 }));
 
 vi.mock("../lib/cli.js", () => ({
@@ -190,27 +200,34 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 	resolveUnsupportedCodexFallbackModel: vi.fn(() => undefined),
 	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
 	handleSuccessResponse: vi.fn(async (response: Response) => response),
+	handleSuccessResponseDetailed: vi.fn(async (response: Response) => ({
+		response,
+		parsedJson: undefined,
+	})),
 }));
+
+type MockAccountEntry = {
+	accountId?: string;
+	organizationId?: string;
+	accountIdSource?: string;
+	accountLabel?: string;
+	email?: string;
+	refreshToken: string;
+	accessToken?: string;
+	expiresAt?: number;
+	enabled?: boolean;
+	addedAt?: number;
+	lastUsed?: number;
+	coolingDownUntil?: number;
+	cooldownReason?: string;
+	rateLimitResetTimes?: Record<string, number>;
+	lastSwitchReason?: string;
+	[key: string]: unknown;
+};
 
 const mockStorage = {
 	version: 3 as const,
-	accounts: [] as Array<{
-		accountId?: string;
-		organizationId?: string;
-		accountIdSource?: string;
-		accountLabel?: string;
-		email?: string;
-		refreshToken: string;
-		accessToken?: string;
-		expiresAt?: number;
-		enabled?: boolean;
-		addedAt?: number;
-		lastUsed?: number;
-		coolingDownUntil?: number;
-		cooldownReason?: string;
-		rateLimitResetTimes?: Record<string, number>;
-		lastSwitchReason?: string;
-	}>,
+	accounts: [] as MockAccountEntry[],
 	activeIndex: 0,
 	activeIndexByFamily: {} as Record<string, number>,
 };
@@ -265,6 +282,24 @@ vi.mock("../lib/storage.js", () => ({
 	formatStorageErrorHint: () => "Check file permissions",
 }));
 
+vi.mock("../lib/audit.js", () => ({
+	AuditAction: {
+		OPERATION_START: "operation.start",
+		OPERATION_SUCCESS: "operation.success",
+		OPERATION_FAILURE: "operation.failure",
+		OPERATION_RETRY: "operation.retry",
+		OPERATION_RECOVERY: "operation.recovery",
+	},
+	AuditOutcome: {
+		SUCCESS: "success",
+		FAILURE: "failure",
+		PARTIAL: "partial",
+	},
+	OPERATION_EVENT_VERSION: "1.0",
+	auditLog: vi.fn(),
+	readAuditEntries: vi.fn(() => []),
+}));
+
 vi.mock("../lib/accounts.js", () => {
 	class MockAccountManager {
 		private accounts = [
@@ -303,6 +338,13 @@ vi.mock("../lib/accounts.js", () => {
 				tokensAvailable: 50,
 				lastUsed: Date.now(),
 			}));
+		}
+
+		getSelectionExplainabilityAndNextForFamilyHybrid() {
+			return {
+				explainability: this.getSelectionExplainability(),
+				account: this.getCurrentOrNextForFamilyHybrid(),
+			};
 		}
 
 		recordSuccess() {}
@@ -394,8 +436,8 @@ type PluginType = {
 		"codex-status": ToolExecute;
 		"codex-metrics": ToolExecute;
 		"codex-help": ToolExecute<{ topic?: string }>;
-		"codex-setup": OptionalToolExecute<{ wizard?: boolean }>;
-		"codex-doctor": OptionalToolExecute<{ deep?: boolean; fix?: boolean }>;
+		"codex-setup": OptionalToolExecute<{ mode?: string; wizard?: boolean }>;
+		"codex-doctor": OptionalToolExecute<{ mode?: string; deep?: boolean; fix?: boolean }>;
 		"codex-next": ToolExecute;
 		"codex-label": ToolExecute<{ index?: number; label: string }>;
 		"codex-tag": ToolExecute<{ index?: number; tags: string }>;
@@ -420,7 +462,11 @@ describe("OpenAIOAuthPlugin", () => {
 	let mockClient: ReturnType<typeof createMockClient>;
 
 	beforeEach(async () => {
+		vi.resetModules();
 		vi.clearAllMocks();
+		mockStartLocalOAuthServer.mockClear();
+		mockStartLocalOAuthServer.mockImplementation(async () => defaultOAuthServerResponse());
+		mockExchangeAuthorizationCode.mockClear();
 		mockClient = createMockClient();
 
 		mockStorage.accounts = [];
@@ -489,6 +535,99 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await flow.callback(invalidInput);
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("invalid_response");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("rejects manual OAuth callback URLs with non-localhost host", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const manualMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string; reason?: string; message?: string }>;
+				}>;
+			};
+
+			const flow = await manualMethod.authorize();
+			const invalidInput = "http://evil.example/auth/callback?code=abc123&state=test-state";
+			expect(flow.validate(invalidInput)).toContain("Invalid callback URL host");
+
+			const result = await flow.callback(invalidInput);
+			expect(result.type).toBe("failed");
+			expect(result.reason).toBe("invalid_response");
+			expect(result.message).toContain("Invalid callback URL host");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("rejects manual OAuth callback URLs with unexpected protocol", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const manualMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					validate: (input: string) => string | undefined;
+					callback: (input: string) => Promise<{ type: string; reason?: string; message?: string }>;
+				}>;
+			};
+
+			const flow = await manualMethod.authorize();
+			const invalidInput = "https://localhost:1455/auth/callback?code=abc123&state=test-state";
+			expect(flow.validate(invalidInput)).toContain("Invalid callback URL protocol");
+
+			const result = await flow.callback(invalidInput);
+			expect(result.type).toBe("failed");
+			expect(result.reason).toBe("invalid_response");
+			expect(result.message).toContain("Invalid callback URL protocol");
+			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("updates redirect URI when OAuth server uses a fallback port", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const previous = process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT = "1";
+			mockStartLocalOAuthServer.mockResolvedValueOnce({
+				port: 14556,
+				ready: true,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+			});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
+
+			await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
+			if (previous === undefined) {
+				delete process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			} else {
+				process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT = previous;
+			}
+
+			const calls = vi.mocked(authModule.exchangeAuthorizationCode).mock.calls;
+			const lastCall = calls[calls.length - 1];
+			expect(lastCall?.[2]).toBe("http://127.0.0.1:14556/auth/callback");
+		});
+
+		it("fails fast on fallback port when dynamic redirect is not enabled", async () => {
+			const authModule = await import("../lib/auth/auth.js");
+			const previous = process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			delete process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			mockStartLocalOAuthServer.mockResolvedValueOnce({
+				port: 14556,
+				ready: true,
+				close: vi.fn(),
+				waitForCode: vi.fn(async () => ({ code: "auth-code" })),
+			});
+
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
+
+			const result = await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
+			if (previous === undefined) {
+				delete process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT;
+			} else {
+				process.env.CODEX_AUTH_ALLOW_DYNAMIC_REDIRECT = previous;
+			}
+
+			expect(result.instructions).toBe("Authentication failed.");
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
 		});
 	});
@@ -693,6 +832,192 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-metrics"].execute();
 			expect(result).toContain("Codex Plugin Metrics");
 			expect(result).toContain("Total upstream requests");
+			expect(result).toContain("Local reliability KPIs");
+			expect(result).toContain("retention-bounded");
+		});
+
+		it("renders best-effort 24h reliability percentages from local audit events", async () => {
+			const auditModule = await import("../lib/audit.js");
+			const { AuditAction, AuditOutcome } = auditModule;
+			const readAuditEntriesMock = vi.mocked(auditModule.readAuditEntries);
+			const timestamp = new Date().toISOString();
+			readAuditEntriesMock.mockReturnValue([
+				{
+					timestamp,
+					correlationId: null,
+					action: AuditAction.OPERATION_START,
+					actor: "plugin",
+					resource: "request.fetch",
+					outcome: AuditOutcome.PARTIAL,
+					metadata: {
+						event_version: "1.0",
+						operation_id: "req-1",
+						process_session_id: "proc-1",
+						operation_class: "request",
+						operation_name: "request.fetch",
+						attempt_no: 1,
+						retry_count: 0,
+						manual_recovery_required: false,
+						beginner_safe_mode: false,
+						request_flow_id: "flow-1",
+					},
+				},
+				{
+					timestamp,
+					correlationId: null,
+					action: AuditAction.OPERATION_SUCCESS,
+					actor: "plugin",
+					resource: "request.fetch",
+					outcome: AuditOutcome.SUCCESS,
+					metadata: {
+						event_version: "1.0",
+						operation_id: "req-1",
+						process_session_id: "proc-1",
+						operation_class: "request",
+						operation_name: "request.fetch",
+						attempt_no: 1,
+						retry_count: 0,
+						manual_recovery_required: false,
+						beginner_safe_mode: false,
+						request_flow_id: "flow-1",
+					},
+				},
+				{
+					timestamp,
+					correlationId: null,
+					action: AuditAction.OPERATION_START,
+					actor: "plugin",
+					resource: "auth.refresh-token",
+					outcome: AuditOutcome.PARTIAL,
+					metadata: {
+						event_version: "1.0",
+						operation_id: "auth-1",
+						process_session_id: "proc-1",
+						operation_class: "auth",
+						operation_name: "auth.refresh-token",
+						attempt_no: 1,
+						retry_count: 0,
+						manual_recovery_required: false,
+						beginner_safe_mode: false,
+					},
+				},
+				{
+					timestamp,
+					correlationId: null,
+					action: AuditAction.OPERATION_SUCCESS,
+					actor: "plugin",
+					resource: "auth.refresh-token",
+					outcome: AuditOutcome.SUCCESS,
+					metadata: {
+						event_version: "1.0",
+						operation_id: "auth-1",
+						process_session_id: "proc-1",
+						operation_class: "auth",
+						operation_name: "auth.refresh-token",
+						attempt_no: 1,
+						retry_count: 0,
+						manual_recovery_required: false,
+						beginner_safe_mode: false,
+					},
+				},
+			]);
+
+			const result = await plugin.tool["codex-metrics"].execute();
+			expect(result).toContain("Uninterrupted completion rate: 100.0%");
+			expect(result).toContain("First-attempt success rate: 100.0%");
+			expect(result).toContain("Token refresh success rate: 100.0%");
+		});
+
+		it("excludes request.exhausted from class-level request success denominator", async () => {
+			const auditModule = await import("../lib/audit.js");
+			const { AuditAction, AuditOutcome } = auditModule;
+			const readAuditEntriesMock = vi.mocked(auditModule.readAuditEntries);
+			const timestamp = new Date().toISOString();
+			readAuditEntriesMock.mockReturnValue([
+				{
+					timestamp,
+					correlationId: null,
+					action: AuditAction.OPERATION_START,
+					actor: "plugin",
+					resource: "request.fetch",
+					outcome: AuditOutcome.PARTIAL,
+					metadata: {
+						event_version: "1.0",
+						operation_id: "req-1",
+						process_session_id: "proc-1",
+						operation_class: "request",
+						operation_name: "request.fetch",
+						attempt_no: 1,
+						retry_count: 0,
+						manual_recovery_required: false,
+						beginner_safe_mode: false,
+						request_flow_id: "flow-1",
+					},
+				},
+				{
+					timestamp,
+					correlationId: null,
+					action: AuditAction.OPERATION_SUCCESS,
+					actor: "plugin",
+					resource: "request.fetch",
+					outcome: AuditOutcome.SUCCESS,
+					metadata: {
+						event_version: "1.0",
+						operation_id: "req-1",
+						process_session_id: "proc-1",
+						operation_class: "request",
+						operation_name: "request.fetch",
+						attempt_no: 1,
+						retry_count: 0,
+						manual_recovery_required: false,
+						beginner_safe_mode: false,
+						request_flow_id: "flow-1",
+					},
+				},
+				{
+					timestamp,
+					correlationId: null,
+					action: AuditAction.OPERATION_START,
+					actor: "plugin",
+					resource: "request.exhausted",
+					outcome: AuditOutcome.PARTIAL,
+					metadata: {
+						event_version: "1.0",
+						operation_id: "req-x",
+						process_session_id: "proc-1",
+						operation_class: "request",
+						operation_name: "request.exhausted",
+						attempt_no: 2,
+						retry_count: 1,
+						manual_recovery_required: true,
+						beginner_safe_mode: false,
+						request_flow_id: "flow-1",
+					},
+				},
+				{
+					timestamp,
+					correlationId: null,
+					action: AuditAction.OPERATION_FAILURE,
+					actor: "plugin",
+					resource: "request.exhausted",
+					outcome: AuditOutcome.FAILURE,
+					metadata: {
+						event_version: "1.0",
+						operation_id: "req-x",
+						process_session_id: "proc-1",
+						operation_class: "request",
+						operation_name: "request.exhausted",
+						attempt_no: 2,
+						retry_count: 1,
+						manual_recovery_required: true,
+						beginner_safe_mode: false,
+						request_flow_id: "flow-1",
+					},
+				},
+			]);
+
+			const result = await plugin.tool["codex-metrics"].execute();
+			expect(result).toContain("Operation success by class: request=100.0%");
 		});
 	});
 
@@ -702,7 +1027,7 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("Codex Help");
 			expect(result).toContain("Quickstart");
 			expect(result).toContain("codex-doctor");
-			expect(result).toContain("codex-setup --wizard");
+			expect(result).toContain("codex-setup mode=\"wizard\"");
 		});
 
 		it("filters by topic", async () => {
@@ -724,7 +1049,7 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-setup"].execute();
 			expect(result).toContain("Setup Checklist");
 			expect(result).toContain("opencode auth login");
-			expect(result).toContain("codex-setup --wizard");
+			expect(result).toContain("codex-setup mode=\"wizard\"");
 		});
 
 		it("shows healthy account progress when account exists", async () => {
@@ -740,6 +1065,42 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("Interactive wizard mode is unavailable");
 			expect(result).toContain("Showing checklist view instead");
 			expect(result).toContain("Setup Checklist");
+		});
+
+		it("supports explicit setup mode", async () => {
+			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			const result = await plugin.tool["codex-setup"].execute({ mode: "wizard" });
+			expect(result).toContain("Interactive wizard mode is unavailable");
+			expect(result).toContain("Setup Checklist");
+		});
+
+		it("supports explicit checklist mode", async () => {
+			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			const result = await plugin.tool["codex-setup"].execute({ mode: "checklist" });
+			expect(result).toContain("Setup Checklist");
+			expect(result).toContain("Recommended next step");
+		});
+
+		it("rejects invalid setup mode values", async () => {
+			const result = await plugin.tool["codex-setup"].execute({ mode: "invalid-mode" });
+			expect(result).toContain("Invalid mode");
+			expect(result).toContain("checklist");
+			expect(result).toContain("wizard");
+		});
+
+		it("rejects empty or whitespace setup mode values", async () => {
+			const emptyResult = await plugin.tool["codex-setup"].execute({ mode: "" });
+			expect(emptyResult).toContain("Invalid mode");
+			const whitespaceResult = await plugin.tool["codex-setup"].execute({ mode: "   " });
+			expect(whitespaceResult).toContain("Invalid mode");
+		});
+
+		it("rejects conflicting setup options", async () => {
+			const result = await plugin.tool["codex-setup"].execute({
+				mode: "checklist",
+				wizard: true,
+			});
+			expect(result).toContain("Conflicting setup options");
 		});
 	});
 
@@ -758,9 +1119,29 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("Storage:");
 		});
 
+		it("supports explicit doctor mode", async () => {
+			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			const result = await plugin.tool["codex-doctor"].execute({ mode: "deep" });
+			expect(result).toContain("Technical snapshot");
+		});
+
+		it("supports standard doctor mode without deep snapshot", async () => {
+			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			const result = await plugin.tool["codex-doctor"].execute({ mode: "standard" });
+			expect(result).toContain("Codex Doctor");
+			expect(result).not.toContain("Technical snapshot");
+		});
+
 		it("applies safe auto-fixes when fix mode is enabled", async () => {
 			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
 			const result = await plugin.tool["codex-doctor"].execute({ fix: true });
+			expect(result).toContain("Auto-fix");
+			expect(result).toContain("Refreshed");
+		});
+
+		it("applies safe auto-fixes with explicit fix mode", async () => {
+			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			const result = await plugin.tool["codex-doctor"].execute({ mode: "fix" });
 			expect(result).toContain("Auto-fix");
 			expect(result).toContain("Refreshed");
 		});
@@ -786,6 +1167,29 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-doctor"].execute({ fix: true });
 			expect(result).toContain("Auto-fix");
 			expect(result).toContain("No eligible account available for auto-switch");
+		});
+
+		it("rejects invalid doctor mode values", async () => {
+			const result = await plugin.tool["codex-doctor"].execute({ mode: "all" });
+			expect(result).toContain("Invalid mode");
+			expect(result).toContain("standard");
+			expect(result).toContain("deep");
+			expect(result).toContain("fix");
+		});
+
+		it("rejects empty or whitespace doctor mode values", async () => {
+			const emptyResult = await plugin.tool["codex-doctor"].execute({ mode: "" });
+			expect(emptyResult).toContain("Invalid mode");
+			const whitespaceResult = await plugin.tool["codex-doctor"].execute({ mode: "   " });
+			expect(whitespaceResult).toContain("Invalid mode");
+		});
+
+		it("rejects conflicting doctor mode and flags", async () => {
+			const result = await plugin.tool["codex-doctor"].execute({
+				mode: "standard",
+				fix: true,
+			});
+			expect(result).toContain("Conflicting doctor options");
 		});
 	});
 
@@ -1533,6 +1937,31 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 						lastUsed: Date.now(),
 					},
 				],
+				getSelectionExplainabilityAndNextForFamilyHybrid: (_family: string, currentModel?: string) => ({
+					explainability: [
+						{
+							index: 0,
+							enabled: true,
+							isCurrentForFamily: true,
+							eligible: true,
+							reasons: ["eligible"],
+							healthScore: 100,
+							tokensAvailable: 50,
+							lastUsed: Date.now(),
+						},
+						{
+							index: 1,
+							enabled: true,
+							isCurrentForFamily: false,
+							eligible: true,
+							reasons: ["eligible"],
+							healthScore: 100,
+							tokensAvailable: 50,
+							lastUsed: Date.now(),
+						},
+					],
+					account: customManager.getCurrentOrNextForFamilyHybrid(_family, currentModel),
+				}),
 				toAuthDetails: (account: { accountId?: string }) => ({
 					type: "oauth" as const,
 					access: `access-${account.accountId ?? "unknown"}`,
@@ -2426,9 +2855,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const refreshQueueModule = await import("../lib/refresh-queue.js");
 
-		const flaggedAccounts = [
-			{
-				refreshToken: "flagged-refresh-cache",
+	const flaggedAccounts: FlaggedAccountMetadataV1[] = [
+		{
+			refreshToken: "flagged-refresh-cache",
 				organizationId: "org-cache",
 				accountId: "flagged-cache",
 				accountIdSource: "manual",
@@ -2516,6 +2945,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 describe("OpenAIOAuthPlugin showToast error handling", () => {
 	beforeEach(() => {
+		vi.resetModules();
 		vi.clearAllMocks();
 		mockStorage.accounts = [
 			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-1" },
@@ -2547,6 +2977,7 @@ describe("OpenAIOAuthPlugin showToast error handling", () => {
 
 describe("OpenAIOAuthPlugin event handler edge cases", () => {
 	beforeEach(() => {
+		vi.resetModules();
 		vi.clearAllMocks();
 		mockStorage.accounts = [
 			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },

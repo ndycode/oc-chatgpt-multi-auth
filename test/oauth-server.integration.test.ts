@@ -36,6 +36,22 @@ describe("OAuth Server Integration", () => {
 		expect(result).toEqual({ code: testCode });
 	});
 
+	it("should bind to fallback port when 1455 is busy", async () => {
+		const blockingServer = http.createServer((_, res) => {
+			res.statusCode = 503;
+			res.end("busy");
+		});
+		await new Promise<void>((resolve) => blockingServer.listen(1455, "127.0.0.1", resolve));
+		try {
+			const testState = "fallback-state";
+			serverInfo = await startLocalOAuthServer({ state: testState });
+			expect(serverInfo.ready).toBe(true);
+			expect(serverInfo.port).toBe(14556);
+		} finally {
+			await new Promise<void>((resolve) => blockingServer.close(() => resolve()));
+		}
+	});
+
 	it("should reject callback with wrong state", async () => {
 		const testState = "correct-state";
 		serverInfo = await startLocalOAuthServer({ state: testState });

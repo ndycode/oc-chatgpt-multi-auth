@@ -15,6 +15,7 @@ import {
   type AccountMetadataV3,
   type AccountStorageV3,
 } from "./storage/migrations.js";
+import { encryptStoragePayload, decryptStoragePayload } from "./storage/encryption.js";
 
 export type { CooldownReason, RateLimitStateV3, AccountMetadataV1, AccountStorageV1, AccountMetadataV3, AccountStorageV3 };
 
@@ -22,6 +23,7 @@ const log = createLogger("storage");
 const ACCOUNTS_FILE_NAME = "openai-codex-accounts.json";
 const FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-flagged-accounts.json";
 const LEGACY_FLAGGED_ACCOUNTS_FILE_NAME = "openai-codex-blocked-accounts.json";
+const STORAGE_ENCRYPTION_SECRET = process.env.CODEX_AUTH_STORAGE_KEY ?? null;
 
 export interface FlaggedAccountMetadataV1 extends AccountMetadataV3 {
 	flaggedAt: number;
@@ -822,9 +824,29 @@ async function loadAccountsInternal(
   persistMigration: ((storage: AccountStorageV3) => Promise<void>) | null,
 ): Promise<AccountStorageV3 | null> {
   try {
-    const path = getStoragePath();
-    const content = await fs.readFile(path, "utf-8");
-    const data = JSON.parse(content) as unknown;
+	const path = getStoragePath();
+	const content = await fs.readFile(path, "utf-8");
+	let decrypted;
+	try {
+		decrypted = decryptStoragePayload(content, STORAGE_ENCRYPTION_SECRET);
+	} catch (error) {
+		throw new StorageError(
+			"Failed to decrypt encrypted account storage.",
+			"EDECRYPT",
+			path,
+			"Ensure CODEX_AUTH_STORAGE_KEY matches the key used to encrypt this file.",
+			error instanceof Error ? error : undefined,
+		);
+	}
+	if (decrypted.requiresSecret) {
+		throw new StorageError(
+			"Encrypted account storage detected but CODEX_AUTH_STORAGE_KEY is not set.",
+			"ENOKEY",
+			path,
+			"Set CODEX_AUTH_STORAGE_KEY before running the plugin to decrypt existing storage.",
+		);
+	}
+	const data = JSON.parse(decrypted.plaintext) as unknown;
 
     const schemaErrors = getValidationErrors(AnyAccountStorageSchema, data);
     if (schemaErrors.length > 0) {
@@ -847,10 +869,13 @@ async function loadAccountsInternal(
 
     return normalized;
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      const migrated = persistMigration
-        ? await migrateLegacyProjectStorageIfNeeded(persistMigration)
+	const code = (error as NodeJS.ErrnoException).code;
+	if (error instanceof StorageError && (error.code === "ENOKEY" || error.code === "EDECRYPT")) {
+		throw error;
+	}
+	if (code === "ENOENT") {
+	  const migrated = persistMigration
+		? await migrateLegacyProjectStorageIfNeeded(persistMigration)
         : null;
       if (migrated) return migrated;
       return null;
@@ -871,9 +896,13 @@ async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
 
     // Normalize before persisting so every write path enforces dedup semantics
     // (organizationId/accountId identity plus refresh-token collision collapse).
-    const normalizedStorage = normalizeAccountStorage(storage) ?? storage;
-    const content = JSON.stringify(normalizedStorage, null, 2);
-    await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+	const normalizedStorage = normalizeAccountStorage(storage) ?? storage;
+	const serialized = JSON.stringify(normalizedStorage, null, 2);
+	const payload =
+		STORAGE_ENCRYPTION_SECRET && STORAGE_ENCRYPTION_SECRET.trim()
+			? encryptStoragePayload(serialized, STORAGE_ENCRYPTION_SECRET)
+			: serialized;
+	await fs.writeFile(tempPath, payload, { encoding: "utf-8", mode: 0o600 });
 
     const stats = await fs.stat(tempPath);
     if (stats.size === 0) {

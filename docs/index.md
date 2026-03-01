@@ -39,10 +39,12 @@
 | Guide | Description |
 |-------|-------------|
 | [Architecture](development/ARCHITECTURE.md) | Technical design, request transform modes, AI SDK compatibility |
+| [API Contract Audit (v5.4.0)](development/API_CONTRACT_AUDIT_v5.4.0.md) | Public API compatibility assessment, error contracts, and semver recommendation |
 | [Config System](development/CONFIG_FLOW.md) | Configuration loading and merging |
 | [Config Fields](development/CONFIG_FIELDS.md) | Understanding config keys and fields |
 | [Testing Guide](development/TESTING.md) | Test scenarios and verification |
 | [TUI Parity Checklist](development/TUI_PARITY_CHECKLIST.md) | Auth dashboard/UI parity requirements |
+| [Audit Artifacts (2026-03-01)](audits/2026-03-01-full-main/README.md) | Deep audit findings, IA map, naming guide, and gate evidence |
 
 ---
 
@@ -79,7 +81,7 @@ For detailed setup, see [Getting Started](getting-started.md).
 | **Per-Model Config** | Different reasoning effort per model |
 | **Multi-Turn** | Full conversation history with stateless backend |
 | **Fast Session Mode** | Optional low-latency tuning for quick interactive turns |
-| **Comprehensive Tests** | 1,767 tests (80% coverage threshold) + integration tests |
+| **Comprehensive Tests** | 1,700+ tests (80% coverage threshold) + integration tests |
 
 ---
 
