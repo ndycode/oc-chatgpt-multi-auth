@@ -42,6 +42,8 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
     "coverage": "vitest run --coverage",
+    "omx:preflight": "node scripts/omx-preflight-wsl2.js",
+    "omx:evidence": "node scripts/omx-capture-evidence.js",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
     "audit:all": "npm audit --audit-level=high",
     "audit:dev:allowlist": "node scripts/audit-dev-allowlist.js",
