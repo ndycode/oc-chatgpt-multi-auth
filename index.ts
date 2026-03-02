@@ -601,15 +601,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				return accountId && accountId.length > 0 ? accountId : undefined;
 			};
 
-			const hasDistinctNonEmptyAccountIds = (
-				left: { accountId?: string } | undefined,
-				right: { accountId?: string } | undefined,
-			): boolean => {
-				const leftId = normalizeStoredAccountId(left);
-				const rightId = normalizeStoredAccountId(right);
-				return !!leftId && !!rightId && leftId !== rightId;
-			};
-
 			const canCollapseWithCandidateAccountId = (
 				existing: { accountId?: string } | undefined,
 				candidateAccountId: string | undefined,
@@ -715,19 +706,41 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						return newestExactAccountId ?? newestNoAccountId;
 					};
 
-					const resolveUniqueOrgScopedMatch = (
-						indexes: IdentityIndexes,
-						accountId: string | undefined,
-						refreshToken: string,
-					): number | undefined => {
-						const byAccountId = accountId
-							? asUniqueIndex(indexes.byAccountIdOrgScoped.get(accountId))
-							: undefined;
-						if (byAccountId !== undefined) return byAccountId;
+			const resolveUniqueOrgScopedMatch = (
+				indexes: IdentityIndexes,
+				accountId: string | undefined,
+				refreshToken: string,
+			): number | undefined => {
+				const byAccountId = accountId
+					? asUniqueIndex(indexes.byAccountIdOrgScoped.get(accountId))
+					: undefined;
+				if (byAccountId !== undefined) return byAccountId;
 
-						// Refresh-token-only fallback is allowed only when accountId is absent.
-						// This avoids collapsing distinct workspace variants that share refresh token.
-						if (accountId) return undefined;
+				if (accountId) {
+					const accountMatches = indexes.byAccountIdOrgScoped.get(accountId);
+					if (accountMatches && accountMatches.length > 1) {
+						let newestRefreshMatch: number | undefined;
+						for (const index of accountMatches) {
+							const existing = accounts[index];
+							if (!existing) continue;
+							const existingRefresh = existing.refreshToken?.trim();
+							if (!existingRefresh || existingRefresh !== refreshToken) {
+								continue;
+							}
+							newestRefreshMatch =
+								typeof newestRefreshMatch === "number"
+									? pickNewestAccountIndex(newestRefreshMatch, index)
+									: index;
+						}
+						if (typeof newestRefreshMatch === "number") {
+							return newestRefreshMatch;
+						}
+					}
+				}
+
+				// Refresh-token-only fallback is allowed only when accountId is absent.
+				// This avoids collapsing distinct workspace variants that share refresh token.
+				if (accountId) return undefined;
 
 						return asUniqueIndex(indexes.byRefreshTokenOrgScoped.get(refreshToken));
 					};
@@ -910,157 +923,48 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 			const pruneRefreshTokenCollisions = (): void => {
 				const indicesToRemove = new Set<number>();
-				const refreshMap = new Map<
-					string,
-					{
-						byOrg: Map<string, number[]>;
-						preferredOrgIndex?: number;
-						fallbackNoAccountIdIndex?: number;
-						fallbackByAccountId: Map<string, number>;
-					}
-				>();
+				const exactIdentityToIndex = new Map<string, number>();
 
-				const pickPreferredOrgIndex = (
-					existingIndex: number | undefined,
-					candidateIndex: number,
-				): number => {
-					if (existingIndex === undefined) return candidateIndex;
-					return pickNewestAccountIndex(existingIndex, candidateIndex);
-				};
-
-				const collapseFallbackIntoPreferredOrg = (entry: {
-					byOrg: Map<string, number[]>;
-					preferredOrgIndex?: number;
-					fallbackNoAccountIdIndex?: number;
-					fallbackByAccountId: Map<string, number>;
-				}): void => {
-					if (entry.preferredOrgIndex === undefined) {
-						return;
+				const getExactIdentityKey = (
+					account: {
+						organizationId?: string;
+						accountId?: string;
+						email?: string;
+						refreshToken?: string;
+					} | undefined,
+				): string => {
+					const organizationId = account?.organizationId?.trim() ?? "";
+					const accountId = normalizeStoredAccountId(account) ?? "";
+					const email = account?.email?.trim().toLowerCase() ?? "";
+					const refreshToken = account?.refreshToken?.trim() ?? "";
+					if (organizationId || accountId) {
+						return `org:${organizationId}|account:${accountId}|refresh:${refreshToken}`;
 					}
-
-					const preferredOrgIndex = entry.preferredOrgIndex;
-					const collapseFallbackIndex = (fallbackIndex: number): boolean => {
-						if (preferredOrgIndex === fallbackIndex) return true;
-						const target = accounts[preferredOrgIndex];
-						const source = accounts[fallbackIndex];
-						if (!target || !source) return true;
-						const targetAccountId = normalizeStoredAccountId(target);
-						const sourceAccountId = normalizeStoredAccountId(source);
-						if (!targetAccountId && sourceAccountId) {
-							return false;
-						}
-						if (hasDistinctNonEmptyAccountIds(target, source)) {
-							return false;
-						}
-						mergeAccountRecords(preferredOrgIndex, fallbackIndex);
-						indicesToRemove.add(fallbackIndex);
-						return true;
-					};
-
-					if (typeof entry.fallbackNoAccountIdIndex === "number") {
-						if (collapseFallbackIndex(entry.fallbackNoAccountIdIndex)) {
-							entry.fallbackNoAccountIdIndex = undefined;
-						}
-					}
-
-					const fallbackAccountIdsToDelete: string[] = [];
-					for (const [accountId, fallbackIndex] of entry.fallbackByAccountId) {
-						if (collapseFallbackIndex(fallbackIndex)) {
-							fallbackAccountIdsToDelete.push(accountId);
-						}
-					}
-					for (const accountId of fallbackAccountIdsToDelete) {
-						entry.fallbackByAccountId.delete(accountId);
-					}
+					return `email:${email}|refresh:${refreshToken}`;
 				};
 
 				for (let i = 0; i < accounts.length; i += 1) {
 					const account = accounts[i];
 					if (!account) continue;
-					const refreshToken = account.refreshToken?.trim();
-					if (!refreshToken) continue;
-					const orgKey = account.organizationId?.trim() ?? "";
-					let entry = refreshMap.get(refreshToken);
-					if (!entry) {
-						entry = {
-							byOrg: new Map<string, number[]>(),
-							preferredOrgIndex: undefined,
-							fallbackNoAccountIdIndex: undefined,
-							fallbackByAccountId: new Map<string, number>(),
-						};
-						refreshMap.set(refreshToken, entry);
-					}
 
-					if (orgKey) {
-						const orgMatches = entry.byOrg.get(orgKey) ?? [];
-						const existingIndex = resolveOrganizationMatch(
-							{
-								byOrganizationId: new Map([[orgKey, orgMatches]]),
-								byAccountIdNoOrg: new Map(),
-								byRefreshTokenNoOrg: new Map(),
-								byEmailNoOrg: new Map(),
-								byAccountIdOrgScoped: new Map(),
-								byRefreshTokenOrgScoped: new Map(),
-								byRefreshTokenGlobal: new Map(),
-							},
-							orgKey,
-							normalizeStoredAccountId(account),
-						);
-						if (existingIndex !== undefined) {
-							const newestIndex = pickNewestAccountIndex(existingIndex, i);
-							const obsoleteIndex = newestIndex === existingIndex ? i : existingIndex;
-							mergeAccountRecords(newestIndex, obsoleteIndex);
-							indicesToRemove.add(obsoleteIndex);
-							const nextOrgMatches = orgMatches.filter(
-								(index) => index !== obsoleteIndex && index !== newestIndex,
-							);
-							nextOrgMatches.push(newestIndex);
-							entry.byOrg.set(orgKey, nextOrgMatches);
-							entry.preferredOrgIndex = pickPreferredOrgIndex(entry.preferredOrgIndex, newestIndex);
-							collapseFallbackIntoPreferredOrg(entry);
-							continue;
-						}
-						entry.byOrg.set(orgKey, [...orgMatches, i]);
-						entry.preferredOrgIndex = pickPreferredOrgIndex(entry.preferredOrgIndex, i);
-						collapseFallbackIntoPreferredOrg(entry);
+					const identityKey = getExactIdentityKey(account);
+					const existingIndex = exactIdentityToIndex.get(identityKey);
+					if (existingIndex === undefined) {
+						exactIdentityToIndex.set(identityKey, i);
 						continue;
 					}
 
-					const fallbackAccountId = normalizeStoredAccountId(account);
-					if (fallbackAccountId) {
-						const existingFallback = entry.fallbackByAccountId.get(fallbackAccountId);
-						if (typeof existingFallback === "number") {
-							const newestIndex = pickNewestAccountIndex(existingFallback, i);
-							const obsoleteIndex = newestIndex === existingFallback ? i : existingFallback;
-							mergeAccountRecords(newestIndex, obsoleteIndex);
-							indicesToRemove.add(obsoleteIndex);
-							entry.fallbackByAccountId.set(fallbackAccountId, newestIndex);
-							collapseFallbackIntoPreferredOrg(entry);
-							continue;
-						}
-						entry.fallbackByAccountId.set(fallbackAccountId, i);
-						collapseFallbackIntoPreferredOrg(entry);
-						continue;
-					}
-
-					const existingFallback = entry.fallbackNoAccountIdIndex;
-					if (typeof existingFallback === "number") {
-						const newestIndex = pickNewestAccountIndex(existingFallback, i);
-						const obsoleteIndex = newestIndex === existingFallback ? i : existingFallback;
-						mergeAccountRecords(newestIndex, obsoleteIndex);
-						indicesToRemove.add(obsoleteIndex);
-						entry.fallbackNoAccountIdIndex = newestIndex;
-						collapseFallbackIntoPreferredOrg(entry);
-						continue;
-					}
-					entry.fallbackNoAccountIdIndex = i;
-					collapseFallbackIntoPreferredOrg(entry);
+					const newestIndex = pickNewestAccountIndex(existingIndex, i);
+					const obsoleteIndex = newestIndex === existingIndex ? i : existingIndex;
+					mergeAccountRecords(newestIndex, obsoleteIndex);
+					indicesToRemove.add(obsoleteIndex);
+					exactIdentityToIndex.set(identityKey, newestIndex);
 				}
 
-			if (indicesToRemove.size > 0) {
-				accounts = accounts.filter((_, index) => !indicesToRemove.has(index));
-			}
-		};
+				if (indicesToRemove.size > 0) {
+					accounts = accounts.filter((_, index) => !indicesToRemove.has(index));
+				}
+			};
 
 			const collectIdentityKeys = (
 				account: { organizationId?: string; accountId?: string; refreshToken?: string } | undefined,
@@ -2179,7 +2083,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							}
 
 							while (true) {
-										const accountCount = accountManager.getAccountCount();
+										let accountCount = accountManager.getAccountCount();
 										const attempted = new Set<number>();
 										let restartAccountTraversalWithFallback = false;
 
@@ -2258,13 +2162,36 @@ while (attempted.size < Math.max(1, accountCount)) {
 				const accountLabel = formatAccountLabel(account, account.index);
 				
 				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL) {
-					accountManager.removeAccount(account);
+					const removedCount = accountManager.removeAccountsWithSameRefreshToken(account);
+					if (removedCount <= 0) {
+						logWarn(
+							`[${PLUGIN_NAME}] Expected grouped account removal after auth failures, but removed ${removedCount}.`,
+						);
+						const cooledCount = accountManager.markAccountsWithRefreshTokenCoolingDown(
+							account.refreshToken,
+							ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
+							"auth-failure",
+						);
+						if (cooledCount <= 0) {
+							logWarn(
+								`[${PLUGIN_NAME}] Unable to apply auth-failure cooldown; no live account found for refresh token.`,
+							);
+						}
+						accountManager.saveToDiskDebounced();
+						continue;
+					}
 					accountManager.saveToDiskDebounced();
+					const removalMessage = removedCount > 1
+						? `Removed ${removedCount} accounts (same refresh token) after ${failures} consecutive auth failures. Run 'opencode auth login' to re-add.`
+						: `Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'opencode auth login' to re-add.`;
 					await showToast(
-						`Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'opencode auth login' to re-add.`,
+						removalMessage,
 						"error",
 						{ duration: toastDurationMs * 2 },
 					);
+					// Restart traversal: clear attempted and refresh accountCount to avoid skipping healthy accounts
+					attempted.clear();
+					accountCount = accountManager.getAccountCount();
 					continue;
 				}
 				
@@ -2322,6 +2249,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									{
 										model,
 										promptCacheKey,
+										organizationId: account.organizationId,
 									},
 								);
 
@@ -2959,6 +2887,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							const fetchCodexQuotaSnapshot = async (params: {
 								accountId: string;
 								accessToken: string;
+								organizationId: string | undefined;
 							}): Promise<CodexQuotaSnapshot> => {
 								const QUOTA_PROBE_MODELS = ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"];
 								let lastError: Error | null = null;
@@ -2985,6 +2914,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 										const headers = createCodexHeaders(undefined, params.accountId, params.accessToken, {
 											model,
+											organizationId: params.organizationId,
 										});
 								headers.set("content-type", "application/json");
 
@@ -3258,6 +3188,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											const snapshot = await fetchCodexQuotaSnapshot({
 												accountId: requestAccountId,
 												accessToken,
+												organizationId: account.organizationId,
 											});
 											ok += 1;
 											console.log(

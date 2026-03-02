@@ -328,12 +328,14 @@ vi.mock("../lib/accounts.js", () => {
 		incrementAuthFailures() { return 1; }
 		async saveToDisk() {}
 		markAccountCoolingDown() {}
+		markAccountsWithRefreshTokenCoolingDown() { return 1; }
 		markRateLimited() {}
 		markRateLimitedWithReason() {}
 		consumeToken() { return true; }
 		refundToken() {}
 		markSwitched() {}
 		removeAccount() {}
+		removeAccountsWithSameRefreshToken() { return 1; }
 
 		getMinWaitTimeForFamily() {
 			return 0;
@@ -1330,6 +1332,47 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		expect(response.status).toBe(503);
 		expect(await response.text()).toContain("server errors or auth issues");
+	});
+
+	it("cools down the account when grouped auth removal removes zero entries", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		const { ACCOUNT_LIMITS } = await import("../lib/constants.js");
+
+		vi.spyOn(fetchHelpers, "shouldRefreshToken").mockReturnValue(true);
+		vi.mocked(fetchHelpers.refreshAndUpdateToken).mockRejectedValue(
+			new Error("Token expired"),
+		);
+		const incrementAuthFailuresSpy = vi
+			.spyOn(AccountManager.prototype, "incrementAuthFailures")
+			.mockReturnValue(ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL);
+		const removeGroupedAccountsSpy = vi
+			.spyOn(AccountManager.prototype, "removeAccountsWithSameRefreshToken")
+			.mockReturnValue(0);
+		const markAccountsWithRefreshTokenCoolingDownSpy = vi.spyOn(
+			AccountManager.prototype,
+			"markAccountsWithRefreshTokenCoolingDown",
+		);
+
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "should-not-fetch" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(incrementAuthFailuresSpy).toHaveBeenCalledTimes(1);
+		expect(removeGroupedAccountsSpy).toHaveBeenCalledTimes(1);
+		expect(markAccountsWithRefreshTokenCoolingDownSpy).toHaveBeenCalledWith(
+			"refresh-1",
+			ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
+			"auth-failure",
+		);
 	});
 
 	it("skips fetch when local token bucket is depleted", async () => {

@@ -190,7 +190,6 @@ export interface ManagedAccount {
 	rateLimitResetTimes: RateLimitStateV3;
 	coolingDownUntil?: number;
 	cooldownReason?: CooldownReason;
-	consecutiveAuthFailures?: number;
 }
 
 export interface AccountSelectionExplainability {
@@ -215,6 +214,7 @@ export class AccountManager {
 	private lastToastTime = 0;
 	private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingSave: Promise<void> | null = null;
+	private authFailuresByRefreshToken: Map<string, number> = new Map();
 
 	static async loadFromDisk(authFallback?: OAuthAuthDetails): Promise<AccountManager> {
 		const stored = await loadAccounts();
@@ -695,6 +695,22 @@ export class AccountManager {
 		account.cooldownReason = reason;
 	}
 
+	/**
+	 * Mark every in-memory account sharing a refresh token as cooling down.
+	 * @returns Number of live accounts updated.
+	 */
+	markAccountsWithRefreshTokenCoolingDown(
+		refreshToken: string,
+		cooldownMs: number,
+		reason: CooldownReason,
+	): number {
+		const matches = this.accounts.filter((account) => account.refreshToken === refreshToken);
+		for (const account of matches) {
+			this.markAccountCoolingDown(account, cooldownMs, reason);
+		}
+		return matches.length;
+	}
+
 	isAccountCoolingDown(account: ManagedAccount): boolean {
 		if (account.coolingDownUntil === undefined) return false;
 		if (nowMs() >= account.coolingDownUntil) {
@@ -710,12 +726,22 @@ export class AccountManager {
 	}
 
 	incrementAuthFailures(account: ManagedAccount): number {
-		account.consecutiveAuthFailures = (account.consecutiveAuthFailures ?? 0) + 1;
-		return account.consecutiveAuthFailures;
+		const currentFailures = this.authFailuresByRefreshToken.get(account.refreshToken) ?? 0;
+		const newFailures = currentFailures + 1;
+		this.authFailuresByRefreshToken.set(account.refreshToken, newFailures);
+		return newFailures;
 	}
 
+	/**
+	 * Clear the authentication failure counter for the given account's refresh token.
+	 *
+	 * Notes:
+	 * - Failure counts are tracked per refresh token (not per account), so this clears
+	 *   shared failure state for all org variants that reuse the same token.
+	 * - Failure counts are in-memory only for the current AccountManager instance.
+	 */
 	clearAuthFailures(account: ManagedAccount): void {
-		account.consecutiveAuthFailures = 0;
+		this.authFailuresByRefreshToken.delete(account.refreshToken);
 	}
 
 	shouldShowAccountToast(accountIndex: number, debounceMs = 30000): boolean {
@@ -732,9 +758,13 @@ export class AccountManager {
 	}
 
 	updateFromAuth(account: ManagedAccount, auth: OAuthAuthDetails): void {
+		const previousRefreshToken = account.refreshToken;
 		account.refreshToken = auth.refresh;
 		account.access = auth.access;
 		account.expires = auth.expires;
+		if (previousRefreshToken !== account.refreshToken) {
+			this.authFailuresByRefreshToken.delete(previousRefreshToken);
+		}
 		const tokenAccountId = extractAccountId(auth.access);
 		if (
 			tokenAccountId &&
@@ -840,6 +870,29 @@ export class AccountManager {
 		const account = this.accounts[index];
 		if (!account) return false;
 		return this.removeAccount(account);
+	}
+
+	/**
+	 * Remove all accounts that share the same refreshToken as the given account.
+	 * This is used when auth refresh fails to remove all org variants together.
+	 * @returns Number of accounts removed
+	 */
+	removeAccountsWithSameRefreshToken(account: ManagedAccount): number {
+		const refreshToken = account.refreshToken;
+		// Snapshot first because removeAccount mutates this.accounts.
+		const accountsToRemove = this.accounts.filter((acc) => acc.refreshToken === refreshToken);
+		let removedCount = 0;
+
+		for (const accountToRemove of accountsToRemove) {
+			if (this.removeAccount(accountToRemove)) {
+				removedCount++;
+			}
+		}
+
+		// Clear stale auth failure state for this refresh token
+		this.authFailuresByRefreshToken.delete(refreshToken);
+
+		return removedCount;
 	}
 
 	setAccountEnabled(index: number, enabled: boolean): ManagedAccount | null {
