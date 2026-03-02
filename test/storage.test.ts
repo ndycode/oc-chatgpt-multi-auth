@@ -235,6 +235,11 @@ describe("storage", () => {
         }),
       );
 
+      const preview = await previewImportAccounts(exportPath);
+      expect(preview.imported).toBe(1);
+      expect(preview.skipped).toBe(0);
+      expect(preview.total).toBe(2);
+
       await importAccounts(exportPath);
 
       const loaded = await loadAccounts();
@@ -244,6 +249,58 @@ describe("storage", () => {
       expect(accountIds).toContain("workspace-b");
       expect(loaded?.activeIndex).toBe(0);
       expect(loaded?.activeIndexByFamily?.codex).toBe(0);
+    });
+
+    it("retains per-account rate-limit and cooldown metadata through save/load round-trip", async () => {
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          {
+            organizationId: "org-1",
+            accountId: "workspace-org",
+            accountIdSource: "org",
+            refreshToken: "shared-refresh",
+            email: "user@example.com",
+            addedAt: 100,
+            lastUsed: 200,
+            rateLimitResetTimes: {
+              codex: 1_111,
+              "codex:gpt-5.2": 2_222,
+            },
+            coolingDownUntil: 3_333,
+            cooldownReason: "auth-failure",
+          },
+          {
+            accountId: "workspace-token",
+            accountIdSource: "token",
+            refreshToken: "shared-refresh",
+            email: "user@example.com",
+            addedAt: 101,
+            lastUsed: 201,
+            rateLimitResetTimes: {
+              "gpt-5.1": 4_444,
+            },
+            coolingDownUntil: 5_555,
+            cooldownReason: "network-error",
+          },
+        ],
+      });
+
+      const loaded = await loadAccounts();
+      expect(loaded?.accounts).toHaveLength(2);
+
+      const orgVariant = loaded?.accounts.find((account) => account.accountId === "workspace-org");
+      expect(orgVariant?.rateLimitResetTimes?.codex).toBe(1_111);
+      expect(orgVariant?.rateLimitResetTimes?.["codex:gpt-5.2"]).toBe(2_222);
+      expect(orgVariant?.coolingDownUntil).toBe(3_333);
+      expect(orgVariant?.cooldownReason).toBe("auth-failure");
+
+      const tokenVariant = loaded?.accounts.find((account) => account.accountId === "workspace-token");
+      expect(tokenVariant?.rateLimitResetTimes?.["gpt-5.1"]).toBe(4_444);
+      expect(tokenVariant?.coolingDownUntil).toBe(5_555);
+      expect(tokenVariant?.cooldownReason).toBe("network-error");
+      expect(tokenVariant?.refreshToken).toBe("shared-refresh");
     });
 
     it("collapses same-organization records to newest during import and remaps active keys", async () => {
@@ -336,6 +393,55 @@ describe("storage", () => {
         .map((account) => account.organizationId)
         .filter((organizationId): organizationId is string => typeof organizationId === "string");
       expect(new Set(organizationIds)).toEqual(new Set(["org-a", "org-b"]));
+    });
+
+    it("does not merge accounts when one has organizationId and the other does not, despite same refreshToken", async () => {
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          {
+            organizationId: "org-scoped",
+            accountId: "workspace-with-org",
+            refreshToken: "shared-refresh-token",
+            addedAt: 1,
+            lastUsed: 10,
+          },
+        ],
+      });
+
+      await fs.writeFile(
+        exportPath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            {
+              organizationId: undefined,
+              accountId: "workspace-no-org",
+              refreshToken: "shared-refresh-token",
+              addedAt: 2,
+              lastUsed: 20,
+            },
+          ],
+        }),
+      );
+
+      await importAccounts(exportPath);
+
+      const loaded = await loadAccounts();
+      expect(loaded?.accounts).toHaveLength(2);
+
+      const orgScoped = loaded?.accounts.find((account) => account.organizationId === "org-scoped");
+      expect(orgScoped).toBeDefined();
+      expect(orgScoped?.accountId).toBe("workspace-with-org");
+
+      const noOrg = loaded?.accounts.find(
+        (account) =>
+          typeof account.organizationId === "undefined" &&
+          account.accountId === "workspace-no-org",
+      );
+      expect(noOrg).toBeDefined();
     });
 
     it("keeps legacy no-organization dedupe semantics during import", async () => {

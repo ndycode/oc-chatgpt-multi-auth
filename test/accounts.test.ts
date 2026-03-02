@@ -387,6 +387,90 @@ describe("AccountManager", () => {
     expect(third?.refreshToken).toBe("token-1");
   });
 
+  it("selects usable variant when refresh-token siblings are blocked", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "shared-refresh",
+          accountId: "workspace-disabled",
+          addedAt: now,
+          lastUsed: now,
+          enabled: false,
+        },
+        {
+          refreshToken: "shared-refresh",
+          accountId: "workspace-rate-limited",
+          addedAt: now,
+          lastUsed: now,
+          rateLimitResetTimes: { codex: now + 60_000 },
+        },
+        {
+          refreshToken: "shared-refresh",
+          accountId: "workspace-cooling-down",
+          addedAt: now,
+          lastUsed: now,
+          coolingDownUntil: now + 60_000,
+          cooldownReason: "network-error" as const,
+        },
+        {
+          refreshToken: "shared-refresh",
+          accountId: "workspace-usable",
+          addedAt: now,
+          lastUsed: now,
+        },
+      ],
+    };
+
+    const manager = new AccountManager(undefined, stored);
+    const selected = manager.getCurrentOrNextForFamily("codex");
+
+    expect(selected?.accountId).toBe("workspace-usable");
+    expect(selected?.refreshToken).toBe("shared-refresh");
+  });
+
+  it("returns null and preserves min-wait behavior when all shared-token variants are blocked", () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        {
+          refreshToken: "shared-refresh",
+          accountId: "workspace-disabled",
+          addedAt: now,
+          lastUsed: now,
+          enabled: false,
+        },
+        {
+          refreshToken: "shared-refresh",
+          accountId: "workspace-rate-limited",
+          addedAt: now,
+          lastUsed: now,
+          rateLimitResetTimes: { codex: now + 120_000 },
+        },
+        {
+          refreshToken: "shared-refresh",
+          accountId: "workspace-cooling-down",
+          addedAt: now,
+          lastUsed: now,
+          coolingDownUntil: now + 30_000,
+          cooldownReason: "auth-failure" as const,
+        },
+      ],
+    };
+
+    const manager = new AccountManager(undefined, stored);
+
+    expect(manager.getCurrentOrNextForFamily("codex")).toBeNull();
+
+    const minWait = manager.getMinWaitTimeForFamily("codex");
+    expect(minWait).toBeGreaterThan(0);
+    expect(minWait).toBeLessThanOrEqual(30_000);
+  });
+
   it("uses independent cursors per model family", () => {
     const now = Date.now();
     const stored = {
@@ -703,12 +787,109 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
-      
-      manager.incrementAuthFailures(account);
-      manager.incrementAuthFailures(account);
+
+      // Increment failures twice
+      expect(manager.incrementAuthFailures(account)).toBe(1);
+      expect(manager.incrementAuthFailures(account)).toBe(2);
+
+      // Clear failures
       manager.clearAuthFailures(account);
-      
-      expect(account.consecutiveAuthFailures).toBe(0);
+
+      // After clearing, increment should start from 0 (returning 1)
+      expect(manager.incrementAuthFailures(account)).toBe(1);
+    });
+
+    it("tracks failures per refreshToken across multiple accounts", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now }, // base account
+          { refreshToken: "token-1", organizationId: "org-1", addedAt: now, lastUsed: now }, // org variant 1
+          { refreshToken: "token-1", organizationId: "org-2", addedAt: now, lastUsed: now }, // org variant 2
+          { refreshToken: "token-2", addedAt: now, lastUsed: now }, // different token
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const accounts = manager.getAccountsSnapshot();
+      expect(accounts).toHaveLength(4);
+      const account1 = accounts[0];
+      const account2 = accounts[1];
+      const account3 = accounts[2];
+      const account4 = accounts[3];
+
+      // Increment failures on first account (token-1)
+      expect(manager.incrementAuthFailures(account1)).toBe(1);
+      expect(manager.incrementAuthFailures(account2)).toBe(2);
+      expect(manager.incrementAuthFailures(account3)).toBe(3);
+
+      // Different token should start from 0
+      expect(manager.incrementAuthFailures(account4)).toBe(1);
+    });
+
+    it("removes all accounts with the same refreshToken", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now }, // base account
+          { refreshToken: "token-1", organizationId: "org-1", addedAt: now, lastUsed: now }, // org variant 1
+          { refreshToken: "token-1", organizationId: "org-2", addedAt: now, lastUsed: now }, // org variant 2
+          { refreshToken: "token-2", addedAt: now, lastUsed: now }, // different token
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      expect(manager.getAccountCount()).toBe(4);
+
+      const accounts = manager.getAccountsSnapshot();
+      expect(accounts).toHaveLength(4);
+      const account1 = accounts[0];
+      const removedCount = manager.removeAccountsWithSameRefreshToken(account1);
+
+      // Should remove 3 accounts with token-1
+      expect(removedCount).toBe(3);
+      expect(manager.getAccountCount()).toBe(1);
+      expect(manager.getAccountsSnapshot()[0].refreshToken).toBe("token-2");
+    });
+
+    it("clears auth failure counter when removing accounts with same refreshToken", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now }, // base account
+          { refreshToken: "token-1", organizationId: "org-1", addedAt: now, lastUsed: now }, // org variant
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const accounts = manager.getAccountsSnapshot();
+      expect(accounts).toHaveLength(2);
+      const account1 = accounts[0];
+
+      // Increment auth failures for token-1
+      expect(manager.incrementAuthFailures(account1)).toBe(1);
+      expect(manager.incrementAuthFailures(account1)).toBe(2);
+      expect(manager.incrementAuthFailures(accounts[1])).toBe(3);
+
+      // Verify failures are tracked
+      expect(manager.incrementAuthFailures(account1)).toBe(4);
+
+      // Remove all accounts with token-1
+      const removedCount = manager.removeAccountsWithSameRefreshToken(account1);
+      expect(removedCount).toBe(2);
+      expect(manager.getAccountCount()).toBe(0);
+      const failuresByRefreshToken = Reflect.get(
+        manager,
+        "authFailuresByRefreshToken",
+      ) as Map<string, number>;
+      expect(failuresByRefreshToken.has("token-1")).toBe(false);
+      expect(manager.incrementAuthFailures(account1)).toBe(1);
     });
   });
 
@@ -882,6 +1063,37 @@ describe("AccountManager", () => {
       
       expect(account.accountId).toBe("org-selected-id");
       expect(account.accountIdSource).toBe("org");
+    });
+
+    it("clears stale auth failure state when refresh token rotates", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "old-token", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const account = manager.getCurrentAccount()!;
+      expect(manager.incrementAuthFailures(account)).toBe(1);
+
+      const newAuth: OAuthAuthDetails = {
+        type: "oauth",
+        access: "new-access",
+        refresh: "new-refresh",
+        expires: now + 3600000,
+      };
+
+      manager.updateFromAuth(account, newAuth);
+
+      const failuresByRefreshToken = Reflect.get(
+        manager,
+        "authFailuresByRefreshToken",
+      ) as Map<string, number>;
+      expect(failuresByRefreshToken.has("old-token")).toBe(false);
+      expect(manager.incrementAuthFailures(account)).toBe(1);
     });
   });
 
