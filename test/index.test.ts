@@ -1399,7 +1399,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 
 		vi.mocked(configModule.getFallbackOnUnsupportedCodexModel).mockReturnValueOnce(true);
-		vi.mocked(configModule.getFallbackToGpt52OnUnsupportedGpt53).mockReturnValueOnce(true);
+		vi.mocked(configModule.getFallbackToGpt52OnUnsupportedGpt53).mockReturnValueOnce(false);
 		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
 			updatedInit: {
 				method: "POST",

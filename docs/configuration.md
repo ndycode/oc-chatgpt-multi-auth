@@ -346,7 +346,7 @@ DEBUG_CODEX_PLUGIN=1 opencode run "test" --model=openai/gpt-5.4
 ```
 
 look for:
-```
+```text
 [openai-codex-plugin] Model config lookup: "gpt-5.4" → normalized to "gpt-5.4" for API {
   hasModelSpecificConfig: true,
   resolvedConfig: { ... }
