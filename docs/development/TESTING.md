@@ -54,10 +54,10 @@ npm test
 
 | User Selects | Plugin Receives | Normalizes To | Config Lookup | API Receives | Result |
 |--------------|-----------------|---------------|---------------|--------------|--------|
-| `openai/gpt-5` | `"gpt-5"` | `"gpt-5"` | `models["gpt-5"]` → undefined | `"gpt-5"` | ✅ Uses global options |
+| `openai/gpt-5` | `"gpt-5"` | `"gpt-5.1"` | `models["gpt-5"]` → undefined | `"gpt-5.1"` | ✅ Uses global options |
 | `openai/gpt-5-codex` | `"gpt-5-codex"` | `"gpt-5-codex"` | `models["gpt-5-codex"]` → undefined | `"gpt-5-codex"` | ✅ Uses global options |
-| `openai/gpt-5-mini` | `"gpt-5-mini"` | `"gpt-5"` | `models["gpt-5-mini"]` → undefined | `"gpt-5"` | ✅ Uses global options |
-| `openai/gpt-5-nano` | `"gpt-5-nano"` | `"gpt-5"` | `models["gpt-5-nano"]` → undefined | `"gpt-5"` | ✅ Uses global options |
+| `openai/gpt-5-mini` | `"gpt-5-mini"` | `"gpt-5.1"` | `models["gpt-5-mini"]` → undefined | `"gpt-5.1"` | ✅ Uses global options |
+| `openai/gpt-5-nano` | `"gpt-5-nano"` | `"gpt-5.1"` | `models["gpt-5-nano"]` → undefined | `"gpt-5.1"` | ✅ Uses global options |
 
 **Expected Behavior:**
 - ✅ All models work with global options
@@ -248,9 +248,9 @@ API receives: "gpt-5-codex" ✅
 ```
 User selects: (none - uses OpenCode default)
 Plugin receives: undefined or default from OpenCode
-normalizeModel: undefined → "gpt-5" ✅ (fallback)
+normalizeModel: undefined → "gpt-5.1" ✅ (fallback)
 Config lookup: models[undefined] → undefined
-API receives: "gpt-5" ✅
+API receives: "gpt-5.1" ✅
 ```
 
 **Result:** ✅ Works (safe fallback)
@@ -274,9 +274,9 @@ API receives: "gpt-5" ✅
 ```
 User selects: openai/my-gpt-5-variant
 Plugin receives: "my-gpt-5-variant"
-normalizeModel: "my-gpt-5-variant" → "gpt-5" ✅ (includes "gpt-5", not "codex")
+normalizeModel: "my-gpt-5-variant" → "gpt-5.1" ✅ (includes "gpt-5", not "codex")
 Config lookup: models["my-gpt-5-variant"] → Found ✅
-API receives: "gpt-5" ✅
+API receives: "gpt-5.1" ✅
 ```
 
 **Result:** ✅ Works (correct model selected)
@@ -605,20 +605,23 @@ opencode
 ### Test: normalizeModel() Coverage
 
 ```typescript
-normalizeModel("gpt-5.2-codex")         // → "gpt-5.2-codex" ✅
-normalizeModel("gpt-5.2-codex-high")    // → "gpt-5.2-codex" ✅
+normalizeModel("gpt-5.4")               // → "gpt-5.4" ✅
+normalizeModel("gpt-5.4-xhigh")         // → "gpt-5.4" ✅
+normalizeModel("gpt-5.4-pro-high")      // → "gpt-5.4-pro" ✅
+normalizeModel("gpt-5.2-codex")         // → "gpt-5-codex" ✅
+normalizeModel("gpt-5.2-codex-high")    // → "gpt-5-codex" ✅
 normalizeModel("gpt-5.2-xhigh")         // → "gpt-5.2" ✅
 normalizeModel("gpt-5.1-codex-max-xhigh")// → "gpt-5.1-codex-max" ✅
 normalizeModel("gpt-5.1-codex-mini-high")// → "gpt-5.1-codex-mini" ✅
 normalizeModel("codex-mini-latest")     // → "gpt-5.1-codex-mini" ✅
-normalizeModel("gpt-5.1-codex")         // → "gpt-5.1-codex" ✅
+normalizeModel("gpt-5.1-codex")         // → "gpt-5-codex" ✅
 normalizeModel("gpt-5.1")               // → "gpt-5.1" ✅
-normalizeModel("my-codex-model")        // → "gpt-5.1-codex" ✅
+normalizeModel("my-codex-model")        // → "gpt-5-codex" ✅
 normalizeModel("gpt-5")                 // → "gpt-5.1" ✅
 normalizeModel("gpt-5-mini")            // → "gpt-5.1" ✅
 normalizeModel("gpt-5-nano")            // → "gpt-5.1" ✅
-normalizeModel("GPT 5 High")            // → "gpt-5.1" ✅
-normalizeModel(undefined)               // → "gpt-5.1" ✅
+normalizeModel("GPT 5.4 Pro High")      // → "gpt-5.4-pro" ✅
+normalizeModel(undefined)                 // → "gpt-5.1" ✅
 normalizeModel("random-model")          // → "gpt-5.1" ✅ (fallback)
 ```
 
@@ -626,14 +629,21 @@ normalizeModel("random-model")          // → "gpt-5.1" ✅ (fallback)
 ```typescript
 export function normalizeModel(model: string | undefined): string {
   if (!model) return "gpt-5.1";
-  const modelId = model.includes("/") ? model.split("/").pop()! : model;
-  const mappedModel = MODEL_MAP[modelId];
+
+  const modelId = model.includes("/") ? model.split("/").pop() ?? model : model;
+  const mappedModel = getNormalizedModel(modelId);
   if (mappedModel) return mappedModel;
 
   const normalized = modelId.toLowerCase();
 
+  if (normalized.includes("gpt-5.4-pro") || normalized.includes("gpt 5.4 pro")) {
+    return "gpt-5.4-pro";
+  }
+  if (normalized.includes("gpt-5.4") || normalized.includes("gpt 5.4")) {
+    return "gpt-5.4";
+  }
   if (normalized.includes("gpt-5.2-codex") || normalized.includes("gpt 5.2 codex")) {
-    return "gpt-5.2-codex";
+    return "gpt-5-codex";
   }
   if (normalized.includes("gpt-5.2") || normalized.includes("gpt 5.2")) {
     return "gpt-5.2";
@@ -644,21 +654,8 @@ export function normalizeModel(model: string | undefined): string {
   if (normalized.includes("gpt-5.1-codex-mini") || normalized.includes("gpt 5.1 codex mini")) {
     return "gpt-5.1-codex-mini";
   }
-  if (
-    normalized.includes("codex-mini-latest") ||
-    normalized.includes("gpt-5-codex-mini") ||
-    normalized.includes("gpt 5 codex mini")
-  ) {
-    return "codex-mini-latest";
-  }
-  if (normalized.includes("gpt-5.1-codex") || normalized.includes("gpt 5.1 codex")) {
-    return "gpt-5.1-codex";
-  }
-  if (normalized.includes("gpt-5.1") || normalized.includes("gpt 5.1")) {
-    return "gpt-5.1";
-  }
   if (normalized.includes("codex")) {
-    return "gpt-5.1-codex";
+    return "gpt-5-codex";
   }
   if (normalized.includes("gpt-5") || normalized.includes("gpt 5")) {
     return "gpt-5.1";
@@ -726,17 +723,17 @@ opencode run "test" --model=openai/gpt-5-codex
 ```typescript
 describe('normalizeModel', () => {
   test('handles all default models', () => {
-    expect(normalizeModel('gpt-5')).toBe('gpt-5')
+    expect(normalizeModel('gpt-5')).toBe('gpt-5.1')
     expect(normalizeModel('gpt-5-codex')).toBe('gpt-5-codex')
-    expect(normalizeModel('gpt-5-codex-mini')).toBe('codex-mini-latest')
-    expect(normalizeModel('gpt-5-mini')).toBe('gpt-5')
-    expect(normalizeModel('gpt-5-nano')).toBe('gpt-5')
+    expect(normalizeModel('gpt-5-codex-mini')).toBe('gpt-5.1-codex-mini')
+    expect(normalizeModel('gpt-5-mini')).toBe('gpt-5.1')
+    expect(normalizeModel('gpt-5-nano')).toBe('gpt-5.1')
   })
 
   test('handles custom preset names', () => {
     expect(normalizeModel('gpt-5-codex-low')).toBe('gpt-5-codex')
-    expect(normalizeModel('openai/gpt-5-codex-mini-high')).toBe('codex-mini-latest')
-    expect(normalizeModel('gpt-5-high')).toBe('gpt-5')
+    expect(normalizeModel('openai/gpt-5-codex-mini-high')).toBe('gpt-5.1-codex-mini')
+    expect(normalizeModel('gpt-5-high')).toBe('gpt-5.1')
   })
 
   test('handles legacy names', () => {
@@ -744,9 +741,9 @@ describe('normalizeModel', () => {
   })
 
   test('handles edge cases', () => {
-    expect(normalizeModel(undefined)).toBe('gpt-5')
-    expect(normalizeModel('codex-mini-latest')).toBe('codex-mini-latest')
-    expect(normalizeModel('random')).toBe('gpt-5')
+    expect(normalizeModel(undefined)).toBe('gpt-5.1')
+    expect(normalizeModel('codex-mini-latest')).toBe('gpt-5.1-codex-mini')
+    expect(normalizeModel('random')).toBe('gpt-5.1')
   })
 })
 
