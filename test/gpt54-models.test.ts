@@ -63,6 +63,7 @@ describe("GPT-5.4 Model Support", () => {
 
 		it("should normalize all gpt-5.4-pro reasoning effort variants", () => {
 			const variants = [
+				"gpt-5.4-pro-none",
 				"gpt-5.4-pro-low",
 				"gpt-5.4-pro-medium",
 				"gpt-5.4-pro-high",
@@ -93,6 +94,7 @@ describe("GPT-5.4 Model Support", () => {
 
 		it("should handle gpt-5.4-pro in MODEL_MAP", () => {
 			expect(MODEL_MAP["gpt-5.4-pro"]).toBe("gpt-5.4-pro");
+			expect(MODEL_MAP["gpt-5.4-pro-none"]).toBe("gpt-5.4-pro");
 			expect(MODEL_MAP["gpt-5.4-pro-low"]).toBe("gpt-5.4-pro");
 			expect(MODEL_MAP["gpt-5.4-pro-medium"]).toBe("gpt-5.4-pro");
 			expect(MODEL_MAP["gpt-5.4-pro-high"]).toBe("gpt-5.4-pro");
@@ -203,10 +205,10 @@ describe("GPT-5.4 Model Support", () => {
 			expect(normalizeModel("gpt_5_4")).toBe("gpt-5.1");
 		});
 
-		it("should match gpt-5.4x patterns as gpt-5.4", () => {
-			// gpt-5.40 and gpt-5.44 contain "gpt-5.4" so they match gpt-5.4 pattern
-			expect(normalizeModel("gpt-5.40")).toBe("gpt-5.4");
-			expect(normalizeModel("gpt-5.44")).toBe("gpt-5.4");
+		it("should not match gpt-5.4x patterns as gpt-5.4", () => {
+			// Boundary-aware matching prevents accidental family routing from nearby version strings.
+			expect(normalizeModel("gpt-5.40")).toBe("gpt-5.1");
+			expect(normalizeModel("gpt-5.44")).toBe("gpt-5.1");
 		});
 
 		it("should handle empty/undefined model names defaulting to gpt-5.1", () => {
@@ -283,7 +285,7 @@ describe("GPT-5.4 Model Support", () => {
 			const gpt54ProVariants = Object.keys(MODEL_MAP).filter((key) =>
 				key.startsWith("gpt-5.4-pro")
 			);
-			expect(gpt54ProVariants.length).toBeGreaterThanOrEqual(5); // base + 4 effort levels (no 'none')
+			expect(gpt54ProVariants.length).toBeGreaterThanOrEqual(6); // base + none/low/medium/high/xhigh
 		});
 
 		it("should ensure all gpt-5.4 variants map to correct normalized name", () => {

@@ -48,7 +48,7 @@ controls how much thinking the model does.
 the shipped config templates include 21 presets and do not add optional IDs by default. add `gpt-5.4-pro` and/or `gpt-5.3-codex-spark` manually only for entitled workspaces.
 
 what they mean:
-- `none` - no reasoning phase (base models only, auto-converts to `low` for codex)
+- `none` - no reasoning phase (base models only; auto-converts to `low` for codex/pro families, including `gpt-5-codex` and `gpt-5.4-pro`)
 - `low` - light reasoning, fastest
 - `medium` - balanced (default)
 - `high` - deep reasoning

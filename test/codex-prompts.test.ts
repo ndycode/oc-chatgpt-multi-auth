@@ -84,6 +84,10 @@ describe("Codex Prompts Module", () => {
 				expect(getModelFamily("gpt 5.4 pro")).toBe("gpt-5.4");
 			});
 
+			it("should not classify gpt-5.40 style names as gpt-5.4 family", () => {
+				expect(getModelFamily("gpt-5.40")).toBe("gpt-5.1");
+			});
+
 			it("should detect gpt-5.3-codex-spark", () => {
 				expect(getModelFamily("gpt-5.3-codex-spark")).toBe("gpt-5-codex");
 			});

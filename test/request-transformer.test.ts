@@ -156,6 +156,11 @@ describe('Request Transformer Module', () => {
 				expect(normalizeModel('GPT-5.3-CODEX-SPARK')).toBe('gpt-5-codex');
 			});
 
+			it('should not misclassify unrelated gpt-5.4x model strings', async () => {
+				expect(normalizeModel('gpt-5.40')).toBe('gpt-5.1');
+				expect(normalizeModel('gpt-5.4pro')).toBe('gpt-5.1');
+			});
+
 			it('should handle mixed case', async () => {
 				expect(normalizeModel('Gpt-5-Codex-Low')).toBe('gpt-5-codex');
 				expect(normalizeModel('GpT-5-MeDiUm')).toBe('gpt-5.1');

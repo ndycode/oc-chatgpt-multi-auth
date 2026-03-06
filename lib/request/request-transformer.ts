@@ -80,15 +80,12 @@ export function normalizeModel(model: string | undefined): string {
 	}
 
 	// 4. GPT-5.4 Pro (optional/manual model)
-	if (
-		normalized.includes("gpt-5.4-pro") ||
-		normalized.includes("gpt 5.4 pro")
-	) {
+	if (/\bgpt(?:-| )5\.4(?:-| )pro(?:\b|[- ])/.test(normalized)) {
 		return "gpt-5.4-pro";
 	}
 
 	// 5. GPT-5.4 (general purpose)
-	if (normalized.includes("gpt-5.4") || normalized.includes("gpt 5.4")) {
+	if (/\bgpt(?:-| )5\.4(?:\b|[- ])/.test(normalized)) {
 		return "gpt-5.4";
 	}
 
