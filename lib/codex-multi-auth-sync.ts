@@ -48,6 +48,7 @@ export interface CodexMultiAuthCleanupResult {
 export interface CodexMultiAuthSyncCapacityDetails extends CodexMultiAuthResolvedSource {
 	currentCount: number;
 	sourceCount: number;
+	sourceDedupedTotal: number;
 	dedupedTotal: number;
 	maxAccounts: number;
 	needToRemove: number;
@@ -408,20 +409,23 @@ export async function syncFromCodexMultiAuth(
 	projectPath = process.cwd(),
 ): Promise<CodexMultiAuthSyncResult> {
 	const resolved = loadCodexMultiAuthSourceStorage(projectPath);
-	await assertSyncWithinCapacity(resolved);
-	const preview = await withNormalizedImportFile(
-		resolved.storage,
-		(filePath) => previewImportAccounts(filePath),
-	);
-	const result = await withNormalizedImportFile(
-		resolved.storage,
-		(filePath) => importAccounts(filePath, {
-			preImportBackupPrefix: "codex-multi-auth-sync-backup",
-			backupMode: "required",
-		}),
-	);
+	let result: ImportAccountsResult;
+	try {
+		result = await withNormalizedImportFile(
+			resolved.storage,
+			(filePath) => importAccounts(filePath, {
+				preImportBackupPrefix: "codex-multi-auth-sync-backup",
+				backupMode: "required",
+			}),
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (message.includes("exceed maximum")) {
+			await assertSyncWithinCapacity(resolved);
+		}
+		throw error;
+	}
 	return {
-		...preview,
 		rootDir: resolved.rootDir,
 		accountsPath: resolved.accountsPath,
 		scope: resolved.scope,
@@ -455,8 +459,19 @@ export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiA
 
 		const after = normalized.accounts.length;
 		const removed = Math.max(0, before - after);
+		const originalAccountsByKey = new Map<string, AccountStorageV3["accounts"][number]>();
+		for (const account of existing.accounts) {
+			const key = account.organizationId ?? account.accountId ?? account.refreshToken;
+			if (key) {
+				originalAccountsByKey.set(key, account);
+			}
+		}
 		const updated = normalized.accounts.reduce((count, account) => {
-			return account.accountIdSource === "org" && account.organizationId ? count + 1 : count;
+			const key = account.organizationId ?? account.accountId ?? account.refreshToken;
+			if (!key) return count;
+			const original = originalAccountsByKey.get(key);
+			if (!original) return count;
+			return JSON.stringify(original) === JSON.stringify(account) ? count : count + 1;
 		}, 0);
 
 		if (removed > 0 || after !== before || JSON.stringify(normalized) !== JSON.stringify(existing)) {
@@ -482,6 +497,7 @@ async function assertSyncWithinCapacity(
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		};
+		const sourceDedupedTotal = buildMergedDedupedAccounts([], resolved.storage.accounts).length;
 		const mergedAccounts = buildMergedDedupedAccounts(existing.accounts, resolved.storage.accounts);
 		if (mergedAccounts.length <= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 			return Promise.resolve(null);
@@ -492,6 +508,22 @@ async function assertSyncWithinCapacity(
 		const dedupedTotal = mergedAccounts.length;
 		const importableNewAccounts = Math.max(0, dedupedTotal - currentCount);
 		const skippedOverlaps = Math.max(0, sourceCount - importableNewAccounts);
+		if (sourceDedupedTotal > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			return Promise.resolve({
+				rootDir: resolved.rootDir,
+				accountsPath: resolved.accountsPath,
+				scope: resolved.scope,
+				currentCount,
+				sourceCount,
+				sourceDedupedTotal,
+				dedupedTotal: sourceDedupedTotal,
+				maxAccounts: ACCOUNT_LIMITS.MAX_ACCOUNTS,
+				needToRemove: sourceDedupedTotal - ACCOUNT_LIMITS.MAX_ACCOUNTS,
+				importableNewAccounts: sourceDedupedTotal,
+				skippedOverlaps: Math.max(0, sourceCount - sourceDedupedTotal),
+				suggestedRemovals: [],
+			} satisfies CodexMultiAuthSyncCapacityDetails);
+		}
 		const sourceIdentities = buildSourceIdentitySet(resolved.storage);
 		const suggestedRemovals = existing.accounts
 			.map((account, index) => {
@@ -538,6 +570,7 @@ async function assertSyncWithinCapacity(
 			scope: resolved.scope,
 			currentCount,
 			sourceCount,
+			sourceDedupedTotal,
 			dedupedTotal,
 			maxAccounts: ACCOUNT_LIMITS.MAX_ACCOUNTS,
 			needToRemove: dedupedTotal - ACCOUNT_LIMITS.MAX_ACCOUNTS,

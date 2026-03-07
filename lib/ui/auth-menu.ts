@@ -54,6 +54,9 @@ export type AuthMenuAction =
 
 export type AccountAction = "back" | "delete" | "refresh" | "toggle" | "set-current" | "cancel";
 export type SettingsAction = "toggle-sync" | "sync-now" | "cleanup-overlaps" | "back" | "cancel";
+
+const ANSI_CSI_REGEX = new RegExp("\\x1b\\[[0-?]*[ -/]*[@-~]", "g");
+const CONTROL_CHAR_REGEX = new RegExp("[\\u0000-\\u001f\\u007f]", "g");
 export interface SyncPruneCandidate {
 	index: number;
 	email?: string;
@@ -70,7 +73,7 @@ type SyncPruneAction =
 
 function sanitizeTerminalText(value: string | undefined): string | undefined {
 	if (!value) return undefined;
-	return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\u0000-\u001f\u007f]/g, "").trim();
+	return value.replace(ANSI_CSI_REGEX, "").replace(CONTROL_CHAR_REGEX, "").trim();
 }
 
 function formatRelativeTime(timestamp: number | undefined): string {

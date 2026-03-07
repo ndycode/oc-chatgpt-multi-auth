@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { PluginConfig } from "./types.js";
@@ -11,6 +11,7 @@ import { logWarn } from "./logger.js";
 import { PluginConfigSchema, getValidationErrors } from "./schemas.js";
 
 const CONFIG_PATH = join(homedir(), ".opencode", "openai-codex-auth-config.json");
+const CONFIG_LOCK_PATH = `${CONFIG_PATH}.lock`;
 const TUI_COLOR_PROFILES = new Set(["truecolor", "ansi16", "ansi256"]);
 const TUI_GLYPH_MODES = new Set(["ascii", "unicode", "auto"]);
 const REQUEST_TRANSFORM_MODES = new Set(["native", "legacy"]);
@@ -125,15 +126,21 @@ function readRawPluginConfig(): RawPluginConfig {
 export function savePluginConfigMutation(
 	mutate: (current: RawPluginConfig) => RawPluginConfig,
 ): void {
-	const current = readRawPluginConfig();
-	const next = mutate({ ...current });
+	withPluginConfigLock(() => {
+		const current = readRawPluginConfig();
+		const next = mutate({ ...current });
 
-	if (!isRecord(next)) {
-		throw new Error("Plugin config mutation must return a JSON object");
-	}
+		if (!isRecord(next)) {
+			throw new Error("Plugin config mutation must return a JSON object");
+		}
 
-	mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-	writeFileSync(CONFIG_PATH, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+		const tempPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+		writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+		if (existsSync(CONFIG_PATH)) {
+			unlinkSync(CONFIG_PATH);
+		}
+		renameSync(tempPath, CONFIG_PATH);
+	});
 }
 
 function stripUtf8Bom(content: string): string {
@@ -141,7 +148,38 @@ function stripUtf8Bom(content: string): string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object";
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withPluginConfigLock<T>(fn: () => T): T {
+	mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+	const deadline = Date.now() + 2_000;
+	while (true) {
+		try {
+			writeFileSync(CONFIG_LOCK_PATH, `${process.pid}`, { encoding: "utf-8", flag: "wx" });
+			break;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "EEXIST" || Date.now() >= deadline) {
+				throw error;
+			}
+			sleepSync(25);
+		}
+	}
+
+	try {
+		return fn();
+	} finally {
+		try {
+			unlinkSync(CONFIG_LOCK_PATH);
+		} catch {
+			// best effort cleanup
+		}
+	}
 }
 
 /**

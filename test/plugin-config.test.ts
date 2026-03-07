@@ -38,6 +38,8 @@ vi.mock('node:fs', async () => {
 		existsSync: vi.fn(),
 		readFileSync: vi.fn(),
 		mkdirSync: vi.fn(),
+		renameSync: vi.fn(),
+		unlinkSync: vi.fn(),
 		writeFileSync: vi.fn(),
 	};
 });
@@ -55,6 +57,8 @@ describe('Plugin Configuration', () => {
 	const mockExistsSync = vi.mocked(fs.existsSync);
 	const mockReadFileSync = vi.mocked(fs.readFileSync);
 	const mockMkdirSync = vi.mocked(fs.mkdirSync);
+	const mockRenameSync = vi.mocked(fs.renameSync);
+	const mockUnlinkSync = vi.mocked(fs.unlinkSync);
 	const mockWriteFileSync = vi.mocked(fs.writeFileSync);
 	const envKeys = [
 		'CODEX_MODE',
@@ -786,9 +790,13 @@ describe('Plugin Configuration', () => {
 				path.join(os.homedir(), '.opencode'),
 				{ recursive: true },
 			);
-			expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
-			const [writtenPath, writtenContent] = mockWriteFileSync.mock.calls[0] ?? [];
-			expect(writtenPath).toBe(path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json'));
+			expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
+			const [writtenPath, writtenContent] = mockWriteFileSync.mock.calls[1] ?? [];
+			expect(String(writtenPath)).toContain('.tmp');
+			expect(mockUnlinkSync).toHaveBeenCalledWith(
+				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json'),
+			);
+			expect(mockRenameSync).toHaveBeenCalled();
 			expect(JSON.parse(String(writtenContent))).toEqual({
 				codexMode: false,
 				customKey: 'keep-me',
@@ -805,7 +813,7 @@ describe('Plugin Configuration', () => {
 
 			setSyncFromCodexMultiAuthEnabled(true);
 
-			const [, writtenContent] = mockWriteFileSync.mock.calls[0] ?? [];
+			const [, writtenContent] = mockWriteFileSync.mock.calls[1] ?? [];
 			expect(JSON.parse(String(writtenContent))).toEqual({
 				experimental: {
 					syncFromCodexMultiAuth: {
@@ -820,7 +828,16 @@ describe('Plugin Configuration', () => {
 			mockReadFileSync.mockReturnValue('invalid json');
 
 			expect(() => savePluginConfigMutation((current) => current)).toThrow();
-			expect(mockWriteFileSync).not.toHaveBeenCalled();
+			expect(mockRenameSync).not.toHaveBeenCalled();
+		});
+
+		it('rejects array roots when reading raw plugin config', () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockReturnValue('[]');
+
+			expect(() => savePluginConfigMutation((current) => current)).toThrow(
+				'Plugin config root must be a JSON object',
+			);
 		});
 	});
 });

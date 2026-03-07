@@ -47,8 +47,8 @@ export interface SelectOptions<T = string> {
 }
 
 const ESCAPE_TIMEOUT_MS = 50;
-const ANSI_REGEX = /\x1b\[[0-9;]*m/g;
-const ANSI_LEADING_REGEX = /^\x1b\[[0-9;]*m/;
+const ANSI_REGEX = new RegExp("\\x1b\\[[0-9;]*m", "g");
+const ANSI_LEADING_REGEX = new RegExp("^\\x1b\\[[0-9;]*m");
 const CSI_FINAL_KEYS = new Set(["A", "B", "C", "D", "H", "F"]);
 const CSI_TILDE_PATTERN = /^(1|4|7|8)~$/;
 

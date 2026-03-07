@@ -265,7 +265,7 @@ describe("codex-multi-auth sync", () => {
 			before: 2,
 			after: 1,
 			removed: 1,
-			updated: 1,
+			updated: 0,
 		});
 	});
 
@@ -340,6 +340,7 @@ describe("codex-multi-auth sync", () => {
 				accountsPath: globalPath,
 				currentCount: 19,
 				sourceCount: 2,
+				sourceDedupedTotal: 2,
 				dedupedTotal: 21,
 				maxAccounts: 20,
 				needToRemove: 1,
@@ -351,6 +352,71 @@ describe("codex-multi-auth sync", () => {
 				score: expect.any(Number),
 				reason: expect.stringContaining("not present in codex-multi-auth source"),
 			});
+		}
+	});
+
+	it("does not suggest local removals when the source itself exceeds the account limit", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		const globalPath = join(rootDir, "openai-codex-accounts.json");
+		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+		mockReadFileSync.mockReturnValue(
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: Array.from({ length: 21 }, (_, index) => ({
+					accountId: `org-source-${index + 1}`,
+					organizationId: `org-source-${index + 1}`,
+					accountIdSource: "org",
+					email: `source${index + 1}@example.com`,
+					refreshToken: `rt-source-${index + 1}`,
+					addedAt: index + 1,
+					lastUsed: index + 1,
+				})),
+			}),
+		);
+
+		const storageModule = await import("../lib/storage.js");
+		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
+			handler(
+				{
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "org-local",
+							organizationId: "org-local",
+							accountIdSource: "org",
+							email: "local@example.com",
+							refreshToken: "rt-local",
+							addedAt: 1,
+							lastUsed: 1,
+						},
+					],
+				},
+				vi.fn(async () => {}),
+			),
+		);
+
+		const { CodexMultiAuthSyncCapacityError, previewSyncFromCodexMultiAuth } = await import(
+			"../lib/codex-multi-auth-sync.js"
+		);
+
+		try {
+			await previewSyncFromCodexMultiAuth(process.cwd());
+			throw new Error("Expected previewSyncFromCodexMultiAuth to reject");
+		} catch (error) {
+			expect(error).toBeInstanceOf(CodexMultiAuthSyncCapacityError);
+			const details = (error as InstanceType<typeof CodexMultiAuthSyncCapacityError>).details;
+			expect(details).toMatchObject({
+				accountsPath: globalPath,
+				sourceDedupedTotal: 21,
+				dedupedTotal: 21,
+				needToRemove: 1,
+			});
+			expect(details.suggestedRemovals).toEqual([]);
 		}
 	});
 

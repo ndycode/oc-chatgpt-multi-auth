@@ -300,7 +300,9 @@ export async function promptLoginMode(
 					return { mode: "manage", deleteAccountIndex: action.account.index };
 				}
 				if (accountAction === "set-current") {
-					return { mode: "manage", switchAccountIndex: action.account.index };
+					const index = resolveAccountSourceIndex(action.account);
+					if (index >= 0) return { mode: "manage", switchAccountIndex: index };
+					continue;
 				}
 				if (accountAction === "refresh") {
 					return { mode: "manage", refreshAccountIndex: action.account.index };

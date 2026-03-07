@@ -24,6 +24,7 @@
  */
 
 import { tool } from "@opencode-ai/plugin/tool";
+import { promises as fsPromises } from "node:fs";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
 import {
@@ -211,6 +212,8 @@ import {
  */
 // eslint-disable-next-line @typescript-eslint/require-await
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
+	const ANSI_STYLE_REGEX = new RegExp("\\x1b\\[[0-9;]*m", "g");
+	const ANSI_STYLE_PREFIX_REGEX = new RegExp("^\\x1b\\[[0-9;]*m");
 	initLogger(client);
 	let cachedAccountManager: AccountManager | null = null;
 	let accountManagerPromise: Promise<AccountManager> | null = null;
@@ -1240,7 +1243,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 			const lines: Array<{ line: string; tone: "normal" | "muted" | "success" | "warning" | "danger" | "accent" }> = [];
 			let footer = "Running...";
-			const stripAnsi = (value: string): string => value.replace(/\x1b\[[0-9;]*m/g, "");
+			const stripAnsi = (value: string): string => value.replace(ANSI_STYLE_REGEX, "");
 			const truncateAnsi = (value: string, maxVisibleChars: number): string => {
 				if (maxVisibleChars <= 0) return "";
 				const visible = stripAnsi(value);
@@ -1252,7 +1255,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				let output = "";
 				while (index < value.length && kept < keep) {
 					if (value[index] === "\x1b") {
-						const match = value.slice(index).match(/^\x1b\[[0-9;]*m/);
+						const match = value.slice(index).match(ANSI_STYLE_PREFIX_REGEX);
 						if (match) {
 							output += match[0];
 							index += match[0].length;
@@ -1441,7 +1444,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		} | null => {
 			if (!ui.v2Enabled || !isInteractiveTTY()) return null;
 
-			const stripAnsi = (value: string): string => value.replace(/\x1b\[[0-9;]*m/g, "");
+			const stripAnsi = (value: string): string => value.replace(ANSI_STYLE_REGEX, "");
 			const truncate = (value: string, maxVisibleChars: number): string => {
 				const visible = stripAnsi(value);
 				if (visible.length <= maxVisibleChars) return value;
@@ -1457,7 +1460,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					case "warning":
 						return formatUiBadge(ui, "warning", "warning");
 					case "danger":
-						return formatUiBadge(ui, "rate-limited", "warning");
+						return formatUiBadge(ui, "error", "danger");
 					case "disabled":
 						return formatUiBadge(ui, "disabled", "danger");
 				}
@@ -3253,12 +3256,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 									if (row) {
 										row.detail = detail;
 										row.status =
-											tone === "danger"
-												? "danger"
-												: tone === "warning"
-													? "warning"
-													: row.status === "disabled"
-														? "disabled"
+											row.status === "disabled"
+												? "disabled"
+												: tone === "danger"
+													? "danger"
+													: tone === "warning"
+														? "warning"
 														: index === activeIndex
 															? "current"
 															: "ok";
@@ -3676,6 +3679,30 @@ while (attempted.size < Math.max(1, accountCount)) {
 									return;
 								}
 
+								const createSyncPruneBackup = async (): Promise<{
+									accountsBackupPath: string;
+									flaggedBackupPath: string;
+									restore: () => Promise<void>;
+								}> => {
+									const currentFlaggedStorage = await loadFlaggedAccounts();
+									const accountsBackupPath = createTimestampedBackupPath("codex-sync-prune-backup");
+									const flaggedBackupPath = createTimestampedBackupPath("codex-sync-prune-flagged-backup");
+									await exportAccounts(accountsBackupPath, true);
+									const flaggedSnapshot = { ...currentFlaggedStorage, accounts: currentFlaggedStorage.accounts.map((flagged) => ({ ...flagged })) };
+									await fsPromises.writeFile(flaggedBackupPath, `${JSON.stringify(flaggedSnapshot, null, 2)}\n`, "utf-8");
+									return {
+										accountsBackupPath,
+										flaggedBackupPath,
+										restore: async () => {
+											const accountsRaw = await fsPromises.readFile(accountsBackupPath, "utf-8");
+											await saveAccounts(JSON.parse(accountsRaw) as AccountStorageV3);
+											const flaggedRaw = await fsPromises.readFile(flaggedBackupPath, "utf-8");
+											await saveFlaggedAccounts(JSON.parse(flaggedRaw) as { version: 1; accounts: FlaggedAccountMetadataV1[] });
+											invalidateAccountManagerCache();
+										},
+									};
+								};
+
 								const removeAccountsForSync = async (indexes: number[]): Promise<void> => {
 									const currentStorage =
 										(await loadAccounts()) ??
@@ -3734,6 +3761,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 										});
 								};
 
+								let pruneBackup:
+									| {
+											accountsBackupPath: string;
+											flaggedBackupPath: string;
+											restore: () => Promise<void>;
+									  }
+									| null = null;
 								while (true) {
 									try {
 										const preview = await previewSyncFromCodexMultiAuth(process.cwd());
@@ -3753,11 +3787,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 											`Import ${preview.imported} new account(s) from codex-multi-auth?`,
 										);
 										if (!confirmed) {
+											if (pruneBackup) {
+												await pruneBackup.restore();
+											}
 											console.log("\nSync cancelled.\n");
 											return;
 										}
 
 										const result = await syncFromCodexMultiAuth(process.cwd());
+										pruneBackup = null;
 										invalidateAccountManagerCache();
 										const backupLabel =
 											result.backupStatus === "created"
@@ -3821,13 +3859,22 @@ while (attempted.size < Math.max(1, accountCount)) {
 											`Remove ${indexesToRemove.length} selected account(s) and retry sync?`,
 										);
 										if (!confirmed) {
+											if (pruneBackup) {
+												await pruneBackup.restore();
+											}
 											console.log("Sync cancelled.\n");
 											return;
+										}
+										if (!pruneBackup) {
+											pruneBackup = await createSyncPruneBackup();
 										}
 										await removeAccountsForSync(indexesToRemove);
 										continue;
 									}
 									const message = error instanceof Error ? error.message : String(error);
+									if (pruneBackup) {
+										await pruneBackup.restore();
+									}
 									console.log(`\nSync failed: ${message}\n`);
 										return;
 									}
