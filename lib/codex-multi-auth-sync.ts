@@ -6,6 +6,7 @@ import { logWarn } from "./logger.js";
 import {
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
+	getStoragePath,
 	importAccounts,
 	normalizeAccountStorage,
 	previewImportAccounts,
@@ -893,26 +894,91 @@ function buildCodexMultiAuthOverlapCleanupPlan(existing: AccountStorageV3): {
 	};
 }
 
+function normalizeOverlapCleanupSourceStorage(data: unknown): AccountStorageV3 | null {
+	if (
+		!data ||
+		typeof data !== "object" ||
+		!("version" in data) ||
+		!((data as { version?: unknown }).version === 1 || (data as { version?: unknown }).version === 3) ||
+		!("accounts" in data) ||
+		!Array.isArray((data as { accounts?: unknown }).accounts)
+	) {
+		return null;
+	}
+
+	const record = data as {
+		accounts: unknown[];
+		activeIndex?: unknown;
+		activeIndexByFamily?: unknown;
+	};
+	const accounts = record.accounts.filter((account): account is AccountStorageV3["accounts"][number] => {
+		return (
+			typeof account === "object" &&
+			account !== null &&
+			typeof (account as { refreshToken?: unknown }).refreshToken === "string" &&
+			(account as { refreshToken: string }).refreshToken.trim().length > 0
+		);
+	});
+	const activeIndexValue =
+		typeof record.activeIndex === "number" && Number.isFinite(record.activeIndex)
+			? record.activeIndex
+			: 0;
+	const activeIndex = Math.max(0, Math.min(accounts.length - 1, activeIndexValue));
+	const rawActiveIndexByFamily =
+		record.activeIndexByFamily && typeof record.activeIndexByFamily === "object"
+			? record.activeIndexByFamily
+			: {};
+	const activeIndexByFamily = Object.fromEntries(
+		Object.entries(rawActiveIndexByFamily).flatMap(([family, value]) => {
+			if (typeof value !== "number" || !Number.isFinite(value)) {
+				return [];
+			}
+			return [[family, Math.max(0, Math.min(accounts.length - 1, value))]];
+		}),
+	) as AccountStorageV3["activeIndexByFamily"];
+
+	return {
+		version: 3,
+		accounts,
+		activeIndex: accounts.length === 0 ? 0 : activeIndex,
+		activeIndexByFamily,
+	};
+}
+
+async function loadRawCodexMultiAuthOverlapCleanupStorage(
+	fallback: AccountStorageV3,
+): Promise<AccountStorageV3> {
+	try {
+		const raw = await fs.readFile(getStoragePath(), "utf-8");
+		const parsed = JSON.parse(raw) as unknown;
+		return normalizeOverlapCleanupSourceStorage(parsed) ?? fallback;
+	} catch {
+		return fallback;
+	}
+}
+
 export async function previewCodexMultiAuthSyncedOverlapCleanup(): Promise<CodexMultiAuthCleanupResult> {
-	return withAccountStorageTransaction((current) => {
-		const existing = current ?? {
+	return withAccountStorageTransaction(async (current) => {
+		const fallback = current ?? {
 			version: 3 as const,
 			accounts: [],
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		};
-		return Promise.resolve(buildCodexMultiAuthOverlapCleanupPlan(existing).result);
+		const existing = await loadRawCodexMultiAuthOverlapCleanupStorage(fallback);
+		return buildCodexMultiAuthOverlapCleanupPlan(existing).result;
 	});
 }
 
 export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiAuthCleanupResult> {
 	return withAccountStorageTransaction(async (current, persist) => {
-		const existing = current ?? {
+		const fallback = current ?? {
 			version: 3 as const,
 			accounts: [],
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		};
+		const existing = await loadRawCodexMultiAuthOverlapCleanupStorage(fallback);
 		const plan = buildCodexMultiAuthOverlapCleanupPlan(existing);
 		if (plan.nextStorage) {
 			await persist(plan.nextStorage);

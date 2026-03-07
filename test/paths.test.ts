@@ -5,9 +5,10 @@ import path from "node:path";
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(),
 	readFileSync: vi.fn(),
+	statSync: vi.fn(),
 }));
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import {
 	getConfigDir,
 	getProjectConfigDir,
@@ -21,6 +22,7 @@ import {
 
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
+const mockedStatSync = vi.mocked(statSync);
 
 describe("Storage Paths Module", () => {
 	beforeEach(() => {
@@ -66,20 +68,22 @@ describe("Storage Paths Module", () => {
 		it("returns a shared canonical key for same-repo worktrees before the legacy fallback", () => {
 			const mainWorktree = "C:\\Users\\neil\\DevTools\\oc-chatgpt-multi-auth";
 			const branchWorktree = "C:\\Users\\neil\\DevTools\\oc-chatgpt-multi-auth-sync-worktree";
+			const mainGitPath = `${mainWorktree}\\.git`.toLowerCase();
+			const branchGitPath = `${branchWorktree}\\.git`.toLowerCase();
 			const sharedGitFile = "gitdir: C:/Users/neil/DevTools/oc-chatgpt-multi-auth/.git/worktrees/feature-sync\n";
 			mockedExistsSync.mockImplementation((candidate) => {
 				const normalized = String(candidate).replace(/\//g, "\\").toLowerCase();
-				return (
-					normalized === `${mainWorktree}\\.git`.toLowerCase() ||
-					normalized === `${branchWorktree}\\.git`.toLowerCase()
-				);
+				return normalized === mainGitPath || normalized === branchGitPath;
+			});
+			mockedStatSync.mockImplementation((candidate) => {
+				const normalized = String(candidate).replace(/\//g, "\\").toLowerCase();
+				return {
+					isDirectory: () => normalized === mainGitPath,
+				} as ReturnType<typeof statSync>;
 			});
 			mockedReadFileSync.mockImplementation((candidate) => {
 				const normalized = String(candidate).replace(/\//g, "\\").toLowerCase();
-				if (
-					normalized === `${mainWorktree}\\.git`.toLowerCase() ||
-					normalized === `${branchWorktree}\\.git`.toLowerCase()
-				) {
+				if (normalized === branchGitPath) {
 					return sharedGitFile;
 				}
 				throw new Error(`unexpected read: ${String(candidate)}`);

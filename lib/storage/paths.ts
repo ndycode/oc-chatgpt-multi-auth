@@ -3,7 +3,7 @@
  * Extracted from storage.ts to reduce module size.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -57,6 +57,12 @@ function getCanonicalProjectStorageIdentity(projectPath: string): {
 	}
 
 	try {
+		if (statSync(gitPath).isDirectory()) {
+			return {
+				identityPath: normalizeProjectPath(gitPath),
+				projectNamePath: resolvedProjectPath,
+			};
+		}
 		const gitMetadata = readFileSync(gitPath, "utf-8").trim();
 		const gitDirMatch = /^gitdir:\s*(.+)$/im.exec(gitMetadata);
 		const gitDirValue = gitDirMatch?.[1];

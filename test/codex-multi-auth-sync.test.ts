@@ -14,12 +14,14 @@ vi.mock("node:fs", async () => {
 		...actual,
 		existsSync: vi.fn(),
 		readFileSync: vi.fn(),
+		statSync: vi.fn(),
 	};
 });
 
 vi.mock("../lib/storage.js", () => ({
 	deduplicateAccounts: vi.fn((accounts) => accounts),
 	deduplicateAccountsByEmail: vi.fn((accounts) => accounts),
+	getStoragePath: vi.fn(() => "/tmp/opencode-accounts.json"),
 	previewImportAccounts: vi.fn(async () => ({ imported: 2, skipped: 0, total: 4 })),
 	importAccounts: vi.fn(async () => ({
 		imported: 2,
@@ -334,8 +336,13 @@ describe("codex-multi-auth sync", () => {
 				String(candidate) === branchGitPath
 			);
 		});
+		vi.mocked(fs.statSync).mockImplementation((candidate) => {
+			return {
+				isDirectory: () => String(candidate) === mainGitPath,
+			} as ReturnType<typeof fs.statSync>;
+		});
 		vi.mocked(fs.readFileSync).mockImplementation((candidate) => {
-			if (String(candidate) === mainGitPath || String(candidate) === branchGitPath) {
+			if (String(candidate) === branchGitPath) {
 				return sharedGitFile;
 			}
 			throw new Error(`unexpected read: ${String(candidate)}`);
@@ -749,6 +756,86 @@ describe("codex-multi-auth sync", () => {
 			removed: 1,
 			updated: 0,
 		});
+	});
+
+	it("reads the raw storage file so duplicate tagged rows are removed from disk", async () => {
+		const storageModule = await import("../lib/storage.js");
+		let persisted: AccountStorageV3 | null = null;
+		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
+			handler(
+				{
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "org-sync",
+							organizationId: "org-sync",
+							accountIdSource: "org",
+							accountTags: ["codex-multi-auth-sync"],
+							email: "sync@example.com",
+							refreshToken: "sync-token",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				},
+				vi.fn(async (next) => {
+					persisted = next;
+				}),
+			),
+		);
+		mockSourceStorageFile(
+			"/tmp/opencode-accounts.json",
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [
+					{
+						accountId: "org-sync",
+						accountIdSource: "org",
+						accountTags: ["codex-multi-auth-sync"],
+						email: "sync@example.com",
+						refreshToken: "sync-token",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "org-sync",
+						organizationId: "org-sync",
+						accountIdSource: "org",
+						accountTags: ["codex-multi-auth-sync"],
+						email: "sync@example.com",
+						refreshToken: "sync-token",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+				],
+			}),
+		);
+		vi.mocked(storageModule.normalizeAccountStorage).mockImplementationOnce((value: unknown) => {
+			const record = value as {
+				version: 3;
+				activeIndex: number;
+				activeIndexByFamily: Record<string, number>;
+				accounts: Array<Record<string, unknown>>;
+			};
+			return {
+				...record,
+				accounts: [record.accounts[1]],
+			};
+		});
+
+		const { cleanupCodexMultiAuthSyncedOverlaps } = await import("../lib/codex-multi-auth-sync.js");
+		await expect(cleanupCodexMultiAuthSyncedOverlaps()).resolves.toEqual({
+			before: 2,
+			after: 1,
+			removed: 1,
+			updated: 0,
+		});
+		expect(persisted?.accounts).toHaveLength(1);
+		expect(persisted?.accounts[0]?.organizationId).toBe("org-sync");
 	});
 
 	it("limits overlap cleanup to accounts tagged from codex-multi-auth sync", async () => {
