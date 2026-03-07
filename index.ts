@@ -216,6 +216,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	const ANSI_STYLE_REGEX = new RegExp("\\x1b\\[[0-9;]*m", "g");
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI escape codes
 	const ANSI_STYLE_PREFIX_REGEX = new RegExp("^\\x1b\\[[0-9;]*m");
+	const SCREEN_CONTROL_CHAR_REGEX = new RegExp("[\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]", "g");
+	const sanitizeScreenText = (value: string): string =>
+		value.replace(ANSI_STYLE_REGEX, "").replace(SCREEN_CONTROL_CHAR_REGEX, "").trim();
 	initLogger(client);
 	let cachedAccountManager: AccountManager | null = null;
 	let accountManagerPromise: Promise<AccountManager> | null = null;
@@ -1245,7 +1248,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 			const lines: Array<{ line: string; tone: "normal" | "muted" | "success" | "warning" | "danger" | "accent" }> = [];
 			let footer = "Running...";
-			const stripAnsi = (value: string): string => value.replace(ANSI_STYLE_REGEX, "");
+			const stripAnsi = (value: string): string => sanitizeScreenText(value);
 			const truncateAnsi = (value: string, maxVisibleChars: number): string => {
 				if (maxVisibleChars <= 0) return "";
 				const visible = stripAnsi(value);
@@ -1273,9 +1276,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			const render = () => {
 				const screenLines: string[] = [];
 				const columns = process.stdout.columns ?? 120;
-				screenLines.push(...formatUiHeader(ui, title));
+				screenLines.push(...formatUiHeader(ui, sanitizeScreenText(title)));
 				if (subtitle) {
-					screenLines.push(paintUiText(ui, subtitle, "muted"));
+					screenLines.push(paintUiText(ui, sanitizeScreenText(subtitle), "muted"));
 				}
 				screenLines.push("");
 				screenLines.push(
@@ -1284,21 +1287,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					),
 				);
 				screenLines.push("");
-				screenLines.push(paintUiText(ui, footer, "muted"));
+				screenLines.push(paintUiText(ui, sanitizeScreenText(footer), "muted"));
 				process.stdout.write(ANSI.clearScreen + ANSI.moveTo(1, 1) + screenLines.join("\n"));
 			};
 
 			render();
 			return {
 				push: (line: string, tone = "normal") => {
-					lines.push({ line, tone });
+					lines.push({ line: sanitizeScreenText(line), tone });
 					render();
 				},
 				finish: async (summaryLines?: Array<{ line: string; tone?: "normal" | "muted" | "success" | "warning" | "danger" | "accent" }>) => {
 					if (summaryLines && summaryLines.length > 0) {
 						lines.push({ line: "", tone: "normal" });
 						for (const entry of summaryLines) {
-							lines.push({ line: entry.line, tone: entry.tone ?? "normal" });
+							lines.push({ line: sanitizeScreenText(entry.line), tone: entry.tone ?? "normal" });
 						}
 					}
 					footer = "Done.";
@@ -1446,7 +1449,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		} | null => {
 			if (!ui.v2Enabled || !isInteractiveTTY()) return null;
 
-			const stripAnsi = (value: string): string => value.replace(ANSI_STYLE_REGEX, "");
+			const stripAnsi = (value: string): string => sanitizeScreenText(value);
 			const truncate = (value: string, maxVisibleChars: number): string => {
 				const visible = stripAnsi(value);
 				if (visible.length <= maxVisibleChars) return value;
@@ -1474,7 +1477,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const spinner = spinnerFrames[Math.floor(Date.now() / 150) % spinnerFrames.length] ?? "-";
 				const lines: string[] = [];
 				lines.push(...formatUiHeader(ui, "Accounts Dashboard"));
-				lines.push(paintUiText(ui, `${spinner} ${progressText}`, "muted"));
+				lines.push(paintUiText(ui, sanitizeScreenText(`${spinner} ${progressText}`), "muted"));
 				lines.push("");
 				lines.push(paintUiText(ui, "Quick Actions", "muted"));
 				lines.push(` ${paintUiText(ui, "o", "muted")} ${paintUiText(ui, "Add New Account", "success")}`);
@@ -1490,14 +1493,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				lines.push(paintUiText(ui, "Saved Accounts", "muted"));
 				for (const row of rows) {
 					const marker = row.index === selectedIndex ? ">" : "o";
-					const primary = `${row.index + 1}. ${row.email ?? `Account ${row.index + 1}`}`;
+					const primary = `${row.index + 1}. ${sanitizeScreenText(row.email ?? `Account ${row.index + 1}`)}`;
 					lines.push(` ${paintUiText(ui, marker, row.index === selectedIndex ? "accent" : "muted")} ${truncate(`${paintUiText(ui, primary, row.index === selectedIndex ? "accent" : "heading")} ${statusBadgeForRow(row)}`, Math.max(20, cols - 4))}`);
 					if (row.index === selectedIndex && row.detail) {
-						lines.push(`   ${truncate(paintUiText(ui, `Limits: ${row.detail}`, "muted"), Math.max(20, cols - 6))}`);
+						lines.push(`   ${truncate(paintUiText(ui, `Limits: ${sanitizeScreenText(row.detail)}`, "muted"), Math.max(20, cols - 6))}`);
 					}
 				}
 				lines.push("");
-				lines.push(paintUiText(ui, footer, "muted"));
+				lines.push(paintUiText(ui, sanitizeScreenText(footer), "muted"));
 				process.stdout.write(ANSI.clearScreen + ANSI.moveTo(1, 1) + lines.join("\n"));
 			};
 
@@ -3691,7 +3694,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 									const flaggedBackupPath = createTimestampedBackupPath("codex-sync-prune-flagged-backup");
 									await exportAccounts(accountsBackupPath, true);
 									const flaggedSnapshot = { ...currentFlaggedStorage, accounts: currentFlaggedStorage.accounts.map((flagged) => ({ ...flagged })) };
-									await fsPromises.writeFile(flaggedBackupPath, `${JSON.stringify(flaggedSnapshot, null, 2)}\n`, "utf-8");
+									await fsPromises.writeFile(flaggedBackupPath, `${JSON.stringify(flaggedSnapshot, null, 2)}\n`, {
+										encoding: "utf-8",
+										mode: 0o600,
+										flag: "wx",
+									});
 									return {
 										accountsBackupPath,
 										flaggedBackupPath,

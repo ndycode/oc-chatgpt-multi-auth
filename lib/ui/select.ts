@@ -69,13 +69,37 @@ function writeTuiAudit(event: Record<string, unknown>): void {
 		const logPath = join(logDir, "codex-tui-audit.log");
 		appendFileSync(
 			logPath,
-			`${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`,
+			`${JSON.stringify(sanitizeAuditValue("event", { ts: new Date().toISOString(), ...event }))}\n`,
 			{ encoding: "utf8", mode: 0o600 },
 		);
 		chmodSync(logPath, 0o600);
 	} catch {
 		// best effort audit logging only
 	}
+}
+
+function sanitizeAuditValue(key: string, value: unknown): unknown {
+	if (typeof value === "string") {
+		if (["label", "message", "utf8", "bytesHex", "token", "normalizedInput", "pending"].includes(key)) {
+			return `[redacted:${value.length}]`;
+		}
+		if (value.includes("@")) {
+			return "[redacted-email]";
+		}
+		return value;
+	}
+	if (Array.isArray(value)) {
+		return value.map((entry) => sanitizeAuditValue(key, entry));
+	}
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+				entryKey,
+				sanitizeAuditValue(entryKey, entryValue),
+			]),
+		);
+	}
+	return value;
 }
 
 function stripAnsi(input: string): string {
@@ -455,7 +479,8 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		hasRendered = true;
 	};
 
-	return new Promise((resolve) => {
+	return new Promise((resolve, reject) => {
+		const rejectPromise = reject;
 		const wasRaw = stdin.isRaw ?? false;
 		let refreshTimer: ReturnType<typeof setInterval> | null = null;
 		let pendingEscapeSequence: PendingInputSequence | null = null;
@@ -496,6 +521,12 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 			});
 			cleanup();
 			resolve(value);
+		};
+
+		const fail = (error: unknown): boolean => {
+			cleanup();
+			rejectPromise(error);
+			return true;
 		};
 
 		const onSignal = () => finish(null);
@@ -575,20 +606,32 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 				case "up":
 					writeTuiAudit({ type: "key", message: options.message, action: "up", cursor });
 					cursor = findNextSelectable(cursor, -1);
-					notifyCursorChange();
-					render();
+					try {
+						notifyCursorChange();
+						render();
+					} catch (error) {
+						return fail(error);
+					}
 					return false;
 				case "down":
 					writeTuiAudit({ type: "key", message: options.message, action: "down", cursor });
 					cursor = findNextSelectable(cursor, 1);
-					notifyCursorChange();
-					render();
+					try {
+						notifyCursorChange();
+						render();
+					} catch (error) {
+						return fail(error);
+					}
 					return false;
 				case "home":
 					writeTuiAudit({ type: "key", message: options.message, action: "home", cursor });
 					cursor = items.findIndex(isSelectable);
-					notifyCursorChange();
-					render();
+					try {
+						notifyCursorChange();
+						render();
+					} catch (error) {
+						return fail(error);
+					}
 					return false;
 				case "end": {
 					writeTuiAudit({ type: "key", message: options.message, action: "end", cursor });
@@ -599,8 +642,12 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 							break;
 						}
 					}
-					notifyCursorChange();
-					render();
+					try {
+						notifyCursorChange();
+						render();
+					} catch (error) {
+						return fail(error);
+					}
 					return false;
 				}
 				case "enter":
@@ -635,17 +682,26 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 							hotkey,
 						});
 						rerenderRequested = false;
-						const result = options.onInput(hotkey, {
-							cursor,
-							items,
-							requestRerender,
-						});
+						let result: T | null | undefined;
+						try {
+							result = options.onInput(hotkey, {
+								cursor,
+								items,
+								requestRerender,
+							});
+						} catch (error) {
+							return fail(error);
+						}
 						if (result !== undefined) {
 							finish(result);
 							return true;
 						}
 						if (rerenderRequested) {
-							render();
+							try {
+								render();
+							} catch (error) {
+								return fail(error);
+							}
 						}
 					}
 					if ((hotkey === "q" || hotkey === "Q") && options.allowEscape !== false) {
@@ -682,15 +738,24 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		writeTuiAudit({
 			type: "open",
 			message: options.message,
-			subtitle: options.dynamicSubtitle ? options.dynamicSubtitle() : options.subtitle,
+			subtitle: options.subtitle,
 			itemCount: items.length,
 		});
-		notifyCursorChange();
-		render();
+		try {
+			notifyCursorChange();
+			render();
+		} catch (error) {
+			fail(error);
+			return;
+		}
 		if (options.dynamicSubtitle && (options.refreshIntervalMs ?? 0) > 0) {
 			const intervalMs = Math.max(80, Math.round(options.refreshIntervalMs ?? 0));
 			refreshTimer = setInterval(() => {
-				render();
+				try {
+					render();
+				} catch (error) {
+					fail(error);
+				}
 			}, intervalMs);
 		}
 		stdin.on("data", onKey);
