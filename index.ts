@@ -157,6 +157,7 @@ import { buildTableHeader, buildTableRow, type TableOptions } from "./lib/table-
 import { setUiRuntimeOptions, type UiRuntimeOptions } from "./lib/ui/runtime.js";
 import { paintUiText, formatUiBadge, formatUiHeader, formatUiItem, formatUiKeyValue, formatUiSection } from "./lib/ui/format.js";
 import { confirm } from "./lib/ui/confirm.js";
+import { ANSI } from "./lib/ui/ansi.js";
 import {
 	buildBeginnerChecklist,
 	buildBeginnerDoctorFindings,
@@ -1235,10 +1236,42 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			push: (line: string, tone?: "normal" | "muted" | "success" | "warning" | "danger" | "accent") => void;
 			finish: (summaryLines?: Array<{ line: string; tone?: "normal" | "muted" | "success" | "warning" | "danger" | "accent" }>) => Promise<void>;
 		} | null => {
-			void ui;
-			void title;
-			void subtitle;
-			return null;
+			if (!ui.v2Enabled || !supportsInteractiveMenus()) {
+				return null;
+			}
+
+			let initialized = false;
+			const ensureHeader = () => {
+				if (initialized) return;
+				process.stdout.write(ANSI.clearScreen + ANSI.moveTo(1, 1));
+				for (const line of formatUiHeader(ui, title)) {
+					console.log(line);
+				}
+				if (subtitle) {
+					console.log("");
+					console.log(paintUiText(ui, subtitle, "muted"));
+				}
+				console.log("");
+				initialized = true;
+			};
+
+			ensureHeader();
+			return {
+				push: (line: string, tone = "normal") => {
+					ensureHeader();
+					console.log(paintUiText(ui, line, tone));
+				},
+				finish: (summaryLines) => {
+					ensureHeader();
+					if (summaryLines && summaryLines.length > 0) {
+						console.log("");
+						for (const entry of summaryLines) {
+							console.log(paintUiText(ui, entry.line, entry.tone ?? "normal"));
+						}
+					}
+					return Promise.resolve();
+				},
+			};
 		};
 
 		const getStatusMarker = (
@@ -1293,29 +1326,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 
 			return `Account ${index + 1} (${details.join(", ")})`;
-		};
-
-		type CheckDashboardRow = {
-			index: number;
-			email?: string;
-			status: "current" | "ok" | "warning" | "danger" | "disabled";
-			detail?: string;
-		};
-
-		const createInlineCheckDashboardScreen = (
-			ui: UiRuntimeOptions,
-			progressLabel: string,
-			rows: CheckDashboardRow[],
-			selectedIndex: number,
-		): {
-			render: (progressText: string, footer?: string) => void;
-			finish: (progressText: string, footer?: string) => Promise<void>;
-		} | null => {
-			void ui;
-			void progressLabel;
-			void rows;
-			void selectedIndex;
-			return null;
 		};
 
 		const normalizeAccountTags = (raw: string): string[] => {
@@ -3044,49 +3054,40 @@ while (attempted.size < Math.max(1, accountCount)) {
 											: {},
 									}
 									: { version: 3 as const, accounts: [], activeIndex: 0, activeIndexByFamily: {} };
-								const activeIndex = resolveActiveIndex(workingStorage, "codex");
-								const dashboardRows: CheckDashboardRow[] = workingStorage.accounts.map((account, index) => ({
-									index,
-									email: account.email,
-									status: index === activeIndex ? "current" : account.enabled === false ? "disabled" : "ok",
-									detail: undefined,
-								}));
-								const dashboardScreen = createInlineCheckDashboardScreen(
+								const screen = createOperationScreen(
 									ui,
-									deepProbe ? "Refreshing account limits..." : "Fetching account limits...",
-									dashboardRows,
-									activeIndex,
+									"Health check",
+									deepProbe
+										? `Checking ${workingStorage.accounts.length} account(s) with full refresh + live validation`
+										: `Checking ${workingStorage.accounts.length} account(s) with quota validation`,
 								);
 								const emit = (
 									index: number,
 									detail: string,
 									tone: "normal" | "muted" | "success" | "warning" | "danger" | "accent" = "normal",
 								) => {
-									const row = dashboardRows[index];
-									if (row) {
-										row.detail = detail;
-										row.status =
-											row.status === "disabled"
-												? "disabled"
-												: tone === "danger"
-													? "danger"
-													: tone === "warning"
-														? "warning"
-														: index === activeIndex
-															? "current"
-															: "ok";
-									}
-									if (dashboardScreen) {
-										dashboardScreen.render(
-											`${deepProbe ? "Refreshing" : "Fetching"} account limits... [${Math.min(index + 1, workingStorage.accounts.length)}/${workingStorage.accounts.length}]`,
-										);
+									const account = workingStorage.accounts[index];
+									const label = formatCommandAccountLabel(account, index);
+									const prefix =
+										tone === "danger"
+											? getStatusMarker(ui, "error")
+											: tone === "warning"
+												? getStatusMarker(ui, "warning")
+												: getStatusMarker(ui, "ok");
+									const line = `${prefix} ${label} | ${detail}`;
+									if (screen) {
+										screen.push(line, tone);
 										return;
 									}
-									console.log(detail);
+									console.log(line);
 								};
 
 								if (workingStorage.accounts.length === 0) {
-									console.log("No accounts to check.");
+									if (screen) {
+										screen.push("No accounts to check.", "warning");
+									} else {
+										console.log("No accounts to check.");
+									}
 									return;
 								}
 
@@ -3098,9 +3099,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 								let ok = 0;
 								let disabled = 0;
 								let errors = 0;
-								dashboardScreen?.render(
-									`${deepProbe ? "Refreshing" : "Fetching"} account limits... [0/${workingStorage.accounts.length}]`,
-								);
 
 								for (let i = 0; i < total; i += 1) {
 									const account = workingStorage.accounts[i];
@@ -3322,11 +3320,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 								if (removeFromActive.size > 0) {
 									summaryLines.push({ line: `Moved ${removeFromActive.size} account(s) to flagged pool (invalid refresh token).`, tone: "warning" as const });
 								}
-								if (dashboardScreen) {
-									await dashboardScreen.finish(
-										`${deepProbe ? "Refreshing" : "Fetching"} account limits... [${workingStorage.accounts.length}/${workingStorage.accounts.length}]`,
-										summaryLines.map((entry) => entry.line).join(" | "),
-									);
+								if (screen) {
+									await screen.finish(summaryLines);
 									return;
 								}
 								console.log("");
