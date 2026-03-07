@@ -223,7 +223,7 @@ async function promptSettingsModeFallback(
 	while (true) {
 		const syncState = syncFromCodexMultiAuthEnabled ? "enabled" : "disabled";
 		const answer = await rl.question(
-			`(t) toggle sync [${syncState}], (i) sync now, (c) cleanup overlaps, (d) clean duplicate emails, (b) back [t/i/c/d/b]: `,
+			`(t) toggle sync [${syncState}], (i) sync now, (c) cleanup overlaps, (d) clean legacy duplicate emails, (b) back [t/i/c/d/b]: `,
 		);
 		const normalized = answer.trim().toLowerCase();
 		if (normalized === "t" || normalized === "toggle") {

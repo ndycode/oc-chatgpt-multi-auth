@@ -4,20 +4,23 @@ import path from "node:path";
 
 vi.mock("node:fs", () => ({
 	existsSync: vi.fn(),
+	readFileSync: vi.fn(),
 }));
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
 	getConfigDir,
 	getProjectConfigDir,
 	getProjectGlobalConfigDir,
 	getProjectStorageKey,
+	getProjectStorageKeyCandidates,
 	isProjectDirectory,
 	findProjectRoot,
 	resolvePath,
 } from "../lib/storage/paths.js";
 
 const mockedExistsSync = vi.mocked(existsSync);
+const mockedReadFileSync = vi.mocked(readFileSync);
 
 describe("Storage Paths Module", () => {
 	beforeEach(() => {
@@ -56,6 +59,37 @@ describe("Storage Paths Module", () => {
 			const second = getProjectStorageKey(projectPath);
 			expect(first).toBe(second);
 			expect(first).toMatch(/^myproject-[a-f0-9]{12}$/);
+		});
+	});
+
+	describe("getProjectStorageKeyCandidates", () => {
+		it("returns a shared canonical key for same-repo worktrees before the legacy fallback", () => {
+			const mainWorktree = "C:\\Users\\neil\\DevTools\\oc-chatgpt-multi-auth";
+			const branchWorktree = "C:\\Users\\neil\\DevTools\\oc-chatgpt-multi-auth-sync-worktree";
+			const sharedGitFile = "gitdir: C:/Users/neil/DevTools/oc-chatgpt-multi-auth/.git/worktrees/feature-sync\n";
+			mockedExistsSync.mockImplementation((candidate) => {
+				const normalized = String(candidate).replace(/\//g, "\\").toLowerCase();
+				return (
+					normalized === `${mainWorktree}\\.git`.toLowerCase() ||
+					normalized === `${branchWorktree}\\.git`.toLowerCase()
+				);
+			});
+			mockedReadFileSync.mockImplementation((candidate) => {
+				const normalized = String(candidate).replace(/\//g, "\\").toLowerCase();
+				if (
+					normalized === `${mainWorktree}\\.git`.toLowerCase() ||
+					normalized === `${branchWorktree}\\.git`.toLowerCase()
+				) {
+					return sharedGitFile;
+				}
+				throw new Error(`unexpected read: ${String(candidate)}`);
+			});
+
+			const mainCandidates = getProjectStorageKeyCandidates(mainWorktree);
+			const branchCandidates = getProjectStorageKeyCandidates(branchWorktree);
+
+			expect(mainCandidates[0]).toBe(branchCandidates[0]);
+			expect(mainCandidates[1]).not.toBe(branchCandidates[1]);
 		});
 	});
 

@@ -440,6 +440,12 @@ function deduplicateAccountsByEmailForMaintenance<T extends AccountLike & { emai
     const account = working[i];
     if (!account) continue;
 
+    const organizationId = account.organizationId?.trim();
+    if (organizationId) continue;
+
+    const accountId = account.accountId?.trim();
+    if (accountId) continue;
+
     const email = normalizeEmailIdentity(account.email);
     if (!email) continue;
 
@@ -467,6 +473,147 @@ function deduplicateAccountsByEmailForMaintenance<T extends AccountLike & { emai
     if (account) deduplicated.push(account);
   }
   return deduplicated;
+}
+
+function buildDuplicateEmailCleanupPlan(existing: AccountStorageV3): {
+  result: CleanupDuplicateEmailAccountsResult;
+  nextStorage?: AccountStorageV3;
+} {
+  const before = existing.accounts.length;
+  const existingActiveIndex = clampIndex(existing.activeIndex, existing.accounts.length);
+  const existingActiveKeys = extractActiveKeys(existing.accounts, existingActiveIndex);
+  const existingActiveEmail = extractActiveEmail(existing.accounts, existingActiveIndex);
+  const deduplicatedAccounts = deduplicateAccountsByEmailForMaintenance(existing.accounts);
+  const after = deduplicatedAccounts.length;
+  const removed = Math.max(0, before - after);
+
+  if (removed === 0) {
+    return {
+      result: {
+        before,
+        after,
+        removed,
+      },
+    };
+  }
+
+  const mappedActiveIndex = (() => {
+    if (deduplicatedAccounts.length === 0) return 0;
+    if (existingActiveKeys.length > 0) {
+      const byIdentity = findAccountIndexByIdentityKeys(deduplicatedAccounts, existingActiveKeys);
+      if (byIdentity >= 0) return byIdentity;
+    }
+    const byEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, existingActiveEmail);
+    if (byEmail >= 0) return byEmail;
+    return clampIndex(existingActiveIndex, deduplicatedAccounts.length);
+  })();
+
+  const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+  const rawFamilyIndices = existing.activeIndexByFamily ?? {};
+
+  for (const family of MODEL_FAMILIES) {
+    const rawIndexValue = rawFamilyIndices[family];
+    const rawIndex =
+      typeof rawIndexValue === "number" && Number.isFinite(rawIndexValue)
+        ? rawIndexValue
+        : existingActiveIndex;
+    const clampedRawIndex = clampIndex(rawIndex, existing.accounts.length);
+    const familyKeys = extractActiveKeys(existing.accounts, clampedRawIndex);
+    const familyEmail = extractActiveEmail(existing.accounts, clampedRawIndex);
+
+    let mappedIndex = mappedActiveIndex;
+    if (familyKeys.length > 0) {
+      const byIdentity = findAccountIndexByIdentityKeys(deduplicatedAccounts, familyKeys);
+      if (byIdentity >= 0) {
+        mappedIndex = byIdentity;
+        activeIndexByFamily[family] = mappedIndex;
+        continue;
+      }
+    }
+
+    const byEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, familyEmail);
+    if (byEmail >= 0) {
+      mappedIndex = byEmail;
+    }
+    activeIndexByFamily[family] = mappedIndex;
+  }
+
+  return {
+    result: {
+      before,
+      after,
+      removed,
+    },
+    nextStorage: {
+      version: 3,
+      accounts: deduplicatedAccounts,
+      activeIndex: mappedActiveIndex,
+      activeIndexByFamily,
+    },
+  };
+}
+
+function normalizeDuplicateCleanupSourceStorage(data: unknown): AccountStorageV3 | null {
+  if (!isRecord(data) || (data.version !== 1 && data.version !== 3) || !Array.isArray(data.accounts)) {
+    return null;
+  }
+
+  const accounts = data.accounts
+    .filter(
+      (account): account is AccountStorageV3["accounts"][number] =>
+        isRecord(account) &&
+        typeof account.refreshToken === "string" &&
+        account.refreshToken.trim().length > 0,
+    )
+    .map((account) => ({ ...account }));
+  const activeIndexValue =
+    typeof data.activeIndex === "number" && Number.isFinite(data.activeIndex)
+      ? data.activeIndex
+      : 0;
+  const activeIndex = clampIndex(activeIndexValue, accounts.length);
+  const rawActiveIndexByFamily = isRecord(data.activeIndexByFamily) ? data.activeIndexByFamily : {};
+  const activeIndexByFamily = Object.fromEntries(
+    MODEL_FAMILIES.map((family) => {
+      const rawValue = rawActiveIndexByFamily[family];
+      const nextIndex =
+        typeof rawValue === "number" && Number.isFinite(rawValue)
+          ? clampIndex(rawValue, accounts.length)
+          : activeIndex;
+      return [family, nextIndex];
+    }),
+  ) as AccountStorageV3["activeIndexByFamily"];
+
+  return {
+    version: 3,
+    accounts,
+    activeIndex,
+    activeIndexByFamily,
+  };
+}
+
+async function loadDuplicateCleanupSourceStorage(): Promise<AccountStorageV3> {
+  const fallback = await loadAccountsInternal(null);
+  try {
+    const rawContent = await fs.readFile(getStoragePath(), "utf-8");
+    const rawData = JSON.parse(rawContent) as unknown;
+    return normalizeDuplicateCleanupSourceStorage(rawData) ?? fallback ?? {
+      version: 3,
+      accounts: [],
+      activeIndex: 0,
+      activeIndexByFamily: {},
+    };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      log.warn("Failed to read raw storage snapshot for duplicate cleanup", { error: String(error) });
+    }
+    return fallback ?? {
+      version: 3,
+      accounts: [],
+      activeIndex: 0,
+      activeIndexByFamily: {},
+    };
+  }
 }
 
 /**
@@ -987,85 +1134,21 @@ export async function clearAccounts(): Promise<void> {
   });
 }
 
+export async function previewDuplicateEmailCleanup(): Promise<CleanupDuplicateEmailAccountsResult> {
+  return withStorageLock(async () => {
+    const existing = await loadDuplicateCleanupSourceStorage();
+    return buildDuplicateEmailCleanupPlan(existing).result;
+  });
+}
+
 export async function cleanupDuplicateEmailAccounts(): Promise<CleanupDuplicateEmailAccountsResult> {
-  return withAccountStorageTransaction(async (current, persist) => {
-    const existing: AccountStorageV3 =
-      current ??
-      ({
-        version: 3,
-        accounts: [],
-        activeIndex: 0,
-        activeIndexByFamily: {},
-      } satisfies AccountStorageV3);
-    const before = existing.accounts.length;
-    const existingActiveIndex = clampIndex(existing.activeIndex, existing.accounts.length);
-    const existingActiveKeys = extractActiveKeys(existing.accounts, existingActiveIndex);
-    const existingActiveEmail = extractActiveEmail(existing.accounts, existingActiveIndex);
-    const deduplicatedAccounts = deduplicateAccountsByEmailForMaintenance(existing.accounts);
-    const after = deduplicatedAccounts.length;
-    const removed = Math.max(0, before - after);
-
-    if (removed === 0) {
-      return {
-        before,
-        after,
-        removed,
-      };
+  return withStorageLock(async () => {
+    const existing = await loadDuplicateCleanupSourceStorage();
+    const plan = buildDuplicateEmailCleanupPlan(existing);
+    if (plan.nextStorage) {
+      await saveAccountsUnlocked(plan.nextStorage);
     }
-
-    const mappedActiveIndex = (() => {
-      if (deduplicatedAccounts.length === 0) return 0;
-      if (existingActiveKeys.length > 0) {
-        const byIdentity = findAccountIndexByIdentityKeys(deduplicatedAccounts, existingActiveKeys);
-        if (byIdentity >= 0) return byIdentity;
-      }
-      const byEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, existingActiveEmail);
-      if (byEmail >= 0) return byEmail;
-      return clampIndex(existingActiveIndex, deduplicatedAccounts.length);
-    })();
-
-    const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
-    const rawFamilyIndices = existing.activeIndexByFamily ?? {};
-
-    for (const family of MODEL_FAMILIES) {
-      const rawIndexValue = rawFamilyIndices[family];
-      const rawIndex =
-        typeof rawIndexValue === "number" && Number.isFinite(rawIndexValue)
-          ? rawIndexValue
-          : existingActiveIndex;
-      const clampedRawIndex = clampIndex(rawIndex, existing.accounts.length);
-      const familyKeys = extractActiveKeys(existing.accounts, clampedRawIndex);
-      const familyEmail = extractActiveEmail(existing.accounts, clampedRawIndex);
-
-      let mappedIndex = mappedActiveIndex;
-      if (familyKeys.length > 0) {
-        const byIdentity = findAccountIndexByIdentityKeys(deduplicatedAccounts, familyKeys);
-        if (byIdentity >= 0) {
-          mappedIndex = byIdentity;
-          activeIndexByFamily[family] = mappedIndex;
-          continue;
-        }
-      }
-
-      const byEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, familyEmail);
-      if (byEmail >= 0) {
-        mappedIndex = byEmail;
-      }
-      activeIndexByFamily[family] = mappedIndex;
-    }
-
-    await persist({
-      version: 3,
-      accounts: deduplicatedAccounts,
-      activeIndex: mappedActiveIndex,
-      activeIndexByFamily,
-    });
-
-    return {
-      before,
-      after,
-      removed,
-    };
+    return plan.result;
   });
 }
 

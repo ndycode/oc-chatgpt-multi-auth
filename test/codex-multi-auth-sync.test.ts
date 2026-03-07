@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
-import { findProjectRoot, getProjectStorageKey } from "../lib/storage/paths.js";
+import { findProjectRoot, getProjectStorageKey, getProjectStorageKeyCandidates } from "../lib/storage/paths.js";
 
 vi.mock("../lib/logger.js", () => ({
 	logWarn: vi.fn(),
@@ -315,6 +315,41 @@ describe("codex-multi-auth sync", () => {
 		} finally {
 			rmSpy.mockRestore();
 		}
+	});
+
+	it("finds the project-scoped codex-multi-auth source across same-repo worktrees", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		const mainWorktree = "C:\\Users\\neil\\DevTools\\oc-chatgpt-multi-auth";
+		const branchWorktree = "C:\\Users\\neil\\DevTools\\oc-chatgpt-multi-auth-sync-worktree";
+		const sharedGitFile = "gitdir: C:/Users/neil/DevTools/oc-chatgpt-multi-auth/.git/worktrees/feature-sync\n";
+		const mainGitPath = join(mainWorktree, ".git");
+		const branchGitPath = join(branchWorktree, ".git");
+		let projectPath = "";
+
+		mockExistsSync.mockImplementation((candidate) => {
+			return (
+				String(candidate) === projectPath ||
+				String(candidate) === mainGitPath ||
+				String(candidate) === branchGitPath
+			);
+		});
+		vi.mocked(fs.readFileSync).mockImplementation((candidate) => {
+			if (String(candidate) === mainGitPath || String(candidate) === branchGitPath) {
+				return sharedGitFile;
+			}
+			throw new Error(`unexpected read: ${String(candidate)}`);
+		});
+		const sharedProjectKey = getProjectStorageKeyCandidates(mainWorktree)[0];
+		projectPath = join(rootDir, "projects", sharedProjectKey ?? "missing", "openai-codex-accounts.json");
+
+		const { resolveCodexMultiAuthAccountsSource } = await import("../lib/codex-multi-auth-sync.js");
+		const resolved = resolveCodexMultiAuthAccountsSource(branchWorktree);
+		expect(resolved).toEqual({
+			rootDir,
+			accountsPath: projectPath,
+			scope: "project",
+		});
 	});
 
 	it("fails preview when secure temp cleanup leaves sync data on disk", async () => {
@@ -879,6 +914,39 @@ describe("codex-multi-auth sync", () => {
 			total: 4,
 			skipped: 0,
 		});
+	});
+
+	it("returns sync results even if temporary import cleanup fails after apply", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		const globalPath = join(rootDir, "openai-codex-accounts.json");
+		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+		mockSourceStorageFile(
+			globalPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [{ refreshToken: "sync-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+		);
+		const rmSpy = vi.spyOn(fs.promises, "rm").mockRejectedValueOnce(new Error("rm failed"));
+		const loggerModule = await import("../lib/logger.js");
+		try {
+			const { syncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+
+			await expect(syncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+				imported: 2,
+				skipped: 0,
+				total: 4,
+				backupStatus: "created",
+			});
+			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to remove temporary codex sync directory"),
+			);
+		} finally {
+			rmSpy.mockRestore();
+		}
 	});
 
 	it("does not block source-only imports above the old cap when limit is unlimited", async () => {

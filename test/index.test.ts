@@ -197,6 +197,12 @@ vi.mock("../lib/codex-multi-auth-sync.js", () => ({
 		skipped: 0,
 		total: 4,
 	})),
+	previewCodexMultiAuthSyncedOverlapCleanup: vi.fn(async () => ({
+		before: 0,
+		after: 0,
+		removed: 0,
+		updated: 0,
+	})),
 	syncFromCodexMultiAuth: vi.fn(async () => ({
 		rootDir: "/tmp/codex-root",
 		accountsPath: "/tmp/codex-root/openai-codex-accounts.json",
@@ -287,6 +293,11 @@ vi.mock("../lib/storage.js", () => ({
 		},
 	),
 	cleanupDuplicateEmailAccounts: vi.fn(async () => ({
+		before: 0,
+		after: 0,
+		removed: 0,
+	})),
+	previewDuplicateEmailCleanup: vi.fn(async () => ({
 		before: 0,
 		after: 0,
 		removed: 0,
@@ -2725,23 +2736,18 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts[0]?.email).toBe("keep@example.com");
 	});
 
-	it("runs duplicate email cleanup from maintenance settings", async () => {
+	it("runs legacy duplicate email cleanup from maintenance settings with confirmation and backup", async () => {
 		const cliModule = await import("../lib/cli.js");
 		const storageModule = await import("../lib/storage.js");
+		const confirmModule = await import("../lib/ui/confirm.js");
 
 		mockStorage.accounts = [
 			{
-				accountId: "org-older",
-				organizationId: "org-older",
-				accountIdSource: "org",
 				email: "shared@example.com",
 				refreshToken: "refresh-older",
 				lastUsed: 1,
 			},
 			{
-				accountId: "org-newer",
-				organizationId: "org-newer",
-				accountIdSource: "org",
 				email: "shared@example.com",
 				refreshToken: "refresh-newer",
 				lastUsed: 2,
@@ -2753,6 +2759,12 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		vi.mocked(cliModule.promptLoginMode)
 			.mockResolvedValueOnce({ mode: "maintenance-clean-duplicate-emails" })
 			.mockResolvedValueOnce({ mode: "cancel" });
+		vi.mocked(storageModule.previewDuplicateEmailCleanup).mockResolvedValueOnce({
+			before: 2,
+			after: 1,
+			removed: 1,
+		});
+		vi.mocked(confirmModule.confirm).mockResolvedValueOnce(true);
 
 		vi.mocked(storageModule.cleanupDuplicateEmailAccounts).mockImplementationOnce(async () => {
 			mockStorage.accounts = [mockStorage.accounts[1]].filter(Boolean) as typeof mockStorage.accounts;
@@ -2774,9 +2786,88 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const authResult = await autoMethod.authorize();
 		expect(authResult.instructions).toBe("Authentication cancelled");
+		expect(vi.mocked(storageModule.previewDuplicateEmailCleanup)).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(confirmModule.confirm)).toHaveBeenCalledWith(
+			"Create a backup and remove 1 legacy duplicate-email account(s)?",
+		);
+		expect(vi.mocked(storageModule.createTimestampedBackupPath)).toHaveBeenCalledWith(
+			"codex-maintenance-duplicate-email-backup",
+		);
+		expect(vi.mocked(storageModule.exportAccounts)).toHaveBeenCalledWith(
+			"/tmp/codex-maintenance-duplicate-email-backup-20260101-000000.json",
+			true,
+		);
 		expect(vi.mocked(storageModule.cleanupDuplicateEmailAccounts)).toHaveBeenCalledTimes(1);
 		expect(mockStorage.accounts).toHaveLength(1);
-		expect(mockStorage.accounts[0]?.accountId).toBe("org-newer");
+		expect(mockStorage.accounts[0]?.refreshToken).toBe("refresh-newer");
+	});
+
+	it("runs synced overlap cleanup from maintenance settings with confirmation and backup", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+		const syncModule = await import("../lib/codex-multi-auth-sync.js");
+		const confirmModule = await import("../lib/ui/confirm.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "org-local",
+				organizationId: "org-local",
+				accountIdSource: "org",
+				email: "local@example.com",
+				refreshToken: "refresh-local",
+			},
+			{
+				accountId: "org-sync",
+				organizationId: "org-sync",
+				accountIdSource: "org",
+				email: "sync@example.com",
+				refreshToken: "refresh-sync",
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "experimental-cleanup-overlaps" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		vi.mocked(syncModule.previewCodexMultiAuthSyncedOverlapCleanup).mockResolvedValueOnce({
+			before: 2,
+			after: 1,
+			removed: 1,
+			updated: 0,
+		});
+		vi.mocked(confirmModule.confirm).mockResolvedValueOnce(true);
+		vi.mocked(syncModule.cleanupCodexMultiAuthSyncedOverlaps).mockImplementationOnce(async () => {
+			mockStorage.accounts = [mockStorage.accounts[0]].filter(Boolean) as typeof mockStorage.accounts;
+			return {
+				before: 2,
+				after: 1,
+				removed: 1,
+				updated: 0,
+			};
+		});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({ client: mockClient } as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+		expect(vi.mocked(syncModule.previewCodexMultiAuthSyncedOverlapCleanup)).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(confirmModule.confirm)).toHaveBeenCalledWith(
+			"Create a backup and apply synced overlap cleanup?",
+		);
+		expect(vi.mocked(storageModule.createTimestampedBackupPath)).toHaveBeenCalledWith(
+			"codex-maintenance-overlap-backup",
+		);
+		expect(vi.mocked(storageModule.exportAccounts)).toHaveBeenCalledWith(
+			"/tmp/codex-maintenance-overlap-backup-20260101-000000.json",
+			true,
+		);
+		expect(vi.mocked(syncModule.cleanupCodexMultiAuthSyncedOverlaps)).toHaveBeenCalledTimes(1);
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts[0]?.accountId).toBe("org-local");
 	});
 
 	it("runs best-account selection from the dashboard forecast action", async () => {

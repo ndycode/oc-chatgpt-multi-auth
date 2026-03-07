@@ -114,6 +114,7 @@ import {
 	saveAccounts,
 	withAccountStorageTransaction,
 	cleanupDuplicateEmailAccounts,
+	previewDuplicateEmailCleanup,
 	clearAccounts,
 	setStoragePath,
 	exportAccounts,
@@ -192,6 +193,7 @@ import {
 import {
 	CodexMultiAuthSyncCapacityError,
 	cleanupCodexMultiAuthSyncedOverlaps,
+	previewCodexMultiAuthSyncedOverlapCleanup,
 	previewSyncFromCodexMultiAuth,
 	syncFromCodexMultiAuth,
 } from "./lib/codex-multi-auth-sync.js";
@@ -3852,6 +3854,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 							};
 
+							const createMaintenanceAccountsBackup = async (
+								prefix: string,
+							): Promise<string> => {
+								const backupPath = createTimestampedBackupPath(prefix);
+								await exportAccounts(backupPath, true);
+								return backupPath;
+							};
+
 							const runCodexMultiAuthSync = async (): Promise<void> => {
 								const currentConfig = loadPluginConfig();
 								if (!getSyncFromCodexMultiAuthEnabled(currentConfig)) {
@@ -4177,6 +4187,29 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							const runCodexMultiAuthOverlapCleanup = async (): Promise<void> => {
 								try {
+									const preview = await previewCodexMultiAuthSyncedOverlapCleanup();
+									if (preview.removed <= 0 && preview.updated <= 0) {
+										console.log("\nNo synced overlaps found.\n");
+										return;
+									}
+									console.log("");
+									console.log("Cleanup preview.");
+									console.log(`Before: ${preview.before}`);
+									console.log(`After: ${preview.after}`);
+									console.log(`Would remove overlaps: ${preview.removed}`);
+									console.log(`Would update synced records: ${preview.updated}`);
+									console.log("A backup will be created before changes are applied.");
+									console.log("");
+									const confirmed = await confirm(
+										`Create a backup and apply synced overlap cleanup?`,
+									);
+									if (!confirmed) {
+										console.log("\nCleanup cancelled.\n");
+										return;
+									}
+									const backupPath = await createMaintenanceAccountsBackup(
+										"codex-maintenance-overlap-backup",
+									);
 									const result = await cleanupCodexMultiAuthSyncedOverlaps();
 									invalidateAccountManagerCache();
 									console.log("");
@@ -4184,6 +4217,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 									console.log(`Before: ${result.before}`);
 									console.log(`After: ${result.after}`);
 									console.log(`Removed overlaps: ${result.removed}`);
+									console.log(`Updated synced records: ${result.updated}`);
+									console.log(`Backup: ${backupPath}`);
 									console.log("");
 								} catch (error) {
 									const message = error instanceof Error ? error.message : String(error);
@@ -4193,6 +4228,29 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 							const runDuplicateEmailCleanup = async (): Promise<void> => {
 								try {
+									const preview = await previewDuplicateEmailCleanup();
+									if (preview.removed <= 0) {
+										console.log("\nNo legacy duplicate emails found.\n");
+										return;
+									}
+									console.log("");
+									console.log("Cleanup preview.");
+									console.log(`Before: ${preview.before}`);
+									console.log(`After: ${preview.after}`);
+									console.log(`Would remove legacy duplicates: ${preview.removed}`);
+									console.log("Only legacy accounts without organization or workspace IDs are eligible.");
+									console.log("A backup will be created before changes are applied.");
+									console.log("");
+									const confirmed = await confirm(
+										`Create a backup and remove ${preview.removed} legacy duplicate-email account(s)?`,
+									);
+									if (!confirmed) {
+										console.log("\nDuplicate email cleanup cancelled.\n");
+										return;
+									}
+									const backupPath = await createMaintenanceAccountsBackup(
+										"codex-maintenance-duplicate-email-backup",
+									);
 									const result = await cleanupDuplicateEmailAccounts();
 									if (result.removed > 0) {
 										invalidateAccountManagerCache();
@@ -4201,11 +4259,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 										console.log(`Before: ${result.before}`);
 										console.log(`After: ${result.after}`);
 										console.log(`Removed duplicates: ${result.removed}`);
+										console.log(`Backup: ${backupPath}`);
 										console.log("");
 										return;
 									}
 
-									console.log("\nNo duplicate emails found.\n");
+									console.log("\nNo legacy duplicate emails found.\n");
 								} catch (error) {
 									const message = error instanceof Error ? error.message : String(error);
 									console.log(`\nDuplicate email cleanup failed: ${message}\n`);

@@ -13,7 +13,7 @@ import {
 	type AccountStorageV3,
 	type ImportAccountsResult,
 } from "./storage.js";
-import { findProjectRoot, getProjectStorageKey } from "./storage/paths.js";
+import { findProjectRoot, getProjectStorageKeyCandidates } from "./storage/paths.js";
 
 const EXTERNAL_ROOT_SUFFIX = "multi-auth";
 const EXTERNAL_ACCOUNT_FILE_NAMES = [
@@ -108,9 +108,14 @@ function normalizeSourceStorage(storage: AccountStorageV3): AccountStorageV3 {
 	};
 }
 
+type NormalizedImportFileOptions = {
+	postSuccessCleanupFailureMode?: "throw" | "warn";
+};
+
 async function withNormalizedImportFile<T>(
 	storage: AccountStorageV3,
 	handler: (filePath: string) => Promise<T>,
+	options: NormalizedImportFileOptions = {},
 ): Promise<T> {
 	const runWithTempDir = async (tempDir: string): Promise<T> => {
 		await fs.chmod(tempDir, 0o700).catch(() => undefined);
@@ -137,7 +142,9 @@ async function withNormalizedImportFile<T>(
 		} catch (cleanupError) {
 			const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
 			logWarn(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
-			throw new Error(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
+			if (options.postSuccessCleanupFailureMode !== "warn") {
+				throw new Error(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
+			}
 		}
 		return result;
 	};
@@ -629,11 +636,12 @@ function getProjectScopedAccountsPath(rootDir: string, projectPath: string): str
 		return undefined;
 	}
 
-	const projectKey = getProjectStorageKey(projectRoot);
-	for (const fileName of EXTERNAL_ACCOUNT_FILE_NAMES) {
-		const candidate = join(rootDir, "projects", projectKey, fileName);
-		if (existsSync(candidate)) {
-			return candidate;
+	for (const candidateKey of getProjectStorageKeyCandidates(projectRoot)) {
+		for (const fileName of EXTERNAL_ACCOUNT_FILE_NAMES) {
+			const candidate = join(rootDir, "projects", candidateKey, fileName);
+			if (existsSync(candidate)) {
+				return candidate;
+			}
 		}
 	}
 	return undefined;
@@ -782,6 +790,7 @@ export async function syncFromCodexMultiAuth(
 				},
 			);
 		},
+		{ postSuccessCleanupFailureMode: "warn" },
 	);
 	return {
 		rootDir: resolved.rootDir,
@@ -796,6 +805,106 @@ export async function syncFromCodexMultiAuth(
 	};
 }
 
+function buildCodexMultiAuthOverlapCleanupPlan(existing: AccountStorageV3): {
+	result: CodexMultiAuthCleanupResult;
+	nextStorage?: AccountStorageV3;
+} {
+	const before = existing.accounts.length;
+	const syncedAccounts = existing.accounts.filter((account) =>
+		Array.isArray(account.accountTags) && account.accountTags.includes(SYNC_ACCOUNT_TAG),
+	);
+	if (syncedAccounts.length === 0) {
+		return {
+			result: {
+				before,
+				after: before,
+				removed: 0,
+				updated: 0,
+			},
+		};
+	}
+	const preservedAccounts = existing.accounts.filter(
+		(account) => !(Array.isArray(account.accountTags) && account.accountTags.includes(SYNC_ACCOUNT_TAG)),
+	);
+	const normalizedSyncedStorage = normalizeAccountStorage(
+		normalizeSourceStorage({
+			...existing,
+			accounts: syncedAccounts,
+		}),
+	);
+	if (!normalizedSyncedStorage) {
+		return {
+			result: {
+				before,
+				after: before,
+				removed: 0,
+				updated: 0,
+			},
+		};
+	}
+	const normalized = {
+		...existing,
+		accounts: [...preservedAccounts, ...normalizedSyncedStorage.accounts],
+	} satisfies AccountStorageV3;
+	const existingActiveKeys = extractCleanupActiveKeys(existing.accounts, existing.activeIndex);
+	const mappedActiveIndex = (() => {
+		const byIdentity = findCleanupAccountIndexByIdentityKeys(normalized.accounts, existingActiveKeys);
+		return byIdentity >= 0
+			? byIdentity
+			: Math.min(existing.activeIndex, Math.max(0, normalized.accounts.length - 1));
+	})();
+	const activeIndexByFamily = Object.fromEntries(
+		Object.entries(existing.activeIndexByFamily ?? {}).map(([family, index]) => {
+			const identityKeys = extractCleanupActiveKeys(existing.accounts, index);
+			const mappedIndex = findCleanupAccountIndexByIdentityKeys(normalized.accounts, identityKeys);
+			return [family, mappedIndex >= 0 ? mappedIndex : mappedActiveIndex];
+		}),
+	) as AccountStorageV3["activeIndexByFamily"];
+	normalized.activeIndex = mappedActiveIndex;
+	normalized.activeIndexByFamily = activeIndexByFamily;
+
+	const after = normalized.accounts.length;
+	const removed = Math.max(0, before - after);
+	const originalAccountsByKey = new Map<string, AccountStorageV3["accounts"][number]>();
+	for (const account of existing.accounts) {
+		const key = account.organizationId ?? account.accountId ?? account.refreshToken;
+		if (key) {
+			originalAccountsByKey.set(key, account);
+		}
+	}
+	const updated = normalized.accounts.reduce((count, account) => {
+		const key = account.organizationId ?? account.accountId ?? account.refreshToken;
+		if (!key) return count;
+		const original = originalAccountsByKey.get(key);
+		if (!original) return count;
+		return JSON.stringify(original) === JSON.stringify(account) ? count : count + 1;
+	}, 0);
+	const changed =
+		removed > 0 || after !== before || JSON.stringify(normalized) !== JSON.stringify(existing);
+
+	return {
+		result: {
+			before,
+			after,
+			removed,
+			updated,
+		},
+		nextStorage: changed ? normalized : undefined,
+	};
+}
+
+export async function previewCodexMultiAuthSyncedOverlapCleanup(): Promise<CodexMultiAuthCleanupResult> {
+	return withAccountStorageTransaction((current) => {
+		const existing = current ?? {
+			version: 3 as const,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		};
+		return Promise.resolve(buildCodexMultiAuthOverlapCleanupPlan(existing).result);
+	});
+}
+
 export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiAuthCleanupResult> {
 	return withAccountStorageTransaction(async (current, persist) => {
 		const existing = current ?? {
@@ -804,83 +913,11 @@ export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiA
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		};
-		const before = existing.accounts.length;
-		const syncedAccounts = existing.accounts.filter((account) =>
-			Array.isArray(account.accountTags) && account.accountTags.includes(SYNC_ACCOUNT_TAG),
-		);
-		if (syncedAccounts.length === 0) {
-			return {
-				before,
-				after: before,
-				removed: 0,
-				updated: 0,
-			};
+		const plan = buildCodexMultiAuthOverlapCleanupPlan(existing);
+		if (plan.nextStorage) {
+			await persist(plan.nextStorage);
 		}
-		const preservedAccounts = existing.accounts.filter(
-			(account) => !(Array.isArray(account.accountTags) && account.accountTags.includes(SYNC_ACCOUNT_TAG)),
-		);
-		const normalizedSyncedStorage = normalizeAccountStorage(
-			normalizeSourceStorage({
-				...existing,
-				accounts: syncedAccounts,
-			}),
-		);
-		if (!normalizedSyncedStorage) {
-			return {
-				before,
-				after: before,
-				removed: 0,
-				updated: 0,
-			};
-		}
-		const normalized = {
-			...existing,
-			accounts: [...preservedAccounts, ...normalizedSyncedStorage.accounts],
-		} satisfies AccountStorageV3;
-		const existingActiveKeys = extractCleanupActiveKeys(existing.accounts, existing.activeIndex);
-		const mappedActiveIndex = (() => {
-			const byIdentity = findCleanupAccountIndexByIdentityKeys(normalized.accounts, existingActiveKeys);
-			return byIdentity >= 0
-				? byIdentity
-				: Math.min(existing.activeIndex, Math.max(0, normalized.accounts.length - 1));
-		})();
-		const activeIndexByFamily = Object.fromEntries(
-			Object.entries(existing.activeIndexByFamily ?? {}).map(([family, index]) => {
-				const identityKeys = extractCleanupActiveKeys(existing.accounts, index);
-				const mappedIndex = findCleanupAccountIndexByIdentityKeys(normalized.accounts, identityKeys);
-				return [family, mappedIndex >= 0 ? mappedIndex : mappedActiveIndex];
-			}),
-		) as AccountStorageV3["activeIndexByFamily"];
-		normalized.activeIndex = mappedActiveIndex;
-		normalized.activeIndexByFamily = activeIndexByFamily;
-
-		const after = normalized.accounts.length;
-		const removed = Math.max(0, before - after);
-		const originalAccountsByKey = new Map<string, AccountStorageV3["accounts"][number]>();
-		for (const account of existing.accounts) {
-			const key = account.organizationId ?? account.accountId ?? account.refreshToken;
-			if (key) {
-				originalAccountsByKey.set(key, account);
-			}
-		}
-		const updated = normalized.accounts.reduce((count, account) => {
-			const key = account.organizationId ?? account.accountId ?? account.refreshToken;
-			if (!key) return count;
-			const original = originalAccountsByKey.get(key);
-			if (!original) return count;
-			return JSON.stringify(original) === JSON.stringify(account) ? count : count + 1;
-		}, 0);
-
-		if (removed > 0 || after !== before || JSON.stringify(normalized) !== JSON.stringify(existing)) {
-			await persist(normalized);
-		}
-
-		return {
-			before,
-			after,
-			removed,
-			updated,
-		};
+		return plan.result;
 	});
 }
 

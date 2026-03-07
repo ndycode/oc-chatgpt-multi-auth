@@ -40,7 +40,7 @@ export const UI_COPY = {
 		navigationHeading: "Navigation",
 		syncToggle: "Sync from codex-multi-auth",
 		syncNow: "Sync Now",
-		cleanupDuplicateEmails: "Clean Duplicate Emails",
+		cleanupDuplicateEmails: "Clean Legacy Duplicate Emails",
 		cleanupOverlaps: "Cleanup Synced Overlaps",
 		back: "Back",
 	},
