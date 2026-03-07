@@ -3932,19 +3932,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 										} satisfies AccountStorageV3);
 									const candidates: Array<{
 										previewLine: string;
-										target?: SyncRemovalTarget;
+										target: SyncRemovalTarget;
 									}> = [...indexes]
 										.sort((left, right) => left - right)
 										.map((index) => {
 											const account = currentStorage.accounts[index];
 											if (!account) {
-												return {
-													previewLine: `Account ${index + 1}`,
-													refreshToken: undefined,
-											};
-										}
-										const label = account.email ?? account.accountLabel ?? `Account ${index + 1}`;
-										const currentSuffix = index === currentStorage.activeIndex ? " | current" : "";
+												throw new Error(
+													`Selected account ${index + 1} changed before confirmation. Re-run sync and confirm again.`,
+												);
+											}
+											const label = account.email ?? account.accountLabel ?? `Account ${index + 1}`;
+											const currentSuffix = index === currentStorage.activeIndex ? " | current" : "";
 											return {
 												previewLine: `${index + 1}. ${label}${currentSuffix}`,
 												target: {
@@ -3956,9 +3955,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										});
 									return {
 										previewLines: candidates.map((candidate) => candidate.previewLine),
-										targets: candidates
-											.map((candidate) => candidate.target)
-											.filter((target): target is SyncRemovalTarget => target !== undefined),
+										targets: candidates.map((candidate) => candidate.target),
 									};
 								};
 
@@ -4068,7 +4065,19 @@ while (attempted.size < Math.max(1, accountCount)) {
 											console.log("Sync cancelled.\n");
 											return;
 										}
-										const removalPlan = await buildSyncRemovalPlan(indexesToRemove);
+										let removalPlan: {
+											previewLines: string[];
+											targets: SyncRemovalTarget[];
+										};
+										try {
+											removalPlan = await buildSyncRemovalPlan(indexesToRemove);
+										} catch (planError) {
+											const message =
+												planError instanceof Error ? planError.message : String(planError);
+											await restorePruneBackup();
+											console.log(`\nSync failed: ${message}\n`);
+											return;
+										}
 										console.log("Dry run removal:");
 										for (const line of removalPlan.previewLines) {
 											console.log(`  ${line}`);
