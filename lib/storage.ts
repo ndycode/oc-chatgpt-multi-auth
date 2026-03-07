@@ -596,23 +596,23 @@ async function loadDuplicateCleanupSourceStorage(): Promise<AccountStorageV3> {
   try {
     const rawContent = await fs.readFile(getStoragePath(), "utf-8");
     const rawData = JSON.parse(rawContent) as unknown;
-    return normalizeDuplicateCleanupSourceStorage(rawData) ?? fallback ?? {
-      version: 3,
-      accounts: [],
-      activeIndex: 0,
-      activeIndexByFamily: {},
-    };
+    const normalized = normalizeDuplicateCleanupSourceStorage(rawData);
+    if (normalized) {
+      return normalized;
+    }
+    throw new Error("Invalid raw storage snapshot for duplicate cleanup.");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      log.warn("Failed to read raw storage snapshot for duplicate cleanup", { error: String(error) });
+    if (code === "ENOENT") {
+      return fallback ?? {
+        version: 3,
+        accounts: [],
+        activeIndex: 0,
+        activeIndexByFamily: {},
+      };
     }
-    return fallback ?? {
-      version: 3,
-      accounts: [],
-      activeIndex: 0,
-      activeIndexByFamily: {},
-    };
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to read raw storage snapshot for duplicate cleanup: ${message}`);
   }
 }
 
@@ -1438,6 +1438,24 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
   const content = JSON.stringify(storage, null, 2);
   await fs.writeFile(resolvedPath, content, { encoding: "utf-8", mode: 0o600 });
   log.info("Exported accounts", { path: resolvedPath, count: storage.accounts.length });
+}
+
+export async function backupRawAccountsFile(filePath: string, force = true): Promise<void> {
+  const resolvedPath = resolvePath(filePath);
+
+  if (!force && existsSync(resolvedPath)) {
+    throw new Error(`File already exists: ${resolvedPath}`);
+  }
+
+  const storagePath = getStoragePath();
+  if (!existsSync(storagePath)) {
+    throw new Error("No accounts to back up");
+  }
+
+  await fs.mkdir(dirname(resolvedPath), { recursive: true });
+  await fs.copyFile(storagePath, resolvedPath);
+  await fs.chmod(resolvedPath, 0o600).catch(() => undefined);
+  log.info("Backed up raw accounts storage", { path: resolvedPath, source: storagePath });
 }
 
 /**

@@ -26,6 +26,7 @@
 import { tool } from "@opencode-ai/plugin/tool";
 import { promises as fsPromises } from "node:fs";
 import { createInterface } from "node:readline/promises";
+import { dirname, join } from "node:path";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
 import {
@@ -117,6 +118,7 @@ import {
 	previewDuplicateEmailCleanup,
 	clearAccounts,
 	setStoragePath,
+	backupRawAccountsFile,
 	exportAccounts,
 	importAccounts,
 	previewImportAccounts,
@@ -194,6 +196,7 @@ import {
 import {
 	CodexMultiAuthSyncCapacityError,
 	cleanupCodexMultiAuthSyncedOverlaps,
+	isCodexMultiAuthSourceTooLargeForCapacity,
 	previewCodexMultiAuthSyncedOverlapCleanup,
 	previewSyncFromCodexMultiAuth,
 	syncFromCodexMultiAuth,
@@ -3857,7 +3860,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								prefix: string,
 							): Promise<string> => {
 								const backupPath = createTimestampedBackupPath(prefix);
-								await exportAccounts(backupPath, true);
+								await backupRawAccountsFile(backupPath, true);
 								return backupPath;
 							};
 
@@ -3882,6 +3885,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										} satisfies AccountStorageV3);
 									const currentFlaggedStorage = await loadFlaggedAccounts();
 									const backupPath = createTimestampedBackupPath("codex-sync-prune-backup");
+									await fsPromises.mkdir(dirname(backupPath), { recursive: true });
 									const backupPayload = {
 										version: 1 as const,
 										accounts: {
@@ -4201,6 +4205,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 										console.log(`Overlap accounts skipped by dedupe: ${details.skippedOverlaps}`);
 										console.log(`Importable new accounts: ${details.importableNewAccounts}`);
 										console.log(`Maximum allowed: ${details.maxAccounts}`);
+										if (isCodexMultiAuthSourceTooLargeForCapacity(details)) {
+											await restorePruneBackup();
+											console.log(
+												`Source alone exceeds the configured maximum. Reduce the source set or raise CODEX_AUTH_SYNC_MAX_ACCOUNTS before retrying.`,
+											);
+											console.log("");
+											return;
+										}
 										console.log(`Remove at least ${details.needToRemove} account(s) first.`);
 										if (details.suggestedRemovals.length > 0) {
 											console.log("Suggested removals:");

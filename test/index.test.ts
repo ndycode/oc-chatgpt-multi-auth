@@ -219,6 +219,17 @@ vi.mock("../lib/codex-multi-auth-sync.js", () => ({
 		removed: 0,
 		updated: 0,
 	})),
+	isCodexMultiAuthSourceTooLargeForCapacity: vi.fn(
+		(details: { sourceDedupedTotal?: number; maxAccounts?: number; importableNewAccounts?: number; suggestedRemovals?: unknown[] }) =>
+			Boolean(
+				typeof details.sourceDedupedTotal === "number" &&
+					typeof details.maxAccounts === "number" &&
+					details.sourceDedupedTotal > details.maxAccounts &&
+					details.importableNewAccounts === 0 &&
+					Array.isArray(details.suggestedRemovals) &&
+					details.suggestedRemovals.length === 0,
+			),
+	),
 }));
 
 vi.mock("../lib/request/rate-limit-backoff.js", () => ({
@@ -304,6 +315,7 @@ vi.mock("../lib/storage.js", () => ({
 	})),
 	clearAccounts: vi.fn(async () => {}),
 	setStoragePath: vi.fn(),
+	backupRawAccountsFile: vi.fn(async () => {}),
 	exportAccounts: vi.fn(async () => {}),
 	importAccounts: vi.fn(async () => ({
 		imported: 2,
@@ -2794,7 +2806,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(vi.mocked(storageModule.createTimestampedBackupPath)).toHaveBeenCalledWith(
 			"codex-maintenance-duplicate-email-backup",
 		);
-		expect(vi.mocked(storageModule.exportAccounts)).toHaveBeenCalledWith(
+		expect(vi.mocked(storageModule.backupRawAccountsFile)).toHaveBeenCalledWith(
 			"/tmp/codex-maintenance-duplicate-email-backup-20260101-000000.json",
 			true,
 		);
@@ -2862,7 +2874,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(vi.mocked(storageModule.createTimestampedBackupPath)).toHaveBeenCalledWith(
 			"codex-maintenance-overlap-backup",
 		);
-		expect(vi.mocked(storageModule.exportAccounts)).toHaveBeenCalledWith(
+		expect(vi.mocked(storageModule.backupRawAccountsFile)).toHaveBeenCalledWith(
 			"/tmp/codex-maintenance-overlap-backup-20260101-000000.json",
 			true,
 		);
@@ -3108,6 +3120,44 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("does not prompt for local pruning when the sync source alone exceeds the configured limit", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const syncModule = await import("../lib/codex-multi-auth-sync.js");
+		const configModule = await import("../lib/config.js");
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "experimental-sync-now" });
+		vi.mocked(configModule.getSyncFromCodexMultiAuthEnabled).mockReturnValue(true);
+
+		const capacityError = new syncModule.CodexMultiAuthSyncCapacityError({
+			rootDir: "/tmp/codex-root",
+			accountsPath: "/tmp/codex-root/openai-codex-accounts.json",
+			scope: "global",
+			currentCount: 0,
+			sourceCount: 3,
+			sourceDedupedTotal: 3,
+			dedupedTotal: 3,
+			maxAccounts: 2,
+			needToRemove: 1,
+			importableNewAccounts: 0,
+			skippedOverlaps: 0,
+			suggestedRemovals: [],
+		});
+
+		vi.mocked(syncModule.previewSyncFromCodexMultiAuth).mockRejectedValueOnce(capacityError);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({ client: mockClient } as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await autoMethod.authorize();
+		expect(vi.mocked(cliModule.promptCodexMultiAuthSyncPrune)).not.toHaveBeenCalled();
+		expect(vi.mocked(syncModule.syncFromCodexMultiAuth)).not.toHaveBeenCalled();
 	});
 
 	it("preserves active pointers when sync prune removes an earlier account", async () => {

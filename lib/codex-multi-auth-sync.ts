@@ -4,12 +4,14 @@ import { join, win32 } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { logWarn } from "./logger.js";
 import {
+	clearAccounts,
 	deduplicateAccounts,
 	deduplicateAccountsByEmail,
 	getStoragePath,
 	importAccounts,
 	normalizeAccountStorage,
 	previewImportAccounts,
+	saveAccounts,
 	withAccountStorageTransaction,
 	type AccountStorageV3,
 	type ImportAccountsResult,
@@ -70,20 +72,6 @@ export interface CodexMultiAuthSyncCapacityDetails extends CodexMultiAuthResolve
 	}>;
 }
 
-export class CodexMultiAuthSyncCapacityError extends Error {
-	readonly details: CodexMultiAuthSyncCapacityDetails;
-
-	constructor(details: CodexMultiAuthSyncCapacityDetails) {
-		super(
-			`Sync would exceed the maximum of ${details.maxAccounts} accounts ` +
-				`(current ${details.currentCount}, source ${details.sourceCount}, deduped total ${details.dedupedTotal}). ` +
-				`Remove at least ${details.needToRemove} account(s) before syncing.`,
-		);
-		this.name = "CodexMultiAuthSyncCapacityError";
-		this.details = details;
-	}
-}
-
 function normalizeSourceStorage(storage: AccountStorageV3): AccountStorageV3 {
 	const normalizedAccounts = storage.accounts.map((account) => {
 		const accountId = account.accountId?.trim();
@@ -116,6 +104,38 @@ type NormalizedImportFileOptions = {
 	onPostSuccessCleanupFailure?: (details: { tempDir: string; tempPath: string; message: string }) => void;
 };
 
+const TEMP_CLEANUP_RETRY_DELAYS_MS = [100, 250, 500] as const;
+
+function sleepAsync(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeNormalizedImportTempDir(
+	tempDir: string,
+	tempPath: string,
+	options: NormalizedImportFileOptions,
+): Promise<void> {
+	let lastMessage = "unknown cleanup failure";
+	for (let attempt = 0; attempt <= TEMP_CLEANUP_RETRY_DELAYS_MS.length; attempt += 1) {
+		try {
+			await fs.rm(tempDir, { recursive: true, force: true });
+			return;
+		} catch (cleanupError) {
+			lastMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+			if (attempt < TEMP_CLEANUP_RETRY_DELAYS_MS.length) {
+				await sleepAsync(TEMP_CLEANUP_RETRY_DELAYS_MS[attempt] ?? 0);
+				continue;
+			}
+		}
+	}
+
+	logWarn(`Failed to remove temporary codex sync directory ${tempDir}: ${lastMessage}`);
+	options.onPostSuccessCleanupFailure?.({ tempDir, tempPath, message: lastMessage });
+	if (options.postSuccessCleanupFailureMode !== "warn") {
+		throw new Error(`Failed to remove temporary codex sync directory ${tempDir}: ${lastMessage}`);
+	}
+}
+
 async function withNormalizedImportFile<T>(
 	storage: AccountStorageV3,
 	handler: (filePath: string) => Promise<T>,
@@ -134,23 +154,14 @@ async function withNormalizedImportFile<T>(
 			result = await handler(tempPath);
 		} catch (error) {
 			try {
-				await fs.rm(tempDir, { recursive: true, force: true });
+				await removeNormalizedImportTempDir(tempDir, tempPath, { postSuccessCleanupFailureMode: "warn" });
 			} catch (cleanupError) {
 				const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
 				logWarn(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
 			}
 			throw error;
 		}
-		try {
-			await fs.rm(tempDir, { recursive: true, force: true });
-		} catch (cleanupError) {
-			const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-			logWarn(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
-			options.onPostSuccessCleanupFailure?.({ tempDir, tempPath, message });
-			if (options.postSuccessCleanupFailureMode !== "warn") {
-				throw new Error(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
-			}
-		}
+		await removeNormalizedImportTempDir(tempDir, tempPath, options);
 		return result;
 	};
 
@@ -228,12 +239,12 @@ function buildExistingSyncIdentityState(existingAccounts: AccountStorageV3["acco
 	organizationIds: Set<string>;
 	accountIds: Set<string>;
 	refreshTokens: Set<string>;
-	legacyEmails: Set<string>;
+	emails: Set<string>;
 } {
 	const organizationIds = new Set<string>();
 	const accountIds = new Set<string>();
 	const refreshTokens = new Set<string>();
-	const legacyEmails = new Set<string>();
+	const emails = new Set<string>();
 
 	for (const account of existingAccounts) {
 		const organizationId = normalizeIdentity(account.organizationId);
@@ -243,16 +254,14 @@ function buildExistingSyncIdentityState(existingAccounts: AccountStorageV3["acco
 		if (organizationId) organizationIds.add(organizationId);
 		if (accountId) accountIds.add(accountId);
 		if (refreshToken) refreshTokens.add(refreshToken);
-		if (!organizationId && !accountId && email) {
-			legacyEmails.add(email);
-		}
+		if (email) emails.add(email);
 	}
 
 	return {
 		organizationIds,
 		accountIds,
 		refreshTokens,
-		legacyEmails,
+		emails,
 	};
 }
 
@@ -265,6 +274,10 @@ function filterSourceAccountsAgainstExistingEmails(
 	return {
 		...sourceStorage,
 		accounts: deduplicateSourceAccountsByEmail(sourceStorage.accounts).filter((account) => {
+			const normalizedEmail = normalizeIdentity(account.email);
+			if (normalizedEmail && existingState.emails.has(normalizedEmail)) {
+				return false;
+			}
 			const organizationId = normalizeIdentity(account.organizationId);
 			if (organizationId) {
 				return !existingState.organizationIds.has(organizationId);
@@ -277,9 +290,7 @@ function filterSourceAccountsAgainstExistingEmails(
 			if (refreshToken && existingState.refreshTokens.has(refreshToken)) {
 				return false;
 			}
-			const normalizedEmail = normalizeIdentity(account.email);
-			if (!normalizedEmail) return true;
-			return !existingState.legacyEmails.has(normalizedEmail);
+			return true;
 		}),
 	};
 }
@@ -570,6 +581,18 @@ function getCodexHomeDir(): string {
 	return fromEnv.length > 0 ? fromEnv : join(getResolvedUserHomeDir(), ".codex");
 }
 
+function getCodexMultiAuthRootCandidates(userHome: string): string[] {
+	const candidates = [
+		join(userHome, "DevTools", "config", "codex", EXTERNAL_ROOT_SUFFIX),
+		join(userHome, ".codex", EXTERNAL_ROOT_SUFFIX),
+	];
+	const explicitCodexHome = (process.env.CODEX_HOME ?? "").trim();
+	if (explicitCodexHome.length > 0) {
+		candidates.unshift(join(getCodexHomeDir(), EXTERNAL_ROOT_SUFFIX));
+	}
+	return deduplicatePaths(candidates);
+}
+
 function validateCodexMultiAuthRootDir(pathValue: string): string {
 	const trimmed = pathValue.trim();
 	if (trimmed.length === 0) {
@@ -613,12 +636,7 @@ export function getCodexMultiAuthSourceRootDir(): string {
 	}
 
 	const userHome = getResolvedUserHomeDir();
-	const primary = join(getCodexHomeDir(), EXTERNAL_ROOT_SUFFIX);
-	const candidates = deduplicatePaths([
-		primary,
-		join(userHome, "DevTools", "config", "codex", EXTERNAL_ROOT_SUFFIX),
-		join(userHome, ".codex", EXTERNAL_ROOT_SUFFIX),
-	]);
+	const candidates = getCodexMultiAuthRootCandidates(userHome);
 
 	for (const candidate of candidates) {
 		if (hasAccountsStorage(candidate)) {
@@ -632,7 +650,7 @@ export function getCodexMultiAuthSourceRootDir(): string {
 		}
 	}
 
-	return primary;
+	return candidates[0] ?? join(userHome, ".codex", EXTERNAL_ROOT_SUFFIX);
 }
 
 function getProjectScopedAccountsPath(rootDir: string, projectPath: string): string | undefined {
@@ -759,56 +777,63 @@ export async function syncFromCodexMultiAuth(
 ): Promise<CodexMultiAuthSyncResult> {
 	const resolved = await loadPreparedCodexMultiAuthSourceStorage(projectPath);
 	await assertSyncWithinCapacity(resolved);
-	let tempCleanupFailure:
-		| {
-				tempDir: string;
-				tempPath: string;
-				message: string;
-		  }
-		| undefined;
-	const result: ImportAccountsResult = await withNormalizedImportFile(
-		tagSyncedAccounts(resolved.storage),
-		(filePath) => {
-			const maxAccounts = getSyncCapacityLimit();
-			return importAccounts(
-				filePath,
-				{
-					preImportBackupPrefix: "codex-multi-auth-sync-backup",
-					backupMode: "required",
-				},
-				(normalizedStorage, existing) => {
-					const filteredStorage = filterSourceAccountsAgainstExistingEmails(
-						normalizedStorage,
-						existing?.accounts ?? [],
-					);
-					if (Number.isFinite(maxAccounts)) {
-						const details = computeSyncCapacityDetails(
-							resolved,
-							filteredStorage,
-							existing ??
-								({
-									version: 3,
-									accounts: [],
-									activeIndex: 0,
-									activeIndexByFamily: {},
-								} satisfies AccountStorageV3),
-							maxAccounts,
+	const preSyncStorage = await withAccountStorageTransaction((current) => Promise.resolve(current));
+	let result: ImportAccountsResult;
+	try {
+		result = await withNormalizedImportFile(
+			tagSyncedAccounts(resolved.storage),
+			(filePath) => {
+				const maxAccounts = getSyncCapacityLimit();
+				return importAccounts(
+					filePath,
+					{
+						preImportBackupPrefix: "codex-multi-auth-sync-backup",
+						backupMode: "required",
+					},
+					(normalizedStorage, existing) => {
+						const filteredStorage = filterSourceAccountsAgainstExistingEmails(
+							normalizedStorage,
+							existing?.accounts ?? [],
 						);
-						if (details) {
-							throw new CodexMultiAuthSyncCapacityError(details);
+						if (Number.isFinite(maxAccounts)) {
+							const details = computeSyncCapacityDetails(
+								resolved,
+								filteredStorage,
+								existing ??
+									({
+										version: 3,
+										accounts: [],
+										activeIndex: 0,
+										activeIndexByFamily: {},
+									} satisfies AccountStorageV3),
+								maxAccounts,
+							);
+							if (details) {
+								throw new CodexMultiAuthSyncCapacityError(details);
+							}
 						}
-					}
-					return filteredStorage;
-				},
-			);
-		},
-		{
-			postSuccessCleanupFailureMode: "warn",
-			onPostSuccessCleanupFailure: (details) => {
-				tempCleanupFailure = details;
+						return filteredStorage;
+					},
+				);
 			},
-		},
-	);
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (message.includes("Failed to remove temporary codex sync directory")) {
+			try {
+				if (preSyncStorage) {
+					await saveAccounts(preSyncStorage);
+				} else {
+					await clearAccounts();
+				}
+			} catch (rollbackError) {
+				const rollbackMessage =
+					rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+				throw new Error(`${message}. Sync rollback failed: ${rollbackMessage}`);
+			}
+		}
+		throw error;
+	}
 	return {
 		rootDir: resolved.rootDir,
 		accountsPath: resolved.accountsPath,
@@ -819,10 +844,6 @@ export async function syncFromCodexMultiAuth(
 		imported: result.imported,
 		skipped: result.skipped,
 		total: result.total,
-		tempCleanupWarning: tempCleanupFailure
-			? `Sensitive sync temp data could not be removed automatically. Delete ${tempCleanupFailure.tempPath} after the file lock clears.`
-			: undefined,
-		tempCleanupPath: tempCleanupFailure?.tempPath,
 	};
 }
 
@@ -971,9 +992,58 @@ async function loadRawCodexMultiAuthOverlapCleanupStorage(
 	try {
 		const raw = await fs.readFile(getStoragePath(), "utf-8");
 		const parsed = JSON.parse(raw) as unknown;
-		return normalizeOverlapCleanupSourceStorage(parsed) ?? fallback;
-	} catch {
-		return fallback;
+		const normalized = normalizeOverlapCleanupSourceStorage(parsed);
+		if (normalized) {
+			return normalized;
+		}
+		throw new Error("Invalid raw storage snapshot for synced overlap cleanup.");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return fallback;
+		}
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`Failed to read raw storage snapshot for synced overlap cleanup: ${message}`);
+	}
+}
+
+function sourceExceedsCapacityWithoutLocalRelief(details: CodexMultiAuthSyncCapacityDetails): boolean {
+	return (
+		details.sourceDedupedTotal > details.maxAccounts &&
+		details.importableNewAccounts === 0 &&
+		details.suggestedRemovals.length === 0
+	);
+}
+
+export function isCodexMultiAuthSourceTooLargeForCapacity(
+	details: CodexMultiAuthSyncCapacityDetails,
+): boolean {
+	return sourceExceedsCapacityWithoutLocalRelief(details);
+}
+
+export function getCodexMultiAuthCapacityErrorMessage(
+	details: CodexMultiAuthSyncCapacityDetails,
+): string {
+	if (sourceExceedsCapacityWithoutLocalRelief(details)) {
+		return (
+			`Sync source alone exceeds the maximum of ${details.maxAccounts} accounts ` +
+			`(${details.sourceDedupedTotal} deduped source accounts). Reduce the source set or raise ${SYNC_MAX_ACCOUNTS_OVERRIDE_ENV}.`
+		);
+	}
+	return (
+		`Sync would exceed the maximum of ${details.maxAccounts} accounts ` +
+		`(current ${details.currentCount}, source ${details.sourceCount}, deduped total ${details.dedupedTotal}). ` +
+		`Remove at least ${details.needToRemove} account(s) before syncing.`
+	);
+}
+
+export class CodexMultiAuthSyncCapacityError extends Error {
+	readonly details: CodexMultiAuthSyncCapacityDetails;
+
+	constructor(details: CodexMultiAuthSyncCapacityDetails) {
+		super(getCodexMultiAuthCapacityErrorMessage(details));
+		this.name = "CodexMultiAuthSyncCapacityError";
+		this.details = details;
 	}
 }
 
