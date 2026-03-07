@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, promises as fs } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join, win32 } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import {
@@ -109,10 +109,7 @@ async function withNormalizedImportFile<T>(
 	storage: AccountStorageV3,
 	handler: (filePath: string) => Promise<T>,
 ): Promise<T> {
-	try {
-		const secureTempRoot = join(getResolvedUserHomeDir(), ".opencode", "tmp");
-		await fs.mkdir(secureTempRoot, { recursive: true, mode: 0o700 }).catch(() => undefined);
-		const tempDir = await fs.mkdtemp(join(secureTempRoot, "oc-chatgpt-multi-auth-sync-"));
+	const runWithTempDir = async (tempDir: string): Promise<T> => {
 		await fs.chmod(tempDir, 0o700).catch(() => undefined);
 		const tempPath = join(tempDir, "accounts.json");
 		await fs.writeFile(tempPath, `${JSON.stringify(storage, null, 2)}\n`, {
@@ -125,23 +122,12 @@ async function withNormalizedImportFile<T>(
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
 		}
-	} catch {
-		// fall back to the process temp directory if the secure path is unavailable
-	}
+	};
 
-	const tempDir = await fs.mkdtemp(join(tmpdir(), "oc-chatgpt-multi-auth-sync-"));
-	try {
-		await fs.chmod(tempDir, 0o700).catch(() => undefined);
-		const tempPath = join(tempDir, "accounts.json");
-		await fs.writeFile(tempPath, `${JSON.stringify(storage, null, 2)}\n`, {
-			encoding: "utf-8",
-			mode: 0o600,
-			flag: "wx",
-		});
-		return await handler(tempPath);
-	} finally {
-		await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-	}
+	const secureTempRoot = join(getResolvedUserHomeDir(), ".opencode", "tmp");
+	await fs.mkdir(secureTempRoot, { recursive: true, mode: 0o700 });
+	const tempDir = await fs.mkdtemp(join(secureTempRoot, "oc-chatgpt-multi-auth-sync-"));
+	return runWithTempDir(tempDir);
 }
 
 function deduplicateAccountsForSync(storage: AccountStorageV3): AccountStorageV3 {
@@ -512,15 +498,10 @@ export async function syncFromCodexMultiAuth(
 	projectPath = process.cwd(),
 ): Promise<CodexMultiAuthSyncResult> {
 	const resolved = await loadPreparedCodexMultiAuthSourceStorage(projectPath);
-	const currentStorage = await withAccountStorageTransaction((current) => Promise.resolve(current));
-	const finalStorage = filterSourceAccountsAgainstExistingEmails(
-		resolved.storage,
-		currentStorage?.accounts ?? [],
-	);
 	let result: ImportAccountsResult;
 	try {
 		result = await withNormalizedImportFile(
-			finalStorage,
+			resolved.storage,
 			(filePath) =>
 				importAccounts(
 					filePath,

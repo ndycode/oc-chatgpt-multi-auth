@@ -841,12 +841,12 @@ describe('Plugin Configuration', () => {
 			);
 		});
 
-		it('recovers malformed config when toggling sync setting', () => {
+		it('throws when toggling sync setting on malformed config to preserve existing settings', () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue('invalid json');
 
-			expect(() => setSyncFromCodexMultiAuthEnabled(true)).not.toThrow();
-			expect(mockRenameSync).toHaveBeenCalled();
+			expect(() => setSyncFromCodexMultiAuthEnabled(true)).toThrow();
+			expect(mockRenameSync).not.toHaveBeenCalled();
 		});
 
 		it('recovers stale config lock files before mutating config', () => {

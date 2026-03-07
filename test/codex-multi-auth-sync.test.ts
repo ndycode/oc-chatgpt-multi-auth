@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { join } from "node:path";
 import { findProjectRoot, getProjectStorageKey } from "../lib/storage/paths.js";
 
@@ -207,6 +208,54 @@ describe("codex-multi-auth sync", () => {
 			},
 			expect.any(Function),
 		);
+	});
+
+	it("does not retry through a fallback temp directory when the handler throws", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		const globalPath = join(rootDir, "openai-codex-accounts.json");
+		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+		mockReadFileSync.mockReturnValue(
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "sync-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+		);
+
+		const storageModule = await import("../lib/storage.js");
+		vi.mocked(storageModule.previewImportAccounts).mockRejectedValueOnce(new Error("preview failed"));
+
+		const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+		await expect(previewSyncFromCodexMultiAuth(process.cwd())).rejects.toThrow("preview failed");
+		expect(vi.mocked(storageModule.previewImportAccounts)).toHaveBeenCalledTimes(1);
+	});
+
+	it("surfaces secure temp directory creation failures instead of falling back to system tmpdir", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		const globalPath = join(rootDir, "openai-codex-accounts.json");
+		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+		mockReadFileSync.mockReturnValue(
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "sync-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+		);
+
+		const mkdtempSpy = vi.spyOn(fs.promises, "mkdtemp").mockRejectedValueOnce(new Error("mkdtemp failed"));
+		const storageModule = await import("../lib/storage.js");
+
+		try {
+			const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+			await expect(previewSyncFromCodexMultiAuth(process.cwd())).rejects.toThrow("mkdtemp failed");
+			expect(vi.mocked(storageModule.previewImportAccounts)).not.toHaveBeenCalledWith(
+				expect.stringContaining(os.tmpdir()),
+			);
+		} finally {
+			mkdtempSpy.mockRestore();
+		}
 	});
 
 	it("skips source accounts whose emails already exist locally during sync", async () => {

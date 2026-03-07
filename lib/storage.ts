@@ -1383,6 +1383,10 @@ export async function importAccounts(
   } =
     await withAccountStorageTransaction(async (existing, persist) => {
       const preparedNormalized = prepare ? prepare(normalized, existing) : normalized;
+      const skippedByPrepare = Math.max(
+        0,
+        normalized.accounts.length - preparedNormalized.accounts.length,
+      );
       const existingStorage: AccountStorageV3 =
         existing ??
         ({
@@ -1467,7 +1471,7 @@ export async function importAccounts(
       await persist(newStorage);
 
       const imported = deduplicatedAccounts.length - existingAccounts.length;
-      const skipped = preparedNormalized.accounts.length - imported;
+      const skipped = skippedByPrepare + (preparedNormalized.accounts.length - imported);
       return {
         imported,
         total: deduplicatedAccounts.length,

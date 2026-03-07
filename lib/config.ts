@@ -360,7 +360,7 @@ export function setSyncFromCodexMultiAuthEnabled(enabled: boolean): void {
 		experimental.syncFromCodexMultiAuth = syncSettings;
 		current.experimental = experimental;
 		return current;
-	}, { recoverInvalidCurrent: true });
+	});
 }
 
 export function getCodexTuiColorProfile(
