@@ -288,7 +288,7 @@ describe("codex-multi-auth sync", () => {
 		}
 	});
 
-	it("logs a warning when secure temp cleanup fails", async () => {
+	it("fails closed and logs a warning when secure temp cleanup fails", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
 		const globalPath = join(rootDir, "openai-codex-accounts.json");
@@ -306,12 +306,37 @@ describe("codex-multi-auth sync", () => {
 
 		try {
 			const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
-			await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
-				accountsPath: globalPath,
-				imported: 2,
-			});
+			await expect(previewSyncFromCodexMultiAuth(process.cwd())).rejects.toThrow(
+				/Failed to remove temporary codex sync directory/,
+			);
 			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
 				expect.stringContaining("Failed to remove temporary codex sync directory"),
+			);
+		} finally {
+			rmSpy.mockRestore();
+		}
+	});
+
+	it("fails preview when secure temp cleanup leaves sync data on disk", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		const globalPath = join(rootDir, "openai-codex-accounts.json");
+		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+		mockSourceStorageFile(
+			globalPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				accounts: [{ refreshToken: "sync-refresh", addedAt: 1, lastUsed: 1 }],
+			}),
+		);
+
+		const rmSpy = vi.spyOn(fs.promises, "rm").mockRejectedValueOnce(new Error("cleanup blocked"));
+
+		try {
+			const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+			await expect(previewSyncFromCodexMultiAuth(process.cwd())).rejects.toThrow(
+				/Failed to remove temporary codex sync directory/,
 			);
 		} finally {
 			rmSpy.mockRestore();
@@ -673,6 +698,51 @@ describe("codex-multi-auth sync", () => {
 			removed: 0,
 			updated: 1,
 		});
+	});
+
+	it("remaps active indices when synced overlap cleanup reorders accounts", async () => {
+		const storageModule = await import("../lib/storage.js");
+		let persisted: AccountStorageV3 | null = null;
+		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
+			handler(
+				{
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: { codex: 0 },
+					accounts: [
+						{
+							accountId: "org-sync",
+							organizationId: "org-sync",
+							accountIdSource: "org",
+							accountTags: ["codex-multi-auth-sync"],
+							email: "sync@example.com",
+							refreshToken: "sync-token",
+							addedAt: 3,
+							lastUsed: 3,
+						},
+						{
+							accountId: "org-local",
+							organizationId: "org-local",
+							accountIdSource: "org",
+							email: "local@example.com",
+							refreshToken: "local-token",
+							addedAt: 4,
+							lastUsed: 4,
+						},
+					],
+				},
+				vi.fn(async (next) => {
+					persisted = next;
+				}),
+			),
+		);
+
+		const { cleanupCodexMultiAuthSyncedOverlaps } = await import("../lib/codex-multi-auth-sync.js");
+		await cleanupCodexMultiAuthSyncedOverlaps();
+
+		expect(persisted?.accounts.map((account) => account.accountId)).toEqual(["org-local", "org-sync"]);
+		expect(persisted?.activeIndex).toBe(1);
+		expect(persisted?.activeIndexByFamily.codex).toBe(1);
 	});
 
 	it("does not block preview when account limit is unlimited", async () => {

@@ -120,14 +120,26 @@ async function withNormalizedImportFile<T>(
 			mode: 0o600,
 			flag: "wx",
 		});
+		let result: T;
 		try {
-			return await handler(tempPath);
-		} finally {
-			await fs.rm(tempDir, { recursive: true, force: true }).catch((error: unknown) => {
-				const message = error instanceof Error ? error.message : String(error);
+			result = await handler(tempPath);
+		} catch (error) {
+			try {
+				await fs.rm(tempDir, { recursive: true, force: true });
+			} catch (cleanupError) {
+				const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
 				logWarn(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
-			});
+			}
+			throw error;
 		}
+		try {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		} catch (cleanupError) {
+			const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+			logWarn(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
+			throw new Error(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
+		}
+		return result;
 	};
 
 	const secureTempRoot = join(getResolvedUserHomeDir(), ".opencode", "tmp");
@@ -231,6 +243,52 @@ function buildMergedDedupedAccounts(
 function normalizeIdentity(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	return trimmed && trimmed.length > 0 ? trimmed.toLowerCase() : undefined;
+}
+
+function toCleanupIdentityKeys(account: {
+	organizationId?: string;
+	accountId?: string;
+	refreshToken: string;
+}): string[] {
+	const keys: string[] = [];
+	const organizationId = normalizeIdentity(account.organizationId);
+	if (organizationId) keys.push(`org:${organizationId}`);
+	const accountId = normalizeIdentity(account.accountId);
+	if (accountId) keys.push(`account:${accountId}`);
+	const refreshToken = normalizeIdentity(account.refreshToken);
+	if (refreshToken) keys.push(`refresh:${refreshToken}`);
+	return keys;
+}
+
+function extractCleanupActiveKeys(
+	accounts: AccountStorageV3["accounts"],
+	activeIndex: number,
+): string[] {
+	const candidate = accounts[activeIndex];
+	if (!candidate) return [];
+	return toCleanupIdentityKeys({
+		organizationId: candidate.organizationId,
+		accountId: candidate.accountId,
+		refreshToken: candidate.refreshToken,
+	});
+}
+
+function findCleanupAccountIndexByIdentityKeys(
+	accounts: AccountStorageV3["accounts"],
+	identityKeys: string[],
+): number {
+	if (identityKeys.length === 0) return -1;
+	for (const identityKey of identityKeys) {
+		const index = accounts.findIndex((account) =>
+			toCleanupIdentityKeys({
+				organizationId: account.organizationId,
+				accountId: account.accountId,
+				refreshToken: account.refreshToken,
+			}).includes(identityKey),
+		);
+		if (index >= 0) return index;
+	}
+	return -1;
 }
 
 function buildSourceIdentitySet(storage: AccountStorageV3): Set<string> {
@@ -623,6 +681,22 @@ export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiA
 			...existing,
 			accounts: [...preservedAccounts, ...normalizedSyncedStorage.accounts],
 		} satisfies AccountStorageV3;
+		const existingActiveKeys = extractCleanupActiveKeys(existing.accounts, existing.activeIndex);
+		const mappedActiveIndex = (() => {
+			const byIdentity = findCleanupAccountIndexByIdentityKeys(normalized.accounts, existingActiveKeys);
+			return byIdentity >= 0
+				? byIdentity
+				: Math.min(existing.activeIndex, Math.max(0, normalized.accounts.length - 1));
+		})();
+		const activeIndexByFamily = Object.fromEntries(
+			Object.entries(existing.activeIndexByFamily ?? {}).map(([family, index]) => {
+				const identityKeys = extractCleanupActiveKeys(existing.accounts, index);
+				const mappedIndex = findCleanupAccountIndexByIdentityKeys(normalized.accounts, identityKeys);
+				return [family, mappedIndex >= 0 ? mappedIndex : mappedActiveIndex];
+			}),
+		) as AccountStorageV3["activeIndexByFamily"];
+		normalized.activeIndex = mappedActiveIndex;
+		normalized.activeIndexByFamily = activeIndexByFamily;
 
 		const after = normalized.accounts.length;
 		const removed = Math.max(0, before - after);
@@ -692,7 +766,7 @@ async function assertSyncWithinCapacity(
 				dedupedTotal: sourceDedupedTotal,
 				maxAccounts: maxAccounts,
 				needToRemove: sourceDedupedTotal - maxAccounts,
-				importableNewAccounts: sourceDedupedTotal,
+				importableNewAccounts: 0,
 				skippedOverlaps: Math.max(0, sourceCount - sourceDedupedTotal),
 				suggestedRemovals: [],
 			} satisfies CodexMultiAuthSyncCapacityDetails);
