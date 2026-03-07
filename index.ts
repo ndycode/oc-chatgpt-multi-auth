@@ -1407,6 +1407,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return Boolean(tokenAccountId && account.accountId && tokenAccountId === account.accountId);
 		};
 
+		type SyncRemovalTarget = {
+			refreshToken: string;
+			organizationId?: string;
+			accountId?: string;
+		};
+
+		const getSyncRemovalTargetKey = (target: SyncRemovalTarget): string => {
+			return `${target.organizationId ?? ""}|${target.accountId ?? ""}|${target.refreshToken}`;
+		};
+
 		const normalizeAccountTags = (raw: string): string[] => {
 			return Array.from(
 				new Set(
@@ -3394,12 +3404,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 										storageChanged = true;
 									}
 
+									if (flaggedChanged) {
+										await saveFlaggedAccounts(flaggedStorage);
+									}
 									if (storageChanged) {
 										await saveAccounts(workingStorage);
 										invalidateAccountManagerCache();
-									}
-									if (flaggedChanged) {
-										await saveFlaggedAccounts(flaggedStorage);
 									}
 
 									const summaryLines: Array<{
@@ -3446,6 +3456,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 								let screenFinished = false;
 								try {
 									const flaggedStorage = await loadFlaggedAccounts();
+									const activeStorage = await loadAccounts();
+									const restoreContext = [
+										...(activeStorage?.accounts ?? []),
+										...flaggedStorage.accounts,
+									];
 									if (flaggedStorage.accounts.length === 0) {
 										emit("No flagged accounts to verify.");
 										if (screen) {
@@ -3481,7 +3496,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (
 											cached &&
 											canHydrateCachedTokenForAccount(
-												flaggedStorage.accounts,
+												restoreContext,
 												flagged,
 												cachedTokenAccountId,
 											) &&
@@ -3625,7 +3640,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								};
 
 								const removeAccountsForSync = async (
-									targetRefreshTokens: string[],
+									targets: SyncRemovalTarget[],
 								): Promise<void> => {
 									const currentStorage =
 										(await loadAccounts()) ??
@@ -3636,20 +3651,38 @@ while (attempted.size < Math.max(1, accountCount)) {
 											activeIndexByFamily: {},
 										} satisfies AccountStorageV3);
 									const currentFlaggedStorage = await loadFlaggedAccounts();
-									const refreshTokenSet = new Set(
-										targetRefreshTokens.filter((token) => typeof token === "string" && token.length > 0),
+									const targetKeySet = new Set(
+										targets
+											.filter((target) => typeof target.refreshToken === "string" && target.refreshToken.length > 0)
+											.map((target) => getSyncRemovalTargetKey(target)),
 									);
 									const removedTargets = currentStorage.accounts
 										.map((account, index) => ({ index, account }))
-										.filter((entry) => entry.account && refreshTokenSet.has(entry.account.refreshToken));
+										.filter((entry) =>
+											entry.account &&
+											targetKeySet.has(
+												getSyncRemovalTargetKey({
+													refreshToken: entry.account.refreshToken,
+													organizationId: entry.account.organizationId,
+													accountId: entry.account.accountId,
+												}),
+											),
+										);
 									if (removedTargets.length === 0) {
 										return;
 									}
-									if (removedTargets.length !== refreshTokenSet.size) {
+									if (removedTargets.length !== targetKeySet.size) {
 										throw new Error("Selected accounts changed before removal. Re-run sync and confirm again.");
 									}
 									currentStorage.accounts = currentStorage.accounts.filter(
-										(account) => !refreshTokenSet.has(account.refreshToken),
+										(account) =>
+											!targetKeySet.has(
+												getSyncRemovalTargetKey({
+													refreshToken: account.refreshToken,
+													organizationId: account.organizationId,
+													accountId: account.accountId,
+												}),
+											),
 									);
 									clampActiveIndices(currentStorage);
 									await saveAccounts(currentStorage);
@@ -3671,7 +3704,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 								const buildSyncRemovalPlan = async (indexes: number[]): Promise<{
 									previewLines: string[];
-									refreshTokens: string[];
+									targets: SyncRemovalTarget[];
 								}> => {
 									const currentStorage =
 										(await loadAccounts()) ??
@@ -3681,7 +3714,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 											activeIndex: 0,
 											activeIndexByFamily: {},
 										} satisfies AccountStorageV3);
-									const candidates = [...indexes]
+									const candidates: Array<{
+										previewLine: string;
+										target?: SyncRemovalTarget;
+									}> = [...indexes]
 										.sort((left, right) => left - right)
 										.map((index) => {
 											const account = currentStorage.accounts[index];
@@ -3689,20 +3725,24 @@ while (attempted.size < Math.max(1, accountCount)) {
 												return {
 													previewLine: `Account ${index + 1}`,
 													refreshToken: undefined,
-												};
-											}
-											const label = account.email ?? account.accountLabel ?? `Account ${index + 1}`;
-											const currentSuffix = index === currentStorage.activeIndex ? " | current" : "";
+											};
+										}
+										const label = account.email ?? account.accountLabel ?? `Account ${index + 1}`;
+										const currentSuffix = index === currentStorage.activeIndex ? " | current" : "";
 											return {
 												previewLine: `${index + 1}. ${label}${currentSuffix}`,
-												refreshToken: account.refreshToken,
+												target: {
+													refreshToken: account.refreshToken,
+													organizationId: account.organizationId,
+													accountId: account.accountId,
+												} satisfies SyncRemovalTarget,
 											};
 										});
 									return {
 										previewLines: candidates.map((candidate) => candidate.previewLine),
-										refreshTokens: candidates
-											.map((candidate) => candidate.refreshToken)
-											.filter((token): token is string => typeof token === "string" && token.length > 0),
+										targets: candidates
+											.map((candidate) => candidate.target)
+											.filter((target): target is SyncRemovalTarget => target !== undefined),
 									};
 								};
 
@@ -3823,11 +3863,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 											console.log("Sync cancelled.\n");
 											return;
 										}
-										if (!pruneBackup) {
-											pruneBackup = await createSyncPruneBackup();
-										}
-										await removeAccountsForSync(removalPlan.refreshTokens);
-										pruneBackup = null;
+										pruneBackup = await createSyncPruneBackup();
+										await removeAccountsForSync(removalPlan.targets);
 										continue;
 									}
 									const message = error instanceof Error ? error.message : String(error);

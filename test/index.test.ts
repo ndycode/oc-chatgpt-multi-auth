@@ -2779,7 +2779,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts[0]?.accountId).toBe("org-newer");
 	});
 
-	it("keeps previously confirmed prune removals when a later sync preview returns no imports", async () => {
+	it("restores pruned accounts when sync does not commit after a prune retry", async () => {
 		const cliModule = await import("../lib/cli.js");
 		const storageModule = await import("../lib/storage.js");
 		const syncModule = await import("../lib/codex-multi-auth-sync.js");
@@ -2881,8 +2881,11 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 			const authResult = await autoMethod.authorize();
 			expect(authResult.instructions).toBe("Authentication cancelled");
-			expect(mockStorage.accounts).toHaveLength(1);
-			expect(mockStorage.accounts[0]?.accountId).toBe("org-keep");
+			expect(mockStorage.accounts).toHaveLength(2);
+			expect(mockStorage.accounts.map((account) => account.accountId)).toEqual([
+				"org-keep",
+				"org-prune",
+			]);
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
