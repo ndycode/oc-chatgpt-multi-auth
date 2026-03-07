@@ -1240,35 +1240,73 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				return null;
 			}
 
+			const entries: Array<{
+				line: string;
+				tone: "normal" | "muted" | "success" | "warning" | "danger" | "accent";
+			}> = [];
+			const spinnerFrames = ["-", "\\", "|", "/"];
+			let frame = 0;
+			let running = true;
 			let initialized = false;
-			const ensureHeader = () => {
+			let timer: NodeJS.Timeout | null = null;
+
+			const render = () => {
+				const lines: string[] = [];
+				const maxVisibleLines = Math.max(8, (process.stdout.rows ?? 24) - 8);
+				const visibleEntries = entries.slice(-maxVisibleLines);
+				const spinner = running ? `${spinnerFrames[frame % spinnerFrames.length] ?? "-"} ` : "+ ";
+				const stageTone: "muted" | "accent" | "success" = running ? "accent" : "success";
+
+				lines.push(...formatUiHeader(ui, title));
+				lines.push("");
+				if (subtitle) {
+					lines.push(paintUiText(ui, `${spinner}${subtitle}`, stageTone));
+					lines.push("");
+				}
+				for (const entry of visibleEntries) {
+					lines.push(paintUiText(ui, entry.line, entry.tone));
+				}
+				if (running) {
+					lines.push("");
+					lines.push(paintUiText(ui, "Working...", "muted"));
+				}
+
+				process.stdout.write(ANSI.clearScreen + ANSI.moveTo(1, 1) + lines.join("\n"));
+				frame += 1;
+			};
+
+			const ensureScreen = () => {
 				if (initialized) return;
 				process.stdout.write(ANSI.altScreenOn + ANSI.hide + ANSI.clearScreen + ANSI.moveTo(1, 1));
-				for (const line of formatUiHeader(ui, title)) {
-					console.log(line);
-				}
-				if (subtitle) {
-					console.log("");
-					console.log(paintUiText(ui, subtitle, "muted"));
-				}
-				console.log("");
+				render();
+				timer = setInterval(() => {
+					if (!running) return;
+					render();
+				}, 120);
 				initialized = true;
 			};
 
-			ensureHeader();
+			ensureScreen();
 			return {
 				push: (line: string, tone = "normal") => {
-					ensureHeader();
-					console.log(paintUiText(ui, line, tone));
+					ensureScreen();
+					entries.push({ line, tone });
+					render();
 				},
 				finish: async (summaryLines) => {
-					ensureHeader();
+					ensureScreen();
 					if (summaryLines && summaryLines.length > 0) {
-						console.log("");
+						entries.push({ line: "", tone: "normal" });
 						for (const entry of summaryLines) {
-							console.log(paintUiText(ui, entry.line, entry.tone ?? "normal"));
+							entries.push({ line: entry.line, tone: entry.tone ?? "normal" });
 						}
 					}
+					running = false;
+					if (timer) {
+						clearInterval(timer);
+						timer = null;
+					}
+					render();
 					await new Promise((resolve) => setTimeout(resolve, 2_000));
 					process.stdout.write(ANSI.altScreenOff + ANSI.show + ANSI.clearScreen + ANSI.moveTo(1, 1));
 				},
