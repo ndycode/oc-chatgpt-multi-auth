@@ -275,7 +275,7 @@ For legacy OpenCode (v1.0.209 and below), use `config/opencode-legacy.json` whic
 
 ## Multi-Account Setup
 
-Add multiple ChatGPT accounts for higher combined quotas. The plugin uses **health-aware rotation** with automatic failover and supports up to 20 accounts.
+Add multiple ChatGPT accounts for higher combined quotas. The plugin uses **health-aware rotation** with automatic failover and supports unlimited accounts.
 
 ```bash
 opencode auth login  # Run again to add more accounts

@@ -1157,8 +1157,9 @@ export async function previewImportAccounts(
 	return withAccountStorageTransaction((existing) => {
 		const existingAccounts = existing?.accounts ?? [];
 		const merged = [...existingAccounts, ...normalized.accounts];
+		const hasFiniteAccountLimit = Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS);
 
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+		if (hasFiniteAccountLimit && merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 			const deduped = deduplicateAccountsForStorage(merged);
 			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				throw new Error(
@@ -1263,8 +1264,9 @@ export async function importAccounts(
       }
 
       const merged = [...existingAccounts, ...normalized.accounts];
+      const hasFiniteAccountLimit = Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS);
 
-      if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+      if (hasFiniteAccountLimit && merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
         const deduped = deduplicateAccountsForStorage(merged);
         if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
           throw new Error(

@@ -591,11 +591,10 @@ describe("storage", () => {
       );
     });
 
-    it("should enforce MAX_ACCOUNTS during import", async () => {
-       // @ts-ignore
-      const { importAccounts } = await import("../lib/storage.js");
-      
-      const manyAccounts = Array.from({ length: 21 }, (_, i) => ({
+    it("allows importing more than the old account cap when unlimited", async () => {
+       const { importAccounts } = await import("../lib/storage.js");
+       
+       const manyAccounts = Array.from({ length: 21 }, (_, i) => ({
         accountId: `acct${i}`,
         refreshToken: `ref${i}`,
         addedAt: Date.now(),
@@ -609,8 +608,11 @@ describe("storage", () => {
       };
       await fs.writeFile(exportPath, JSON.stringify(toImport));
       
-      // @ts-ignore
-      await expect(importAccounts(exportPath)).rejects.toThrow(/exceed maximum/);
+      await expect(importAccounts(exportPath)).resolves.toMatchObject({
+        imported: 21,
+        total: 21,
+        skipped: 0,
+      });
     });
 
     it("should fail export when no accounts exist", async () => {

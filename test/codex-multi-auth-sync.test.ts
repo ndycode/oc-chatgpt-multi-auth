@@ -208,6 +208,104 @@ describe("codex-multi-auth sync", () => {
 		);
 	});
 
+	it("skips source accounts whose emails already exist locally during sync", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		const globalPath = join(rootDir, "openai-codex-accounts.json");
+		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+		mockReadFileSync.mockReturnValue(
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [
+					{
+						accountId: "org-shared-a",
+						organizationId: "org-shared-a",
+						accountIdSource: "org",
+						email: "shared@example.com",
+						refreshToken: "rt-shared-a",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+					{
+						accountId: "org-shared-b",
+						organizationId: "org-shared-b",
+						accountIdSource: "org",
+						email: "shared@example.com",
+						refreshToken: "rt-shared-b",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+					{
+						accountId: "org-new",
+						organizationId: "org-new",
+						accountIdSource: "org",
+						email: "new@example.com",
+						refreshToken: "rt-new",
+						addedAt: 3,
+						lastUsed: 3,
+					},
+				],
+			}),
+		);
+
+		const storageModule = await import("../lib/storage.js");
+		const currentStorage = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [
+				{
+					accountId: "org-existing",
+					organizationId: "org-existing",
+					accountIdSource: "org",
+					email: "shared@example.com",
+					refreshToken: "rt-existing",
+					addedAt: 10,
+					lastUsed: 10,
+				},
+			],
+		};
+		vi.mocked(storageModule.withAccountStorageTransaction)
+			.mockImplementationOnce(async (handler) => handler(currentStorage, vi.fn(async () => {})))
+			.mockImplementationOnce(async (handler) => handler(currentStorage, vi.fn(async () => {})));
+
+		vi.mocked(storageModule.previewImportAccounts).mockImplementationOnce(async (filePath) => {
+			const raw = await fs.promises.readFile(filePath, "utf8");
+			const parsed = JSON.parse(raw) as { accounts: Array<{ email?: string }> };
+			expect(parsed.accounts.map((account) => account.email)).toEqual(["new@example.com"]);
+			return { imported: 1, skipped: 0, total: 1 };
+		});
+		vi.mocked(storageModule.importAccounts).mockImplementationOnce(async (filePath) => {
+			const raw = await fs.promises.readFile(filePath, "utf8");
+			const parsed = JSON.parse(raw) as { accounts: Array<{ email?: string }> };
+			expect(parsed.accounts.map((account) => account.email)).toEqual(["new@example.com"]);
+			return {
+				imported: 1,
+				skipped: 0,
+				total: 1,
+				backupStatus: "created",
+				backupPath: "/tmp/filtered-sync-backup.json",
+			};
+		});
+
+		const { previewSyncFromCodexMultiAuth, syncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+
+		await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+			accountsPath: globalPath,
+			imported: 1,
+			total: 1,
+			skipped: 0,
+		});
+		await expect(syncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+			accountsPath: globalPath,
+			imported: 1,
+			total: 1,
+			skipped: 0,
+		});
+	});
+
 	it("normalizes org-scoped source accounts to include organizationId before import", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
@@ -269,7 +367,7 @@ describe("codex-multi-auth sync", () => {
 		});
 	});
 
-	it("surfaces actionable capacity details when sync would exceed the account limit", async () => {
+	it("does not block preview when account limit is unlimited", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
 		const globalPath = join(rootDir, "openai-codex-accounts.json");
@@ -323,39 +421,17 @@ describe("codex-multi-auth sync", () => {
 			),
 		);
 
-		const { CodexMultiAuthSyncCapacityError, previewSyncFromCodexMultiAuth } = await import(
-			"../lib/codex-multi-auth-sync.js"
-		);
+		const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
 
-		try {
-			await previewSyncFromCodexMultiAuth(process.cwd());
-			throw new Error("Expected previewSyncFromCodexMultiAuth to reject");
-		} catch (error) {
-			expect(error).toBeInstanceOf(CodexMultiAuthSyncCapacityError);
-			expect(error).toMatchObject({
-				name: "CodexMultiAuthSyncCapacityError",
-			});
-			const details = (error as InstanceType<typeof CodexMultiAuthSyncCapacityError>).details;
-			expect(details).toMatchObject({
-				accountsPath: globalPath,
-				currentCount: 19,
-				sourceCount: 2,
-				sourceDedupedTotal: 2,
-				dedupedTotal: 21,
-				maxAccounts: 20,
-				needToRemove: 1,
-				importableNewAccounts: 2,
-				skippedOverlaps: 0,
-			});
-			expect(details.suggestedRemovals[0]).toMatchObject({
-				index: 1,
-				score: expect.any(Number),
-				reason: expect.stringContaining("not present in codex-multi-auth source"),
-			});
-		}
+		await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+			accountsPath: globalPath,
+			imported: 2,
+			total: 4,
+			skipped: 0,
+		});
 	});
 
-	it("does not suggest local removals when the source itself exceeds the account limit", async () => {
+	it("does not block source-only imports above the old cap when limit is unlimited", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
 		const globalPath = join(rootDir, "openai-codex-accounts.json");
@@ -400,112 +476,44 @@ describe("codex-multi-auth sync", () => {
 			),
 		);
 
-		const { CodexMultiAuthSyncCapacityError, previewSyncFromCodexMultiAuth } = await import(
-			"../lib/codex-multi-auth-sync.js"
-		);
+		const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
 
-		try {
-			await previewSyncFromCodexMultiAuth(process.cwd());
-			throw new Error("Expected previewSyncFromCodexMultiAuth to reject");
-		} catch (error) {
-			expect(error).toBeInstanceOf(CodexMultiAuthSyncCapacityError);
-			const details = (error as InstanceType<typeof CodexMultiAuthSyncCapacityError>).details;
-			expect(details).toMatchObject({
-				accountsPath: globalPath,
-				sourceDedupedTotal: 21,
-				dedupedTotal: 21,
-				needToRemove: 1,
-			});
-			expect(details.suggestedRemovals).toEqual([]);
-		}
+		await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+			accountsPath: globalPath,
+			imported: 2,
+			total: 4,
+			skipped: 0,
+		});
 	});
 
-	it("prioritizes removals that actually reduce merged capacity over same-email matches", async () => {
+	it("does not produce capacity errors for large existing stores when unlimited", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
 		const globalPath = join(rootDir, "openai-codex-accounts.json");
 		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
-		const makeOverlap = (suffix: string, lastUsed: number) => ({
-			accountId: `org-${suffix}`,
-			organizationId: `org-${suffix}`,
-			accountIdSource: "org" as const,
-			email: `${suffix}@example.com`,
-			refreshToken: `rt-${suffix}`,
-			addedAt: lastUsed,
-			lastUsed,
+		mockReadFileSync.mockReturnValue(
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: Array.from({ length: 50 }, (_, index) => ({
+					accountId: `org-source-${index + 1}`,
+					organizationId: `org-source-${index + 1}`,
+					accountIdSource: "org",
+					email: `source${index + 1}@example.com`,
+					refreshToken: `rt-source-${index + 1}`,
+					addedAt: index + 1,
+					lastUsed: index + 1,
+				})),
+			}),
+		);
+
+		const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+		await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+			accountsPath: globalPath,
+			imported: 2,
+			total: 4,
+			skipped: 0,
 		});
-		const sharedPrimary = {
-			accountId: "org-shared-primary",
-			organizationId: "org-shared-primary",
-			accountIdSource: "org" as const,
-			email: "shared@example.com",
-			refreshToken: "rt-shared-primary",
-			addedAt: 1,
-			lastUsed: 1,
-		};
-		const sharedSecondary = {
-			accountId: "org-shared-secondary",
-			organizationId: "org-shared-secondary",
-			accountIdSource: "org" as const,
-			email: "shared@example.com",
-			refreshToken: "rt-shared-secondary",
-			addedAt: 2,
-			lastUsed: 2,
-		};
-		const overlapAccounts = Array.from({ length: 18 }, (_, index) =>
-			makeOverlap(`overlap-${index + 1}`, 10 + index),
-		);
-		const sourceStorage = {
-			version: 3,
-			activeIndex: 0,
-			activeIndexByFamily: {},
-			accounts: [
-				sharedPrimary,
-				...overlapAccounts,
-				{
-					accountId: "org-source-only",
-					organizationId: "org-source-only",
-					accountIdSource: "org" as const,
-					email: "source-only@example.com",
-					refreshToken: "rt-source-only",
-					addedAt: 100,
-					lastUsed: 100,
-				},
-			],
-		};
-		mockReadFileSync.mockReturnValue(JSON.stringify(sourceStorage));
-
-		const storageModule = await import("../lib/storage.js");
-		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
-			handler(
-				{
-					version: 3,
-					activeIndex: 0,
-					activeIndexByFamily: {},
-					accounts: [
-						sharedPrimary,
-						sharedSecondary,
-						...overlapAccounts,
-					],
-				},
-				vi.fn(async () => {}),
-			),
-		);
-
-		const { CodexMultiAuthSyncCapacityError, previewSyncFromCodexMultiAuth } = await import(
-			"../lib/codex-multi-auth-sync.js"
-		);
-
-		try {
-			await previewSyncFromCodexMultiAuth(process.cwd());
-			throw new Error("Expected previewSyncFromCodexMultiAuth to reject");
-		} catch (error) {
-			expect(error).toBeInstanceOf(CodexMultiAuthSyncCapacityError);
-			const details = (error as InstanceType<typeof CodexMultiAuthSyncCapacityError>).details;
-			expect(details.suggestedRemovals[0]).toMatchObject({
-				index: 1,
-				reason: expect.stringContaining("frees 1 sync slot"),
-			});
-		}
 	});
 });

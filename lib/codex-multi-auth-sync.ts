@@ -135,6 +135,78 @@ function deduplicateAccountsForSync(storage: AccountStorageV3): AccountStorageV3
 	};
 }
 
+function selectNewestByTimestamp<T extends { addedAt?: number; lastUsed?: number }>(
+	current: T,
+	candidate: T,
+): T {
+	const currentLastUsed = current.lastUsed ?? 0;
+	const candidateLastUsed = candidate.lastUsed ?? 0;
+	if (candidateLastUsed > currentLastUsed) return candidate;
+	if (candidateLastUsed < currentLastUsed) return current;
+	const currentAddedAt = current.addedAt ?? 0;
+	const candidateAddedAt = candidate.addedAt ?? 0;
+	return candidateAddedAt >= currentAddedAt ? candidate : current;
+}
+
+function deduplicateSourceAccountsByEmail(
+	accounts: AccountStorageV3["accounts"],
+): AccountStorageV3["accounts"] {
+	const deduplicated: AccountStorageV3["accounts"] = [];
+	const emailToIndex = new Map<string, number>();
+
+	for (const account of accounts) {
+		const normalizedEmail = normalizeIdentity(account.email);
+		if (!normalizedEmail) {
+			deduplicated.push(account);
+			continue;
+		}
+
+		const existingIndex = emailToIndex.get(normalizedEmail);
+		if (existingIndex === undefined) {
+			emailToIndex.set(normalizedEmail, deduplicated.length);
+			deduplicated.push(account);
+			continue;
+		}
+
+		const existing = deduplicated[existingIndex];
+		if (!existing) continue;
+		const newest = selectNewestByTimestamp(existing, account);
+		const older = newest === existing ? account : existing;
+		deduplicated[existingIndex] = {
+			...older,
+			...newest,
+			email: newest.email ?? older.email,
+			accountLabel: newest.accountLabel ?? older.accountLabel,
+			accountId: newest.accountId ?? older.accountId,
+			organizationId: newest.organizationId ?? older.organizationId,
+			accountIdSource: newest.accountIdSource ?? older.accountIdSource,
+			refreshToken: newest.refreshToken ?? older.refreshToken,
+		};
+	}
+
+	return deduplicated;
+}
+
+function filterSourceAccountsAgainstExistingEmails(
+	sourceStorage: AccountStorageV3,
+	existingAccounts: AccountStorageV3["accounts"],
+): AccountStorageV3 {
+	const existingEmails = new Set(
+		existingAccounts
+			.map((account) => normalizeIdentity(account.email))
+			.filter((email): email is string => typeof email === "string" && email.length > 0),
+	);
+
+	return {
+		...sourceStorage,
+		accounts: deduplicateSourceAccountsByEmail(sourceStorage.accounts).filter((account) => {
+			const normalizedEmail = normalizeIdentity(account.email);
+			if (!normalizedEmail) return true;
+			return !existingEmails.has(normalizedEmail);
+		}),
+	};
+}
+
 function buildMergedDedupedAccounts(
 	currentAccounts: AccountStorageV3["accounts"],
 	sourceAccounts: AccountStorageV3["accounts"],
@@ -388,10 +460,25 @@ export function loadCodexMultiAuthSourceStorage(
 	};
 }
 
+async function loadPreparedCodexMultiAuthSourceStorage(
+	projectPath = process.cwd(),
+): Promise<CodexMultiAuthResolvedSource & { storage: AccountStorageV3 }> {
+	const resolved = loadCodexMultiAuthSourceStorage(projectPath);
+	const currentStorage = await withAccountStorageTransaction((current) => Promise.resolve(current));
+	const preparedStorage = filterSourceAccountsAgainstExistingEmails(
+		resolved.storage,
+		currentStorage?.accounts ?? [],
+	);
+	return {
+		...resolved,
+		storage: preparedStorage,
+	};
+}
+
 export async function previewSyncFromCodexMultiAuth(
 	projectPath = process.cwd(),
 ): Promise<CodexMultiAuthSyncPreview> {
-	const resolved = loadCodexMultiAuthSourceStorage(projectPath);
+	const resolved = await loadPreparedCodexMultiAuthSourceStorage(projectPath);
 	await assertSyncWithinCapacity(resolved);
 	const preview = await withNormalizedImportFile(
 		resolved.storage,
@@ -408,7 +495,7 @@ export async function previewSyncFromCodexMultiAuth(
 export async function syncFromCodexMultiAuth(
 	projectPath = process.cwd(),
 ): Promise<CodexMultiAuthSyncResult> {
-	const resolved = loadCodexMultiAuthSourceStorage(projectPath);
+	const resolved = await loadPreparedCodexMultiAuthSourceStorage(projectPath);
 	let result: ImportAccountsResult;
 	try {
 		result = await withNormalizedImportFile(
@@ -490,6 +577,9 @@ export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiA
 async function assertSyncWithinCapacity(
 	resolved: CodexMultiAuthResolvedSource & { storage: AccountStorageV3 },
 ): Promise<void> {
+	if (!Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS)) {
+		return;
+	}
 	const details = await withAccountStorageTransaction<CodexMultiAuthSyncCapacityDetails | null>((current) => {
 		const existing = current ?? {
 			version: 3 as const,
