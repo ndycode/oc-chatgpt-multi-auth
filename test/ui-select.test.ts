@@ -61,4 +61,8 @@ describe("ui-select", () => {
 	it("tokenizes CSI tilde sequences without splitting numeric hotkeys", () => {
 		expect(tokenizeTerminalInput("\u001b[5~1")).toEqual(["\u001b[5~", "1"]);
 	});
+
+	it("tokenizes packed SS3 arrow sequences", () => {
+		expect(tokenizeTerminalInput("\u001bOA\u001bOB")).toEqual(["\u001bOA", "\u001bOB"]);
+	});
 });
