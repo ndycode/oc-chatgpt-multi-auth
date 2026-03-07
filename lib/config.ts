@@ -144,11 +144,30 @@ export function savePluginConfigMutation(
 		}
 
 		const tempPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
-		writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
-		if (existsSync(CONFIG_PATH)) {
-			unlinkSync(CONFIG_PATH);
+		writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		try {
+			renameSync(tempPath, CONFIG_PATH);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				process.platform === "win32" &&
+				(code === "EEXIST" || code === "EPERM") &&
+				existsSync(CONFIG_PATH)
+			) {
+				unlinkSync(CONFIG_PATH);
+				renameSync(tempPath, CONFIG_PATH);
+				return;
+			}
+			try {
+				unlinkSync(tempPath);
+			} catch {
+				// best effort temp cleanup
+			}
+			throw error;
 		}
-		renameSync(tempPath, CONFIG_PATH);
 	});
 }
 
@@ -164,6 +183,16 @@ function sleepSync(ms: number): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+function isProcessAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "EPERM";
+	}
+}
+
 function withPluginConfigLock<T>(fn: () => T): T {
 	mkdirSync(dirname(CONFIG_PATH), { recursive: true });
 	const deadline = Date.now() + 2_000;
@@ -175,6 +204,19 @@ function withPluginConfigLock<T>(fn: () => T): T {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code !== "EEXIST" || Date.now() >= deadline) {
 				throw error;
+			}
+			try {
+				const lockOwnerPid = Number.parseInt(readFileSync(CONFIG_LOCK_PATH, "utf-8").trim(), 10);
+				if (
+					Number.isFinite(lockOwnerPid) &&
+					lockOwnerPid !== process.pid &&
+					!isProcessAlive(lockOwnerPid)
+				) {
+					unlinkSync(CONFIG_LOCK_PATH);
+					continue;
+				}
+			} catch {
+				// best effort stale-lock recovery
 			}
 			sleepSync(25);
 		}

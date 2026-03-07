@@ -3124,6 +3124,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								if (workingStorage.accounts.length === 0) {
 									if (screen) {
 										screen.push("No accounts to check.", "warning");
+										await screen.finish();
 									} else {
 										console.log("No accounts to check.");
 									}

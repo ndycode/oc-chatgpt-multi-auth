@@ -793,9 +793,6 @@ describe('Plugin Configuration', () => {
 			expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
 			const [writtenPath, writtenContent] = mockWriteFileSync.mock.calls[1] ?? [];
 			expect(String(writtenPath)).toContain('.tmp');
-			expect(mockUnlinkSync).toHaveBeenCalledWith(
-				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json'),
-			);
 			expect(mockRenameSync).toHaveBeenCalled();
 			expect(JSON.parse(String(writtenContent))).toEqual({
 				codexMode: false,
@@ -806,6 +803,9 @@ describe('Plugin Configuration', () => {
 					},
 				},
 			});
+			expect(mockUnlinkSync).not.toHaveBeenCalledWith(
+				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json'),
+			);
 		});
 
 		it('creates a new config file when enabling sync on a missing config', () => {
@@ -846,6 +846,40 @@ describe('Plugin Configuration', () => {
 
 			expect(() => setSyncFromCodexMultiAuthEnabled(true)).not.toThrow();
 			expect(mockRenameSync).toHaveBeenCalled();
+		});
+
+		it('recovers stale config lock files before mutating config', () => {
+			const configPath = path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json');
+			const lockPath = `${configPath}.lock`;
+			const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+				const error = new Error('process not found') as NodeJS.ErrnoException;
+				error.code = 'ESRCH';
+				throw error;
+			});
+			mockExistsSync.mockReturnValue(true);
+			mockReadFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				if (String(filePath) === lockPath) {
+					return '424242';
+				}
+				return JSON.stringify({ codexMode: false });
+			});
+			mockWriteFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+				if (String(filePath) === lockPath && mockWriteFileSync.mock.calls.length === 1) {
+					const error = new Error('exists') as NodeJS.ErrnoException;
+					error.code = 'EEXIST';
+					throw error;
+				}
+				return undefined;
+			});
+
+			try {
+				expect(() => setSyncFromCodexMultiAuthEnabled(true)).not.toThrow();
+				expect(mockUnlinkSync).toHaveBeenCalledWith(lockPath);
+				expect(killSpy).toHaveBeenCalledWith(424242, 0);
+				expect(mockRenameSync).toHaveBeenCalled();
+			} finally {
+				killSpy.mockRestore();
+			}
 		});
 	});
 });
