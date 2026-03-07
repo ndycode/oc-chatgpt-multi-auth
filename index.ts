@@ -3927,35 +3927,82 @@ while (attempted.size < Math.max(1, accountCount)) {
 							};
 
 							const pickBestAccountFromDashboard = async (): Promise<void> => {
-								const storage = await loadAccounts();
-								if (!storage || storage.accounts.length === 0) {
-									console.log("\nNo accounts available.\n");
-									return;
+								const ui = resolveUiRuntime();
+								const screen = createOperationScreen(ui, "Best Account", "Comparing accounts");
+								let screenFinished = false;
+								try {
+									const storage = await loadAccounts();
+									if (!storage || storage.accounts.length === 0) {
+										if (screen) {
+											screen.push("No accounts available.", "warning");
+											await screen.finish();
+											screenFinished = true;
+										} else {
+											console.log("\nNo accounts available.\n");
+										}
+										return;
+									}
+
+									const now = Date.now();
+									const managerForFix = await AccountManager.loadFromDisk();
+									cachedAccountManager = managerForFix;
+									const explainability = managerForFix.getSelectionExplainability("codex", undefined, now);
+									const eligible = explainability
+										.filter((entry) => entry.eligible)
+										.sort((a, b) => {
+											if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
+											return b.tokensAvailable - a.tokensAvailable;
+										});
+									const best = eligible[0];
+									if (!best) {
+										if (screen) {
+											screen.push(`Compared ${explainability.length} account(s).`, "muted");
+											screen.push("No eligible account available.", "warning");
+											await screen.finish();
+											screenFinished = true;
+										} else {
+											console.log("\nNo eligible account available.\n");
+										}
+										return;
+									}
+
+									storage.activeIndex = best.index;
+									storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
+									for (const family of MODEL_FAMILIES) {
+										storage.activeIndexByFamily[family] = best.index;
+									}
+									await saveAccounts(storage);
+									invalidateAccountManagerCache();
+									const account = storage.accounts[best.index];
+									const selectedLabel = formatCommandAccountLabel(account, best.index);
+
+									if (screen) {
+										screen.push(`Compared ${explainability.length} account(s); ${eligible.length} eligible.`, "muted");
+										screen.push(`${getStatusMarker(ui, "ok")} ${selectedLabel}`, "success");
+										if (best.reasons.length > 0) {
+											screen.push(`Why: ${best.reasons.slice(0, 3).join("; ")}`, "muted");
+										}
+										screen.push(`Health ${best.healthScore}; tokens ${best.tokensAvailable}`, "muted");
+										await screen.finish([{ line: "Best account selected.", tone: "success" }]);
+										screenFinished = true;
+										return;
+									}
+
+									console.log(`\nSelected best account: ${account?.email ?? `Account ${best.index + 1}`}\n`);
+								} catch (error) {
+									const message = error instanceof Error ? error.message : String(error);
+									if (screen) {
+										screen.push(`Failed to pick best account: ${message}`, "danger");
+										await screen.finish();
+										screenFinished = true;
+										return;
+									}
+									console.log(`\nFailed to pick best account: ${message}\n`);
+								} finally {
+									if (screen && !screenFinished) {
+										screen.abort();
+									}
 								}
-								const now = Date.now();
-								const managerForFix = await AccountManager.loadFromDisk();
-								cachedAccountManager = managerForFix;
-								const explainability = managerForFix.getSelectionExplainability("codex", undefined, now);
-								const eligible = explainability
-									.filter((entry) => entry.eligible)
-									.sort((a, b) => {
-										if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
-										return b.tokensAvailable - a.tokensAvailable;
-									});
-								const best = eligible[0];
-								if (!best) {
-									console.log("\nNo eligible account available.\n");
-									return;
-								}
-								storage.activeIndex = best.index;
-								storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-								for (const family of MODEL_FAMILIES) {
-									storage.activeIndexByFamily[family] = best.index;
-								}
-								await saveAccounts(storage);
-								invalidateAccountManagerCache();
-								const account = storage.accounts[best.index];
-								console.log(`\nSelected best account: ${account?.email ?? `Account ${best.index + 1}`}\n`);
 							};
 
 							const runAutoRepairFromDashboard = async (): Promise<void> => {

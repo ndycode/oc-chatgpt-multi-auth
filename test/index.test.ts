@@ -2779,6 +2779,47 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts[0]?.accountId).toBe("org-newer");
 	});
 
+	it("runs best-account selection from the dashboard forecast action", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "org-primary",
+				organizationId: "org-primary",
+				accountIdSource: "org",
+				email: "primary@example.com",
+				refreshToken: "refresh-primary",
+			},
+		];
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = {};
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "forecast" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		vi.mocked(storageModule.saveAccounts).mockImplementation(async (nextStorage) => {
+			mockStorage.version = nextStorage.version;
+			mockStorage.activeIndex = nextStorage.activeIndex;
+			mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+			mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
+		});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({ client: mockClient } as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+		expect(vi.mocked(storageModule.saveAccounts)).toHaveBeenCalled();
+		expect(mockStorage.activeIndex).toBe(0);
+		expect(mockStorage.activeIndexByFamily.codex).toBe(0);
+	});
+
 	it("restores pruned accounts when sync does not commit after a prune retry", async () => {
 		const cliModule = await import("../lib/cli.js");
 		const storageModule = await import("../lib/storage.js");
