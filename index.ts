@@ -3840,11 +3840,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 							};
 
-							const toggleCodexMultiAuthSyncSetting = (): void => {
+							const toggleCodexMultiAuthSyncSetting = async (): Promise<void> => {
 								try {
 									const currentConfig = loadPluginConfig();
 									const enabled = getSyncFromCodexMultiAuthEnabled(currentConfig);
-									setSyncFromCodexMultiAuthEnabled(!enabled);
+									await setSyncFromCodexMultiAuthEnabled(!enabled);
 									const nextLabel = !enabled ? "enabled" : "disabled";
 									console.log(`\nSync from codex-multi-auth ${nextLabel}.\n`);
 								} catch (error) {
@@ -4641,7 +4641,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										continue;
 									}
 									if (menuResult.mode === "experimental-toggle-sync") {
-										toggleCodexMultiAuthSyncSetting();
+										await toggleCodexMultiAuthSyncSetting();
 										continue;
 									}
 									if (menuResult.mode === "experimental-sync-now") {

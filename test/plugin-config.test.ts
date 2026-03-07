@@ -775,7 +775,7 @@ describe('Plugin Configuration', () => {
 			).toBe(true);
 		});
 
-		it('persists sync-from-codex-multi-auth while preserving unrelated keys', () => {
+		it('persists sync-from-codex-multi-auth while preserving unrelated keys', async () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue(
 				JSON.stringify({
@@ -809,10 +809,10 @@ describe('Plugin Configuration', () => {
 			);
 		});
 
-		it('creates a new config file when enabling sync on a missing config', () => {
+		it('creates a new config file when enabling sync on a missing config', async () => {
 			mockExistsSync.mockReturnValue(false);
 
-			setSyncFromCodexMultiAuthEnabled(true);
+			await setSyncFromCodexMultiAuthEnabled(true);
 
 			const [, writtenContent] = mockWriteFileSync.mock.calls[1] ?? [];
 			expect(JSON.parse(String(writtenContent))).toEqual({
@@ -824,32 +824,32 @@ describe('Plugin Configuration', () => {
 			});
 		});
 
-		it('throws when mutating an invalid existing config file to avoid clobbering it', () => {
+		it('throws when mutating an invalid existing config file to avoid clobbering it', async () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue('invalid json');
 
-			expect(() => savePluginConfigMutation((current) => current)).toThrow();
+			await expect(savePluginConfigMutation((current) => current)).rejects.toThrow();
 			expect(mockRenameSync).not.toHaveBeenCalled();
 		});
 
-		it('rejects array roots when reading raw plugin config', () => {
+		it('rejects array roots when reading raw plugin config', async () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue('[]');
 
-			expect(() => savePluginConfigMutation((current) => current)).toThrow(
+			await expect(savePluginConfigMutation((current) => current)).rejects.toThrow(
 				'Plugin config root must be a JSON object',
 			);
 		});
 
-		it('throws when toggling sync setting on malformed config to preserve existing settings', () => {
+		it('throws when toggling sync setting on malformed config to preserve existing settings', async () => {
 			mockExistsSync.mockReturnValue(true);
 			mockReadFileSync.mockReturnValue('invalid json');
 
-			expect(() => setSyncFromCodexMultiAuthEnabled(true)).toThrow();
+			await expect(setSyncFromCodexMultiAuthEnabled(true)).rejects.toThrow();
 			expect(mockRenameSync).not.toHaveBeenCalled();
 		});
 
-		it('recovers stale config lock files before mutating config', () => {
+		it('recovers stale config lock files before mutating config', async () => {
 			const configPath = path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json');
 			const lockPath = `${configPath}.lock`;
 			const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
@@ -877,7 +877,7 @@ describe('Plugin Configuration', () => {
 			});
 
 			try {
-				expect(() => setSyncFromCodexMultiAuthEnabled(true)).not.toThrow();
+				await expect(setSyncFromCodexMultiAuthEnabled(true)).resolves.toBeUndefined();
 				expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining('.stale'));
 				expect(killSpy).toHaveBeenCalledWith(424242, 0);
 				expect(mockRenameSync).toHaveBeenCalled();

@@ -68,12 +68,12 @@ describe("plugin config lock retry", () => {
 
 		const { savePluginConfigMutation } = await import("../lib/config.js");
 
-		expect(() =>
+		await expect(
 			savePluginConfigMutation((current) => ({
 				...current,
 				experimental: { syncFromCodexMultiAuth: { enabled: true } },
 			})),
-		).not.toThrow();
+		).resolves.toBeUndefined();
 
 		expect(lockAttempts).toBeGreaterThanOrEqual(2);
 		expect(mockWriteFileSync).toHaveBeenCalled();
@@ -131,12 +131,12 @@ describe("plugin config lock retry", () => {
 		const { savePluginConfigMutation } = await import("../lib/config.js");
 
 		try {
-			expect(() =>
+			await expect(
 				savePluginConfigMutation((current) => ({
 					...current,
 					experimental: { syncFromCodexMultiAuth: { enabled: true } },
 				})),
-			).not.toThrow();
+			).resolves.toBeUndefined();
 			const lockRenameCalls = mockRenameSync.mock.calls.filter(
 				([source, destination]) =>
 					String(source) === lockPath || String(destination) === lockPath,

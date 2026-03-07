@@ -131,11 +131,11 @@ function readRawPluginConfig(recoverInvalid = false): RawPluginConfig {
 	}
 }
 
-export function savePluginConfigMutation(
+export async function savePluginConfigMutation(
 	mutate: (current: RawPluginConfig) => RawPluginConfig,
 	options: { recoverInvalidCurrent?: boolean } = {},
-): void {
-	withPluginConfigLock(() => {
+): Promise<void> {
+	await withPluginConfigLock(() => {
 		const current = readRawPluginConfig(options.recoverInvalidCurrent === true);
 		const next = mutate({ ...current });
 
@@ -201,8 +201,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function sleepSync(ms: number): void {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function sleepAsync(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -263,7 +263,7 @@ function tryRecoverStalePluginConfigLock(rawLockContents: string): boolean {
 	return true;
 }
 
-function withPluginConfigLock<T>(fn: () => T): T {
+async function withPluginConfigLock<T>(fn: () => T | Promise<T>): Promise<T> {
 	mkdirSync(dirname(CONFIG_PATH), { recursive: true });
 	const deadline = Date.now() + 2_000;
 	while (true) {
@@ -287,12 +287,12 @@ function withPluginConfigLock<T>(fn: () => T): T {
 					// best effort stale-lock recovery
 				}
 			}
-			sleepSync(25);
+			await sleepAsync(25);
 		}
 	}
 
 	try {
-		return fn();
+		return await fn();
 	} finally {
 		try {
 			unlinkSync(CONFIG_LOCK_PATH);
@@ -390,8 +390,8 @@ export function getSyncFromCodexMultiAuthEnabled(pluginConfig: PluginConfig): bo
 	return pluginConfig.experimental?.syncFromCodexMultiAuth?.enabled === true;
 }
 
-export function setSyncFromCodexMultiAuthEnabled(enabled: boolean): void {
-	savePluginConfigMutation((current) => {
+export async function setSyncFromCodexMultiAuthEnabled(enabled: boolean): Promise<void> {
+	await savePluginConfigMutation((current) => {
 		const experimental = isRecord(current.experimental) ? { ...current.experimental } : {};
 		const syncSettings = isRecord(experimental.syncFromCodexMultiAuth)
 			? { ...experimental.syncFromCodexMultiAuth }
