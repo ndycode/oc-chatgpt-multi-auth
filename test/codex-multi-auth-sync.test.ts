@@ -1027,6 +1027,10 @@ describe("codex-multi-auth sync", () => {
 				skipped: 0,
 				total: 4,
 				backupStatus: "created",
+				tempCleanupWarning: expect.stringContaining(
+					"Sensitive sync temp data could not be removed automatically",
+				),
+				tempCleanupPath: expect.stringContaining("accounts.json"),
 			});
 			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
 				expect.stringContaining("Failed to remove temporary codex sync directory"),

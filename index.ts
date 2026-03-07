@@ -126,6 +126,7 @@ import {
 	clearFlaggedAccounts,
 	StorageError,
 	formatStorageErrorHint,
+	normalizeAccountStorage,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
 } from "./lib/storage.js";
@@ -1244,9 +1245,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			tone: OperationTone,
 		): string => {
 			if (ui.v2Enabled) {
-				const mappedTone =
-					tone === "accent" ? "accent" : tone === "normal" ? "normal" : tone;
-				return paintUiText(ui, text, mappedTone);
+				return paintUiText(ui, text, tone);
 			}
 			const ansiCode =
 				tone === "accent"
@@ -3870,28 +3869,90 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 
 								const createSyncPruneBackup = async (): Promise<{
-									accountsBackupPath: string;
-									flaggedBackupPath: string;
+									backupPath: string;
 									restore: () => Promise<void>;
 								}> => {
+									const currentAccountsStorage =
+										(await loadAccounts()) ??
+										({
+											version: 3,
+											accounts: [],
+											activeIndex: 0,
+											activeIndexByFamily: {},
+										} satisfies AccountStorageV3);
 									const currentFlaggedStorage = await loadFlaggedAccounts();
-									const accountsBackupPath = createTimestampedBackupPath("codex-sync-prune-backup");
-									const flaggedBackupPath = createTimestampedBackupPath("codex-sync-prune-flagged-backup");
-									await exportAccounts(accountsBackupPath, true);
-									const flaggedSnapshot = { ...currentFlaggedStorage, accounts: currentFlaggedStorage.accounts.map((flagged) => ({ ...flagged })) };
-									await fsPromises.writeFile(flaggedBackupPath, `${JSON.stringify(flaggedSnapshot, null, 2)}\n`, {
+									const backupPath = createTimestampedBackupPath("codex-sync-prune-backup");
+									const backupPayload = {
+										version: 1 as const,
+										accounts: {
+											...currentAccountsStorage,
+											accounts: currentAccountsStorage.accounts.map((account) => ({ ...account })),
+											activeIndexByFamily: { ...(currentAccountsStorage.activeIndexByFamily ?? {}) },
+										},
+										flagged: {
+											...currentFlaggedStorage,
+											accounts: currentFlaggedStorage.accounts.map((flagged) => ({ ...flagged })),
+										},
+									};
+									await fsPromises.writeFile(backupPath, `${JSON.stringify(backupPayload, null, 2)}\n`, {
 										encoding: "utf-8",
 										mode: 0o600,
 										flag: "wx",
 									});
 									return {
-										accountsBackupPath,
-										flaggedBackupPath,
+										backupPath,
 										restore: async () => {
-											const accountsRaw = await fsPromises.readFile(accountsBackupPath, "utf-8");
-											await saveAccounts(JSON.parse(accountsRaw) as AccountStorageV3);
-											const flaggedRaw = await fsPromises.readFile(flaggedBackupPath, "utf-8");
-											await saveFlaggedAccounts(JSON.parse(flaggedRaw) as { version: 1; accounts: FlaggedAccountMetadataV1[] });
+											const backupRaw = await fsPromises.readFile(backupPath, "utf-8");
+											const parsed = JSON.parse(backupRaw) as {
+												accounts?: unknown;
+												flagged?: unknown;
+											};
+											const normalizedAccounts = normalizeAccountStorage(parsed.accounts);
+											if (!normalizedAccounts) {
+												throw new Error("Prune backup account snapshot failed validation.");
+											}
+											const flaggedSnapshot = parsed.flagged;
+											if (
+												!flaggedSnapshot ||
+												typeof flaggedSnapshot !== "object" ||
+												(flaggedSnapshot as { version?: unknown }).version !== 1 ||
+												!Array.isArray((flaggedSnapshot as { accounts?: unknown }).accounts)
+											) {
+												throw new Error("Prune backup flagged snapshot failed validation.");
+											}
+											const liveAccountsBeforeRestore =
+												(await loadAccounts()) ??
+												({
+													version: 3,
+													accounts: [],
+													activeIndex: 0,
+													activeIndexByFamily: {},
+												} satisfies AccountStorageV3);
+											try {
+												await saveAccounts(normalizedAccounts);
+											} catch (error) {
+												const message = error instanceof Error ? error.message : String(error);
+												throw new Error(`Failed to restore account storage from prune backup: ${message}`);
+											}
+											try {
+												await saveFlaggedAccounts(
+													flaggedSnapshot as { version: 1; accounts: FlaggedAccountMetadataV1[] },
+												);
+											} catch (error) {
+												const message = error instanceof Error ? error.message : String(error);
+												try {
+													await saveAccounts(liveAccountsBeforeRestore);
+												} catch (rollbackError) {
+													const rollbackMessage =
+														rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+													throw new Error(
+														`Failed to restore flagged storage from prune backup: ${message}. Account-store rollback also failed: ${rollbackMessage}`,
+													);
+												}
+												throw new Error(
+													`Failed to restore flagged storage from prune backup: ${message}. Account-store changes were rolled back.`,
+												);
+											}
 											invalidateAccountManagerCache();
 										},
 									};
@@ -4043,8 +4104,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 								let pruneBackup:
 									| {
-											accountsBackupPath: string;
-											flaggedBackupPath: string;
+											backupPath: string;
 											restore: () => Promise<void>;
 									  }
 									| null = null;
@@ -4109,6 +4169,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 										console.log(`Skipped: ${result.skipped}`);
 										console.log(`Total: ${result.total}`);
 										console.log(`Auto-backup: ${backupLabel}`);
+										if (result.tempCleanupWarning) {
+											console.log(result.tempCleanupWarning);
+										}
 										console.log("");
 										return;
 									} catch (error) {
@@ -4173,7 +4236,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 											console.log("Sync cancelled.\n");
 											return;
 										}
-										pruneBackup = await createSyncPruneBackup();
+										if (!pruneBackup) {
+											pruneBackup = await createSyncPruneBackup();
+										}
 										await removeAccountsForSync(removalPlan.targets);
 										continue;
 									}

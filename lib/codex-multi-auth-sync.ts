@@ -40,6 +40,8 @@ export interface CodexMultiAuthSyncResult extends CodexMultiAuthSyncPreview {
 	backupStatus: ImportAccountsResult["backupStatus"];
 	backupPath?: string;
 	backupError?: string;
+	tempCleanupWarning?: string;
+	tempCleanupPath?: string;
 }
 
 export interface CodexMultiAuthCleanupResult {
@@ -111,6 +113,7 @@ function normalizeSourceStorage(storage: AccountStorageV3): AccountStorageV3 {
 
 type NormalizedImportFileOptions = {
 	postSuccessCleanupFailureMode?: "throw" | "warn";
+	onPostSuccessCleanupFailure?: (details: { tempDir: string; tempPath: string; message: string }) => void;
 };
 
 async function withNormalizedImportFile<T>(
@@ -143,6 +146,7 @@ async function withNormalizedImportFile<T>(
 		} catch (cleanupError) {
 			const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
 			logWarn(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
+			options.onPostSuccessCleanupFailure?.({ tempDir, tempPath, message });
 			if (options.postSuccessCleanupFailureMode !== "warn") {
 				throw new Error(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
 			}
@@ -755,6 +759,13 @@ export async function syncFromCodexMultiAuth(
 ): Promise<CodexMultiAuthSyncResult> {
 	const resolved = await loadPreparedCodexMultiAuthSourceStorage(projectPath);
 	await assertSyncWithinCapacity(resolved);
+	let tempCleanupFailure:
+		| {
+				tempDir: string;
+				tempPath: string;
+				message: string;
+		  }
+		| undefined;
 	const result: ImportAccountsResult = await withNormalizedImportFile(
 		tagSyncedAccounts(resolved.storage),
 		(filePath) => {
@@ -791,7 +802,12 @@ export async function syncFromCodexMultiAuth(
 				},
 			);
 		},
-		{ postSuccessCleanupFailureMode: "warn" },
+		{
+			postSuccessCleanupFailureMode: "warn",
+			onPostSuccessCleanupFailure: (details) => {
+				tempCleanupFailure = details;
+			},
+		},
 	);
 	return {
 		rootDir: resolved.rootDir,
@@ -803,6 +819,10 @@ export async function syncFromCodexMultiAuth(
 		imported: result.imported,
 		skipped: result.skipped,
 		total: result.total,
+		tempCleanupWarning: tempCleanupFailure
+			? `Sensitive sync temp data could not be removed automatically. Delete ${tempCleanupFailure.tempPath} after the file lock clears.`
+			: undefined,
+		tempCleanupPath: tempCleanupFailure?.tempPath,
 	};
 }
 

@@ -317,6 +317,7 @@ vi.mock("../lib/storage.js", () => ({
 	loadFlaggedAccounts: vi.fn(async () => ({ version: 1, accounts: [] })),
 	saveFlaggedAccounts: vi.fn(async () => {}),
 	clearFlaggedAccounts: vi.fn(async () => {}),
+	normalizeAccountStorage: vi.fn((value: unknown) => value),
 	StorageError: class StorageError extends Error {
 		hint: string;
 		constructor(message: string, hint: string) {
