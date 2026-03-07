@@ -630,29 +630,32 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 					}
 					return false;
 				default:
-					if (options.onInput) {
-						const hotkey = decodeHotkeyInput(normalizedData);
-						if (hotkey) {
-							writeTuiAudit({
-								type: "input",
-								message: options.message,
-								cursor,
-								hotkey,
-							});
-							rerenderRequested = false;
-							const result = options.onInput(hotkey, {
-								cursor,
-								items,
-								requestRerender,
-							});
-							if (result !== undefined) {
-								finish(result);
-								return true;
-							}
-							if (rerenderRequested) {
-								render();
-							}
+					const hotkey = decodeHotkeyInput(normalizedData);
+					if (options.onInput && hotkey) {
+						writeTuiAudit({
+							type: "input",
+							message: options.message,
+							cursor,
+							hotkey,
+						});
+						rerenderRequested = false;
+						const result = options.onInput(hotkey, {
+							cursor,
+							items,
+							requestRerender,
+						});
+						if (result !== undefined) {
+							finish(result);
+							return true;
 						}
+						if (rerenderRequested) {
+							render();
+						}
+					}
+					if ((hotkey === "q" || hotkey === "Q") && options.allowEscape !== false) {
+						writeTuiAudit({ type: "key", message: options.message, action: "q-back", cursor });
+						finish(null);
+						return true;
 					}
 					return false;
 			}

@@ -43,6 +43,7 @@ if (!existsSync(selectModulePath) || !existsSync(ansiModulePath)) {
 
 const { coalesceTerminalInput, tokenizeTerminalInput } = await import(selectModulePath);
 const { parseKey } = await import(ansiModulePath);
+const ESCAPE_TIMEOUT_MS = 50;
 
 mkdirSync(dirname(output), { recursive: true });
 
@@ -59,11 +60,16 @@ console.log(`Logging raw terminal input to ${output}`);
 console.log("Press keys to capture. Ctrl+C exits.");
 
 let pending = null;
+let pendingEscapeTimer = null;
 const stdin = process.stdin;
 const stdout = process.stdout;
 const wasRaw = stdin.isRaw ?? false;
 
 const cleanup = () => {
+	if (pendingEscapeTimer) {
+		clearTimeout(pendingEscapeTimer);
+		pendingEscapeTimer = null;
+	}
 	try {
 		stdin.setRawMode(wasRaw);
 		stdin.pause();
@@ -77,6 +83,10 @@ stdin.resume();
 
 stdin.on("data", (data) => {
 	const rawInput = data.toString("utf8");
+	if (pendingEscapeTimer) {
+		clearTimeout(pendingEscapeTimer);
+		pendingEscapeTimer = null;
+	}
 	logEvent({
 		type: "raw",
 		bytesHex: Array.from(data.values()).map((value) => value.toString(16).padStart(2, "0")).join(" "),
@@ -95,6 +105,17 @@ stdin.on("data", (data) => {
 			normalizedInput: coalesced.normalizedInput,
 		});
 		if (coalesced.normalizedInput === null) {
+			if (pending?.hasEscape && pending.value === "\u001b") {
+				pendingEscapeTimer = setTimeout(() => {
+					logEvent({
+						type: "timeout",
+						reason: "escape-start",
+					});
+					cleanup();
+					stdout.write("\nCapture complete.\n");
+					process.exit(0);
+				}, ESCAPE_TIMEOUT_MS);
+			}
 			continue;
 		}
 
@@ -108,7 +129,7 @@ stdin.on("data", (data) => {
 			hotkey,
 		});
 
-		if (action === "escape" || coalesced.normalizedInput === "\u0003") {
+		if (action === "escape" || action === "escape-start" || coalesced.normalizedInput === "\u0003") {
 			shouldExit = true;
 			break;
 		}

@@ -108,15 +108,22 @@ async function withNormalizedImportFile<T>(
 	storage: AccountStorageV3,
 	handler: (filePath: string) => Promise<T>,
 ): Promise<T> {
-	const tempPath = join(
-		tmpdir(),
-		`oc-chatgpt-multi-auth-sync-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`,
-	);
-	await fs.writeFile(tempPath, `${JSON.stringify(storage, null, 2)}\n`, "utf-8");
+	const tempDir = await fs.mkdtemp(join(tmpdir(), "oc-chatgpt-multi-auth-sync-"));
+	try {
+		await fs.chmod(tempDir, 0o700).catch(() => undefined);
+	} catch {
+		// best effort on platforms that ignore chmod
+	}
+	const tempPath = join(tempDir, "accounts.json");
+	await fs.writeFile(tempPath, `${JSON.stringify(storage, null, 2)}\n`, {
+		encoding: "utf-8",
+		mode: 0o600,
+		flag: "wx",
+	});
 	try {
 		return await handler(tempPath);
 	} finally {
-		await fs.unlink(tempPath).catch(() => undefined);
+		await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
 	}
 }
 
