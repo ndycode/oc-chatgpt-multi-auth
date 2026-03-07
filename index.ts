@@ -3785,10 +3785,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 												try {
 													await restorePruneBackup();
 												} catch (restoreError) {
+													const message =
+														restoreError instanceof Error ? restoreError.message : String(restoreError);
 													logWarn(
-														`[${PLUGIN_NAME}] Failed to restore prune backup after zero-import preview: ${
-															restoreError instanceof Error ? restoreError.message : String(restoreError)
-														}`,
+														`[${PLUGIN_NAME}] Failed to restore prune backup after zero-import preview: ${message}`,
+													);
+													throw new Error(
+														`Failed to restore previously pruned accounts after zero-import preview: ${message}`,
 													);
 												}
 											}
@@ -3956,54 +3959,60 @@ while (attempted.size < Math.max(1, accountCount)) {
 							};
 
 							const runAutoRepairFromDashboard = async (): Promise<void> => {
-								const initialStorage = await loadAccounts();
-								if (!initialStorage || initialStorage.accounts.length === 0) {
-									console.log("\nNo accounts available.\n");
-									return;
-								}
-								const appliedFixes: string[] = [];
-								const fixErrors: string[] = [];
-								const cleanupResult = await cleanupCodexMultiAuthSyncedOverlaps();
-								if (cleanupResult.removed > 0) {
-									appliedFixes.push(`Removed ${cleanupResult.removed} synced overlap(s).`);
-								}
-								const storage = await loadAccounts();
-								if (!storage || storage.accounts.length === 0) {
-									console.log("\nNo accounts available after cleanup.\n");
-									return;
-								}
-
-								let changedByRefresh = false;
-								let refreshedCount = 0;
-								for (const account of storage.accounts) {
-									try {
-										const refreshResult = await queuedRefresh(account.refreshToken);
-										if (refreshResult.type === "success") {
-											account.refreshToken = refreshResult.refresh;
-											account.accessToken = refreshResult.access;
-											account.expiresAt = refreshResult.expires;
-											changedByRefresh = true;
-											refreshedCount += 1;
-										}
-									} catch (error) {
-										fixErrors.push(error instanceof Error ? error.message : String(error));
+								try {
+									const initialStorage = await loadAccounts();
+									if (!initialStorage || initialStorage.accounts.length === 0) {
+										console.log("\nNo accounts available.\n");
+										return;
 									}
+									const appliedFixes: string[] = [];
+									const fixErrors: string[] = [];
+									const cleanupResult = await cleanupCodexMultiAuthSyncedOverlaps();
+									if (cleanupResult.removed > 0) {
+										appliedFixes.push(`Removed ${cleanupResult.removed} synced overlap(s).`);
+									}
+									const storage = await loadAccounts();
+									if (!storage || storage.accounts.length === 0) {
+										console.log("\nNo accounts available after cleanup.\n");
+										return;
+									}
+
+									let changedByRefresh = false;
+									let refreshedCount = 0;
+									for (const account of storage.accounts) {
+										try {
+											const refreshResult = await queuedRefresh(account.refreshToken);
+											if (refreshResult.type === "success") {
+												account.refreshToken = refreshResult.refresh;
+												account.accessToken = refreshResult.access;
+												account.expiresAt = refreshResult.expires;
+												changedByRefresh = true;
+												refreshedCount += 1;
+											}
+										} catch (error) {
+											fixErrors.push(error instanceof Error ? error.message : String(error));
+										}
+									}
+
+									if (changedByRefresh) {
+										await saveAccounts(storage);
+										appliedFixes.push(`Refreshed ${refreshedCount} account token(s).`);
+									}
+									await verifyFlaggedAccounts();
+									await pickBestAccountFromDashboard();
+									console.log("");
+									console.log("Auto-repair complete.");
+									for (const entry of appliedFixes) {
+										console.log(`- ${entry}`);
+									}
+									for (const entry of fixErrors) {
+										console.log(`- warning: ${entry}`);
+									}
+									console.log("");
+								} catch (error) {
+									const message = error instanceof Error ? error.message : String(error);
+									console.log(`\nAuto-repair failed: ${message}\n`);
 								}
-								if (changedByRefresh) {
-									await saveAccounts(storage);
-									appliedFixes.push(`Refreshed ${refreshedCount} account token(s).`);
-								}
-								await verifyFlaggedAccounts();
-								await pickBestAccountFromDashboard();
-								console.log("");
-								console.log("Auto-repair complete.");
-								for (const entry of appliedFixes) {
-									console.log(`- ${entry}`);
-								}
-								for (const entry of fixErrors) {
-									console.log(`- warning: ${entry}`);
-								}
-								console.log("");
 							};
 
 							if (!explicitLoginMode) {
