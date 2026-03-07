@@ -3616,6 +3616,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 											restore: () => Promise<void>;
 									  }
 									| null = null;
+								const restorePruneBackup = async (): Promise<void> => {
+									const currentBackup = pruneBackup;
+									if (!currentBackup) return;
+									pruneBackup = null;
+									await currentBackup.restore();
+								};
 								while (true) {
 									try {
 										const preview = await previewSyncFromCodexMultiAuth(process.cwd());
@@ -3629,7 +3635,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (preview.imported <= 0) {
 											if (pruneBackup) {
 												try {
-													await pruneBackup.restore();
+													await restorePruneBackup();
 												} catch (restoreError) {
 													logWarn(
 														`[${PLUGIN_NAME}] Failed to restore prune backup after zero-import preview: ${
@@ -3637,7 +3643,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 														}`,
 													);
 												}
-												pruneBackup = null;
 											}
 											console.log("No new accounts to import.\n");
 											return;
@@ -3647,9 +3652,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											`Import ${preview.imported} new account(s) from codex-multi-auth?`,
 										);
 										if (!confirmed) {
-											if (pruneBackup) {
-												await pruneBackup.restore();
-											}
+											await restorePruneBackup();
 											console.log("\nSync cancelled.\n");
 											return;
 										}
@@ -3719,9 +3722,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											`Remove ${indexesToRemove.length} selected account(s) and retry sync?`,
 										);
 										if (!confirmed) {
-											if (pruneBackup) {
-												await pruneBackup.restore();
-											}
+											await restorePruneBackup();
 											console.log("Sync cancelled.\n");
 											return;
 										}
@@ -3729,12 +3730,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 											pruneBackup = await createSyncPruneBackup();
 										}
 										await removeAccountsForSync(indexesToRemove);
+										pruneBackup = null;
 										continue;
 									}
 									const message = error instanceof Error ? error.message : String(error);
-									if (pruneBackup) {
-										await pruneBackup.restore();
-									}
+									await restorePruneBackup();
 									console.log(`\nSync failed: ${message}\n`);
 										return;
 									}
