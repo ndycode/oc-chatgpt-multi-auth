@@ -45,8 +45,6 @@ const { coalesceTerminalInput, tokenizeTerminalInput } = await import(selectModu
 const { parseKey } = await import(ansiModulePath);
 const ESCAPE_TIMEOUT_MS = 50;
 
-mkdirSync(dirname(output), { recursive: true });
-
 const logEvent = (event) => {
 	appendFileSync(output, `${JSON.stringify(sanitizeAuditValue("event", { ts: new Date().toISOString(), ...event }))}\n`, {
 		encoding: "utf8",
@@ -83,6 +81,8 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 	process.exit(1);
 }
 
+mkdirSync(dirname(output), { recursive: true });
+
 console.log(`Logging raw terminal input to ${output}`);
 console.log("Press keys to capture. Ctrl+C exits.");
 
@@ -91,8 +91,11 @@ let pendingEscapeTimer = null;
 const stdin = process.stdin;
 const stdout = process.stdout;
 const wasRaw = stdin.isRaw ?? false;
+let cleanedUp = false;
 
 const cleanup = () => {
+	if (cleanedUp) return;
+	cleanedUp = true;
 	if (pendingEscapeTimer) {
 		clearTimeout(pendingEscapeTimer);
 		pendingEscapeTimer = null;
@@ -105,71 +108,83 @@ const cleanup = () => {
 	}
 };
 
+const exitCapture = (code = 0) => {
+	cleanup();
+	stdout.write("\nCapture complete.\n");
+	process.exit(code);
+};
+
+const handleFatal = (error) => {
+	cleanup();
+	console.error(error);
+	process.exit(1);
+};
+
 stdin.setRawMode(true);
 stdin.resume();
 
 stdin.on("data", (data) => {
-	const rawInput = data.toString("utf8");
-	if (pendingEscapeTimer) {
-		clearTimeout(pendingEscapeTimer);
-		pendingEscapeTimer = null;
-	}
-	logEvent({
-		type: "raw",
-		bytesHex: Array.from(data.values()).map((value) => value.toString(16).padStart(2, "0")).join(" "),
-		utf8: rawInput,
-	});
-
-	let shouldExit = false;
-	for (const token of tokenizeTerminalInput(rawInput)) {
-		const coalesced = coalesceTerminalInput(token, pending);
-		pending = coalesced.pending;
+	try {
+		const rawInput = data.toString("utf8");
+		if (pendingEscapeTimer) {
+			clearTimeout(pendingEscapeTimer);
+			pendingEscapeTimer = null;
+		}
 		logEvent({
-			type: "token",
-			token,
-			pending: pending?.value ?? null,
-			hasEscape: pending?.hasEscape ?? false,
-			normalizedInput: coalesced.normalizedInput,
+			type: "raw",
+			bytesHex: Array.from(data.values()).map((value) => value.toString(16).padStart(2, "0")).join(" "),
+			utf8: rawInput,
 		});
-		if (coalesced.normalizedInput === null) {
-			if (pending?.hasEscape && pending.value === "\u001b") {
-				pendingEscapeTimer = setTimeout(() => {
-					logEvent({
-						type: "timeout",
-						reason: "escape-start",
-					});
-					cleanup();
-					stdout.write("\nCapture complete.\n");
-					process.exit(0);
-				}, ESCAPE_TIMEOUT_MS);
+
+		let shouldExit = false;
+		for (const token of tokenizeTerminalInput(rawInput)) {
+			const coalesced = coalesceTerminalInput(token, pending);
+			pending = coalesced.pending;
+			logEvent({
+				type: "token",
+				token,
+				pending: pending?.value ?? null,
+				hasEscape: pending?.hasEscape ?? false,
+				normalizedInput: coalesced.normalizedInput,
+			});
+			if (coalesced.normalizedInput === null) {
+				if (pending?.hasEscape && pending.value === "\u001b") {
+					pendingEscapeTimer = setTimeout(() => {
+						logEvent({
+							type: "timeout",
+							reason: "escape-start",
+						});
+						exitCapture(0);
+					}, ESCAPE_TIMEOUT_MS);
+				}
+				continue;
 			}
-			continue;
+
+			const buffer = Buffer.from(coalesced.normalizedInput, "utf8");
+			const action = parseKey(buffer);
+			const hotkey = printableHotkey(coalesced.normalizedInput);
+			logEvent({
+				type: "parsed",
+				normalizedInput: coalesced.normalizedInput,
+				action,
+				hotkey,
+			});
+
+			if (action === "escape" || action === "escape-start" || coalesced.normalizedInput === "\u0003") {
+				shouldExit = true;
+				break;
+			}
 		}
 
-		const buffer = Buffer.from(coalesced.normalizedInput, "utf8");
-		const action = parseKey(buffer);
-		const hotkey = printableHotkey(coalesced.normalizedInput);
-		logEvent({
-			type: "parsed",
-			normalizedInput: coalesced.normalizedInput,
-			action,
-			hotkey,
-		});
-
-		if (action === "escape" || action === "escape-start" || coalesced.normalizedInput === "\u0003") {
-			shouldExit = true;
-			break;
+		if (shouldExit) {
+			exitCapture(0);
 		}
-	}
-
-	if (shouldExit) {
-		cleanup();
-		stdout.write("\nCapture complete.\n");
-		process.exit(0);
+	} catch (error) {
+		handleFatal(error);
 	}
 });
 
-process.on("SIGINT", () => {
-	cleanup();
-	process.exit(0);
-});
+process.on("SIGINT", () => exitCapture(0));
+process.on("SIGTERM", () => exitCapture(0));
+process.on("uncaughtException", handleFatal);
+process.on("unhandledRejection", handleFatal);

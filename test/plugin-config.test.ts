@@ -784,7 +784,7 @@ describe('Plugin Configuration', () => {
 				}),
 			);
 
-			setSyncFromCodexMultiAuthEnabled(true);
+			await setSyncFromCodexMultiAuthEnabled(true);
 
 			expect(mockMkdirSync).toHaveBeenCalledWith(
 				path.join(os.homedir(), '.opencode'),

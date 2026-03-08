@@ -2730,6 +2730,9 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			accounts: mockStorage.accounts.map((account) => ({ ...account })),
 		}));
 		vi.mocked(storageModule.saveAccounts).mockImplementation(async (nextStorage) => {
+			if (nextStorage.accounts.length === 2) {
+				throw new Error("stale pre-cleanup storage was persisted");
+			}
 			mockStorage.version = nextStorage.version;
 			mockStorage.activeIndex = nextStorage.activeIndex;
 			mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };

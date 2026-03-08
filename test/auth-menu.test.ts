@@ -52,7 +52,7 @@ describe("auth-menu", () => {
 
 		const firstCall = vi.mocked(select).mock.calls[0];
 		expect(firstCall).toBeDefined();
-		const items = firstCall?.[0] as Array<{ label: string; value?: { type?: string } }>;
+		const items = firstCall?.[0] as Array<{ label: string; kind?: string; value?: { type?: string } }>;
 		const accountRows = items.filter((item) => item.value?.type === "select-account");
 		expect(accountRows).toHaveLength(2);
 		expect(accountRows[0]?.label).toContain("shared@example.com");

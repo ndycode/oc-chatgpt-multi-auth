@@ -21,6 +21,7 @@ import {
   previewImportAccounts,
   createTimestampedBackupPath,
   withAccountStorageTransaction,
+  previewDuplicateEmailCleanup,
   cleanupDuplicateEmailAccounts,
 } from "../lib/storage.js";
 
@@ -1945,6 +1946,64 @@ describe("storage", () => {
       expect(migrated?.accounts).toHaveLength(1);
       expect(existsSync(legacyStoragePath)).toBe(false);
       expect(existsSync(getStoragePath())).toBe(true);
+    });
+
+    it("migrates legacy project storage before duplicate-email cleanup on cold start", async () => {
+      const fakeHome = join(testWorkDir, "home-legacy-cleanup");
+      const projectDir = join(testWorkDir, "project-legacy-cleanup");
+      const projectGitDir = join(projectDir, ".git");
+      const legacyProjectConfigDir = join(projectDir, ".opencode");
+      const legacyStoragePath = join(legacyProjectConfigDir, "openai-codex-accounts.json");
+
+      await fs.mkdir(fakeHome, { recursive: true });
+      await fs.mkdir(projectGitDir, { recursive: true });
+      await fs.mkdir(legacyProjectConfigDir, { recursive: true });
+      process.env.HOME = fakeHome;
+      process.env.USERPROFILE = fakeHome;
+      setStoragePath(projectDir);
+
+      await fs.writeFile(
+        legacyStoragePath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          activeIndexByFamily: {},
+          accounts: [
+            {
+              email: "shared@example.com",
+              refreshToken: "legacy-older",
+              addedAt: 1,
+              lastUsed: 1,
+            },
+            {
+              email: "shared@example.com",
+              refreshToken: "legacy-newer",
+              addedAt: 2,
+              lastUsed: 2,
+            },
+          ],
+        }),
+        "utf-8",
+      );
+
+      const preview = await previewDuplicateEmailCleanup();
+      expect(preview).toEqual({
+        before: 1,
+        after: 1,
+        removed: 0,
+      });
+
+      const result = await cleanupDuplicateEmailAccounts();
+      expect(result).toEqual({
+        before: 1,
+        after: 1,
+        removed: 0,
+      });
+      expect(existsSync(legacyStoragePath)).toBe(false);
+
+      const migrated = await loadAccounts();
+      expect(migrated?.accounts).toHaveLength(1);
+      expect(migrated?.accounts[0]?.refreshToken).toBe("legacy-newer");
     });
 
     it("loads global storage as fallback when project-scoped storage is missing", async () => {

@@ -592,7 +592,7 @@ function normalizeDuplicateCleanupSourceStorage(data: unknown): AccountStorageV3
 }
 
 async function loadDuplicateCleanupSourceStorage(): Promise<AccountStorageV3> {
-  const fallback = await loadAccountsInternal(null);
+  const fallback = await loadAccountsInternal(saveAccountsUnlocked);
   try {
     const rawContent = await fs.readFile(getStoragePath(), "utf-8");
     const rawData = JSON.parse(rawContent) as unknown;

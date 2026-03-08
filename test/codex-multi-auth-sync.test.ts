@@ -1181,13 +1181,21 @@ describe("codex-multi-auth sync", () => {
 				vi.fn(async () => {}),
 			),
 		);
+		vi.mocked(storageModule.previewImportAccounts).mockImplementationOnce(async (filePath) => {
+			const raw = await fs.promises.readFile(filePath, "utf8");
+			const parsed = JSON.parse(raw) as { accounts: Array<{ accountId?: string }> };
+			expect(parsed.accounts).toHaveLength(21);
+			expect(parsed.accounts[0]?.accountId).toBe("org-source-1");
+			expect(parsed.accounts[20]?.accountId).toBe("org-source-21");
+			return { imported: 21, skipped: 0, total: 22 };
+		});
 
 		const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
 
 		await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
 			accountsPath: globalPath,
-			imported: 2,
-			total: 4,
+			imported: 21,
+			total: 22,
 			skipped: 0,
 		});
 	});
@@ -1213,12 +1221,21 @@ describe("codex-multi-auth sync", () => {
 				})),
 			}),
 		);
+		const storageModule = await import("../lib/storage.js");
+		vi.mocked(storageModule.previewImportAccounts).mockImplementationOnce(async (filePath) => {
+			const raw = await fs.promises.readFile(filePath, "utf8");
+			const parsed = JSON.parse(raw) as { accounts: Array<{ accountId?: string }> };
+			expect(parsed.accounts).toHaveLength(50);
+			expect(parsed.accounts[0]?.accountId).toBe("org-source-1");
+			expect(parsed.accounts[49]?.accountId).toBe("org-source-50");
+			return { imported: 50, skipped: 0, total: 52 };
+		});
 
 		const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
 		await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
 			accountsPath: globalPath,
-			imported: 2,
-			total: 4,
+			imported: 50,
+			total: 52,
 			skipped: 0,
 		});
 	});

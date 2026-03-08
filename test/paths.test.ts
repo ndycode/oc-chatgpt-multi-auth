@@ -67,6 +67,33 @@ describe("Storage Paths Module", () => {
 			const projectPath = "C:\\Users\\Test\\MyProject";
 			expect(getProjectStorageKey(projectPath)).toMatch(/^myproject-[a-f0-9]{12}$/);
 		});
+
+		it("uses the canonical git identity for same-repo worktrees", () => {
+			const mainWorktree = "C:\\Users\\neil\\DevTools\\oc-chatgpt-multi-auth";
+			const branchWorktree = "C:\\Users\\neil\\DevTools\\oc-chatgpt-multi-auth-sync-worktree";
+			const mainGitPath = `${mainWorktree}\\.git`.toLowerCase();
+			const branchGitPath = `${branchWorktree}\\.git`.toLowerCase();
+			const sharedGitFile = "gitdir: C:/Users/neil/DevTools/oc-chatgpt-multi-auth/.git/worktrees/feature-sync\n";
+			mockedExistsSync.mockImplementation((candidate) => {
+				const normalized = String(candidate).replace(/\//g, "\\").toLowerCase();
+				return normalized === mainGitPath || normalized === branchGitPath;
+			});
+			mockedStatSync.mockImplementation((candidate) => {
+				const normalized = String(candidate).replace(/\//g, "\\").toLowerCase();
+				return {
+					isDirectory: () => normalized === mainGitPath,
+				} as ReturnType<typeof statSync>;
+			});
+			mockedReadFileSync.mockImplementation((candidate) => {
+				const normalized = String(candidate).replace(/\//g, "\\").toLowerCase();
+				if (normalized === branchGitPath) {
+					return sharedGitFile;
+				}
+				throw new Error(`unexpected read: ${String(candidate)}`);
+			});
+
+			expect(getProjectStorageKey(mainWorktree)).toBe(getProjectStorageKey(branchWorktree));
+		});
 	});
 
 	describe("getProjectStorageKeyCandidates", () => {

@@ -104,8 +104,11 @@ export function getProjectStorageKeyCandidates(projectPath: string): string[] {
 }
 
 export function getProjectStorageKey(projectPath: string): string {
-	const normalizedPath = normalizeProjectPath(projectPath);
-	return buildProjectStorageKey(normalizedPath, normalizedPath);
+	const canonicalIdentity = getCanonicalProjectStorageIdentity(projectPath);
+	return buildProjectStorageKey(
+		normalizeProjectPath(canonicalIdentity.projectNamePath),
+		canonicalIdentity.identityPath,
+	);
 }
 
 /**
