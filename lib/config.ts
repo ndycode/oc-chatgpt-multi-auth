@@ -201,11 +201,11 @@ export async function savePluginConfigMutation(
 							try {
 								if (!existsSync(CONFIG_PATH)) {
 									await fs.rename(backupPath, CONFIG_PATH);
-									backupMoved = false;
 								}
 							} catch {
 								// best effort config restore
 							}
+							backupMoved = false;
 						}
 						throw retryError;
 					} finally {
@@ -342,7 +342,7 @@ async function tryRecoverStalePluginConfigLock(rawLockContents: string): Promise
 async function withPluginConfigLock<T>(fn: () => T | Promise<T>): Promise<T> {
 	await fs.mkdir(dirname(CONFIG_PATH), { recursive: true });
 	await cleanupStalePluginConfigLockArtifacts();
-	const deadline = Date.now() + 2_000;
+	const deadline = Date.now() + 5_000;
 	while (true) {
 		try {
 			await fs.writeFile(CONFIG_LOCK_PATH, `${process.pid}`, { encoding: "utf-8", flag: "wx" });
@@ -354,7 +354,7 @@ async function withPluginConfigLock<T>(fn: () => T | Promise<T>): Promise<T> {
 			if (!retryableLockError || Date.now() >= deadline) {
 				throw error;
 			}
-			if (code === "EEXIST") {
+			if (existsSync(CONFIG_LOCK_PATH) && (code === "EEXIST" || (process.platform === "win32" && (code === "EPERM" || code === "EBUSY")))) {
 				try {
 					const rawLockContents = await fs.readFile(CONFIG_LOCK_PATH, "utf-8");
 					if (await tryRecoverStalePluginConfigLock(rawLockContents)) {
