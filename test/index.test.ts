@@ -1075,10 +1075,24 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(reloadedStorage?.accounts[1]?.accessToken).toBe("still-valid");
 		});
 
-		it("warns when refreshed credentials cannot be persisted to any stored account", async () => {
+		it("warns when refreshed credentials would otherwise fall back to a different account with the same email", async () => {
 			const { queuedRefresh } = await import("../lib/refresh-queue.js");
-			const { withAccountStorageTransaction } = await import("../lib/storage.js");
+			const { loadAccounts, withAccountStorageTransaction } = await import("../lib/storage.js");
 			const loggerModule = await import("../lib/logger.js");
+			const transactionStorage = {
+				version: 3 as const,
+				accounts: [
+					{
+						refreshToken: "different-refresh",
+						accountId: "acc-other",
+						email: "user@example.com",
+						accessToken: "other-access",
+						expiresAt: Date.now() + 3600_000,
+					},
+				],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			};
 			vi.mocked(queuedRefresh).mockResolvedValueOnce({
 				type: "success",
 				access: "orphaned-access",
@@ -1093,19 +1107,13 @@ describe("OpenAIOAuthPlugin", () => {
 					) => Promise<boolean>,
 				) =>
 					await handler(
-						{
-							version: 3,
-							accounts: [
-								{
-									refreshToken: "different-refresh",
-									accountId: "acc-x",
-									email: "different@test.com",
-								},
-							],
-							activeIndex: 0,
-							activeIndexByFamily: {},
+						transactionStorage,
+						async (nextStorage) => {
+							mockStorage.version = nextStorage.version;
+							mockStorage.accounts = nextStorage.accounts.map((account) => structuredClone(account));
+							mockStorage.activeIndex = nextStorage.activeIndex;
+							mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 						},
-						async () => {},
 					),
 			);
 			mockStorage.accounts = [
@@ -1144,6 +1152,17 @@ describe("OpenAIOAuthPlugin", () => {
 				}),
 			);
 			expect(warningCall?.[1]).not.toHaveProperty("email");
+			expect(transactionStorage.accounts[0]).toMatchObject({
+				accountId: "acc-other",
+				refreshToken: "different-refresh",
+				accessToken: "other-access",
+			});
+			const reloadedStorage = await vi.mocked(loadAccounts)();
+			expect(reloadedStorage?.accounts[0]).toMatchObject({
+				accountId: "acc-1",
+				refreshToken: "stale-refresh",
+				accessToken: "",
+			});
 		});
 
 		it("reports missing refresh tokens instead of attempting a blank-token refresh", async () => {
