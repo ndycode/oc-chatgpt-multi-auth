@@ -958,9 +958,9 @@ describe("OpenAIOAuthPlugin", () => {
 			]);
 		});
 
-		it("updates the current account when refreshed credentials do not fan out", async () => {
+		it("updates the current account when transactional refresh fallback matches by identity", async () => {
 			const { queuedRefresh } = await import("../lib/refresh-queue.js");
-			const { loadAccounts } = await import("../lib/storage.js");
+			const { loadAccounts, withAccountStorageTransaction } = await import("../lib/storage.js");
 			const refreshedExpires = Date.now() + 7200_000;
 			vi.mocked(queuedRefresh).mockResolvedValueOnce({
 				type: "success",
@@ -970,13 +970,41 @@ describe("OpenAIOAuthPlugin", () => {
 			});
 			mockStorage.accounts = [
 				{
-					refreshToken: "",
+					refreshToken: "stale-refresh",
 					accountId: "acc-1",
 					email: "solo@test.com",
 					accessToken: "",
 					expiresAt: Date.now() - 1000,
 				},
 			];
+			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
+				async (
+					handler: (
+						current: typeof mockStorage | null,
+						persist: (storage: typeof mockStorage) => Promise<void>,
+					) => Promise<boolean>,
+				) =>
+					await handler(
+						{
+							version: 3,
+							accounts: [
+								{
+									refreshToken: "different-refresh",
+									accountId: "acc-1",
+									email: "solo@test.com",
+								},
+							],
+							activeIndex: 0,
+							activeIndexByFamily: {},
+						},
+						async (nextStorage) => {
+							mockStorage.version = nextStorage.version;
+							mockStorage.accounts = nextStorage.accounts.map((account) => structuredClone(account));
+							mockStorage.activeIndex = nextStorage.activeIndex;
+							mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+						},
+					),
+			);
 			globalThis.fetch = vi.fn().mockImplementation(async () =>
 				new Response(
 					JSON.stringify({
@@ -991,6 +1019,7 @@ describe("OpenAIOAuthPlugin", () => {
 
 			await plugin.tool["codex-limits"].execute();
 
+			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledWith("stale-refresh");
 			const reloadedStorage = await vi.mocked(loadAccounts)();
 			expect(reloadedStorage?.accounts[0]?.refreshToken).toBe("single-refresh");
 			expect(reloadedStorage?.accounts[0]?.accessToken).toBe("single-access");
@@ -1102,13 +1131,37 @@ describe("OpenAIOAuthPlugin", () => {
 
 			await plugin.tool["codex-limits"].execute();
 
-			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
-				expect.stringContaining("persistRefreshedCredentials could not find a matching stored account"),
+			const warningCall = vi
+				.mocked(loggerModule.logWarn)
+				.mock.calls.find(([message]) =>
+					typeof message === "string" &&
+					message.includes("persistRefreshedCredentials could not find a matching stored account"),
+				);
+			expect(warningCall).toBeDefined();
+			expect(warningCall?.[1]).toEqual(
 				expect.objectContaining({
 					accountId: "acc-1",
-					email: "user@example.com",
 				}),
 			);
+			expect(warningCall?.[1]).not.toHaveProperty("email");
+		});
+
+		it("reports missing refresh tokens instead of attempting a blank-token refresh", async () => {
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			mockStorage.accounts = [
+				{
+					refreshToken: "",
+					accountId: "acc-1",
+					email: "missing-refresh@test.com",
+					accessToken: "",
+					expiresAt: Date.now() - 1000,
+				},
+			];
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Error: Cannot refresh: account has no refresh token");
+			expect(vi.mocked(queuedRefresh)).not.toHaveBeenCalled();
 		});
 
 		it("redacts upstream auth material from usage fetch errors", async () => {
