@@ -142,7 +142,7 @@ function statusBadge(status: AccountStatus | undefined): string {
 }
 
 function formatAccountIdSuffix(accountId: string | undefined): string | undefined {
-	const trimmed = accountId?.trim();
+	const trimmed = sanitizeTerminalText(accountId);
 	if (!trimmed) return undefined;
 	return trimmed.length > 14 ? `${trimmed.slice(0, 8)}...${trimmed.slice(-6)}` : trimmed;
 }

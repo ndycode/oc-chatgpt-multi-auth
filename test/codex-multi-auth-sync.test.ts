@@ -695,7 +695,7 @@ describe("codex-multi-auth sync", () => {
 		}
 	});
 
-	it("fails closed and logs a warning when secure temp cleanup fails", async () => {
+	it("warns instead of failing when secure temp cleanup blocks preview cleanup", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
 		const globalPath = join(rootDir, "openai-codex-accounts.json");
@@ -713,9 +713,12 @@ describe("codex-multi-auth sync", () => {
 
 		try {
 			const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
-			await expect(previewSyncFromCodexMultiAuth(process.cwd())).rejects.toThrow(
-				/Failed to remove temporary codex sync directory/,
-			);
+			await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+				accountsPath: globalPath,
+				imported: 2,
+				skipped: 0,
+				total: 4,
+			});
 			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
 				expect.stringContaining("Failed to remove temporary codex sync directory"),
 			);
@@ -846,7 +849,7 @@ describe("codex-multi-auth sync", () => {
 		});
 	});
 
-	it("fails preview when secure temp cleanup leaves sync data on disk", async () => {
+	it("warns and returns preview results when secure temp cleanup leaves sync data on disk", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
 		const globalPath = join(rootDir, "openai-codex-accounts.json");
@@ -864,9 +867,12 @@ describe("codex-multi-auth sync", () => {
 
 		try {
 			const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
-			await expect(previewSyncFromCodexMultiAuth(process.cwd())).rejects.toThrow(
-				/Failed to remove temporary codex sync directory/,
-			);
+			await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+				accountsPath: globalPath,
+				imported: 2,
+				skipped: 0,
+				total: 4,
+			});
 		} finally {
 			rmSpy.mockRestore();
 		}

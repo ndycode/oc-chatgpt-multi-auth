@@ -3724,6 +3724,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										const cachedTokenAccountId = cached ? extractAccountId(cached.accessToken) : undefined;
 										const restoredIdentityContext = restored.map((entry) => ({
 											email: sanitizeEmail(extractAccountEmail(entry.access, entry.idToken)),
+											accountId: entry.accountIdOverride ?? extractAccountId(entry.access),
 										}));
 										const restoreEmailCounts = buildEmailCountMap([
 											...(activeStorage?.accounts ?? []),
@@ -4140,6 +4141,15 @@ while (attempted.size < Math.max(1, accountCount)) {
 									await currentBackup.restore();
 									pruneBackup = null;
 								};
+								const safeRestorePruneBackup = async (context: string): Promise<void> => {
+									try {
+										await restorePruneBackup();
+									} catch (restoreError) {
+										const message =
+											restoreError instanceof Error ? restoreError.message : String(restoreError);
+										console.log(`\nFailed to restore pruned accounts during ${context}: ${message}\n`);
+									}
+								};
 								while (true) {
 									try {
 										const loadedSource = await loadCodexMultiAuthSourceStorage(process.cwd());
@@ -4174,7 +4184,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											`Import ${preview.imported} new account(s) from codex-multi-auth?`,
 										);
 										if (!confirmed) {
-											await restorePruneBackup();
+											await safeRestorePruneBackup("sync cancellation");
 											console.log("\nSync cancelled.\n");
 											return;
 										}
@@ -4212,7 +4222,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										console.log(`Importable new accounts: ${details.importableNewAccounts}`);
 										console.log(`Maximum allowed: ${details.maxAccounts}`);
 										if (isCodexMultiAuthSourceTooLargeForCapacity(details)) {
-											await restorePruneBackup();
+											await safeRestorePruneBackup("capacity handling");
 											console.log(
 												`Source alone exceeds the configured maximum. Reduce the source set or raise CODEX_AUTH_SYNC_MAX_ACCOUNTS before retrying.`,
 											);
@@ -4239,7 +4249,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											details.suggestedRemovals,
 										);
 										if (!indexesToRemove || indexesToRemove.length === 0) {
-											await restorePruneBackup();
+											await safeRestorePruneBackup("sync cancellation");
 											console.log("Sync cancelled.\n");
 											return;
 										}
@@ -4252,7 +4262,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										} catch (planError) {
 											const message =
 												planError instanceof Error ? planError.message : String(planError);
-											await restorePruneBackup();
+											await safeRestorePruneBackup("removal planning");
 											console.log(`\nSync failed: ${message}\n`);
 											return;
 										}
@@ -4265,7 +4275,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											`Remove ${indexesToRemove.length} selected account(s) and retry sync?`,
 										);
 										if (!confirmed) {
-											await restorePruneBackup();
+											await safeRestorePruneBackup("sync cancellation");
 											console.log("Sync cancelled.\n");
 											return;
 										}
@@ -4276,7 +4286,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										continue;
 									}
 									const message = error instanceof Error ? error.message : String(error);
-									await restorePruneBackup();
+									await safeRestorePruneBackup("sync failure");
 									console.log(`\nSync failed: ${message}\n`);
 										return;
 									}

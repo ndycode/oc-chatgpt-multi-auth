@@ -525,9 +525,11 @@ function buildSourceIdentitySet(storage: AccountStorageV3): Set<string> {
 		const organizationId = normalizeIdentity(account.organizationId);
 		const accountId = normalizeIdentity(account.accountId);
 		const email = normalizeIdentity(account.email);
+		const refreshToken = normalizeIdentity(account.refreshToken);
 		if (organizationId) identities.add(`org:${organizationId}`);
 		if (accountId) identities.add(`account:${accountId}`);
 		if (email) identities.add(`email:${email}`);
+		if (refreshToken) identities.add(`refresh:${refreshToken}`);
 	}
 	return identities;
 }
@@ -536,10 +538,12 @@ function accountMatchesSource(account: AccountStorageV3["accounts"][number], sou
 	const organizationId = normalizeIdentity(account.organizationId);
 	const accountId = normalizeIdentity(account.accountId);
 	const email = normalizeIdentity(account.email);
+	const refreshToken = normalizeIdentity(account.refreshToken);
 	return (
 		(organizationId ? sourceIdentities.has(`org:${organizationId}`) : false) ||
 		(accountId ? sourceIdentities.has(`account:${accountId}`) : false) ||
-		(email ? sourceIdentities.has(`email:${email}`) : false)
+		(email ? sourceIdentities.has(`email:${email}`) : false) ||
+		(refreshToken ? sourceIdentities.has(`refresh:${refreshToken}`) : false)
 	);
 }
 
@@ -890,6 +894,7 @@ export async function previewSyncFromCodexMultiAuth(
 	const preview = await withNormalizedImportFile(
 		resolved.storage,
 		(filePath) => previewImportAccountsWithExistingStorage(filePath, existing),
+		{ postSuccessCleanupFailureMode: "warn" },
 	);
 	return {
 		rootDir: resolved.rootDir,
@@ -1065,14 +1070,23 @@ function normalizeOverlapCleanupSourceStorage(data: unknown): AccountStorageV3 |
 		(data as { version?: unknown }).version === 1
 			? migrateV1ToV3(data as AccountStorageV1)
 			: (data as AccountStorageV3);
-	const accounts = baseRecord.accounts.filter((account): account is AccountStorageV3["accounts"][number] => {
-		return typeof account.refreshToken === "string" && account.refreshToken.trim().length > 0;
+	const originalToFilteredIndex = new Map<number, number>();
+	const accounts = baseRecord.accounts.flatMap((account, index) => {
+		if (typeof account.refreshToken !== "string" || account.refreshToken.trim().length === 0) {
+			return [];
+		}
+		originalToFilteredIndex.set(index, originalToFilteredIndex.size);
+		return [account];
 	});
 	const activeIndexValue =
 		typeof baseRecord.activeIndex === "number" && Number.isFinite(baseRecord.activeIndex)
 			? baseRecord.activeIndex
 			: 0;
-	const activeIndex = Math.max(0, Math.min(accounts.length - 1, activeIndexValue));
+	const remappedActiveIndex = originalToFilteredIndex.get(activeIndexValue);
+	const activeIndex = Math.max(
+		0,
+		Math.min(accounts.length - 1, remappedActiveIndex ?? activeIndexValue),
+	);
 	const rawActiveIndexByFamily =
 		baseRecord.activeIndexByFamily && typeof baseRecord.activeIndexByFamily === "object"
 			? baseRecord.activeIndexByFamily
@@ -1082,7 +1096,8 @@ function normalizeOverlapCleanupSourceStorage(data: unknown): AccountStorageV3 |
 			if (typeof value !== "number" || !Number.isFinite(value)) {
 				return [];
 			}
-			return [[family, Math.max(0, Math.min(accounts.length - 1, value))]];
+			const remappedValue = originalToFilteredIndex.get(value) ?? value;
+			return [[family, Math.max(0, Math.min(accounts.length - 1, remappedValue))]];
 		}),
 	) as AccountStorageV3["activeIndexByFamily"];
 

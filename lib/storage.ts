@@ -503,8 +503,15 @@ function buildDuplicateEmailCleanupPlan(existing: AccountStorageV3): {
       const byIdentity = findAccountIndexByIdentityKeys(deduplicatedAccounts, existingActiveKeys);
       if (byIdentity >= 0) return byIdentity;
     }
-    const byEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, existingActiveEmail);
+    const byEmail =
+      existingActiveKeys.length === 0
+        ? findComparableAccountIndexByNormalizedEmail(deduplicatedAccounts, existingActiveEmail)
+        : findAccountIndexByNormalizedEmail(deduplicatedAccounts, existingActiveEmail);
     if (byEmail >= 0) return byEmail;
+    if (existingActiveKeys.length === 0) {
+      const fallbackByEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, existingActiveEmail);
+      if (fallbackByEmail >= 0) return fallbackByEmail;
+    }
     return clampIndex(existingActiveIndex, deduplicatedAccounts.length);
   })();
 
@@ -531,9 +538,17 @@ function buildDuplicateEmailCleanupPlan(existing: AccountStorageV3): {
       }
     }
 
-    const byEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, familyEmail);
+    const byEmail =
+      familyKeys.length === 0
+        ? findComparableAccountIndexByNormalizedEmail(deduplicatedAccounts, familyEmail)
+        : findAccountIndexByNormalizedEmail(deduplicatedAccounts, familyEmail);
     if (byEmail >= 0) {
       mappedIndex = byEmail;
+    } else if (familyKeys.length === 0) {
+      const fallbackByEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, familyEmail);
+      if (fallbackByEmail >= 0) {
+        mappedIndex = fallbackByEmail;
+      }
     }
     activeIndexByFamily[family] = mappedIndex;
   }
@@ -789,6 +804,17 @@ function findAccountIndexByNormalizedEmail(
 ): number {
   if (!normalizedEmail) return -1;
   return accounts.findIndex((account) => normalizeEmailIdentity(account.email) === normalizedEmail);
+}
+
+function findComparableAccountIndexByNormalizedEmail(
+  accounts: AccountMetadataV3[],
+  normalizedEmail: string | undefined,
+): number {
+  if (!normalizedEmail) return -1;
+  return accounts.findIndex((account) => {
+    if (normalizeEmailIdentity(account.email) !== normalizedEmail) return false;
+    return extractActiveKeys([account], 0).length === 0;
+  });
 }
 
 /**
@@ -1463,6 +1489,7 @@ export async function backupRawAccountsFile(filePath: string, force = true): Pro
       throw new Error(`File already exists: ${resolvedPath}`);
     }
 
+    await migrateLegacyProjectStorageIfNeeded(saveAccountsUnlocked);
     const storagePath = getStoragePath();
     if (!existsSync(storagePath)) {
       throw new Error("No accounts to back up");

@@ -215,10 +215,14 @@ export function coalesceTerminalInput(
 		if (nextPending.hasEscape && base === "\x1b[" && canCompleteCsi(nextInput)) {
 			return { normalizedInput: `\x1b[${nextInput}`, pending: null };
 		}
-		if (nextPending.hasEscape && /^\x1b\[\d+$/.test(base) && canCompleteCsi(nextInput)) {
+		if (nextPending.hasEscape && /^\x1b\[[\d;]+$/.test(base) && canCompleteCsi(nextInput)) {
 			return { normalizedInput: `${base}${nextInput}`, pending: null };
 		}
-		if (nextPending.hasEscape && (base === "\x1b[" || /^\x1b\[\d+$/.test(base)) && /^\d+$/.test(nextInput)) {
+		if (
+			nextPending.hasEscape &&
+			(base === "\x1b[" || /^\x1b\[[\d;]+$/.test(base)) &&
+			/^[\d;]+$/.test(nextInput)
+		) {
 			return { normalizedInput: null, pending: { value: `${base}${nextInput}`, hasEscape: true } };
 		}
 		if (nextPending.hasEscape && base === "\x1bO" && CSI_FINAL_KEYS.has(nextInput)) {

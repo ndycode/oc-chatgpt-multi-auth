@@ -11,6 +11,9 @@ import {
 } from "./ui/auth-menu.js";
 import { UI_COPY } from "./ui/copy.js";
 
+const ANSI_CSI_REGEX = new RegExp("\\x1b\\[[0-?]*[ -/]*[@-~]", "g");
+const CONTROL_CHAR_REGEX = new RegExp("[\\u0000-\\u001f\\u007f]", "g");
+
 export function isNonInteractiveMode(): boolean {
 	if (process.env.FORCE_INTERACTIVE_MODE === "1") return false;
 	if (!input.isTTY || !output.isTTY) return true;
@@ -180,9 +183,14 @@ export interface LoginMenuResult {
 
 function formatAccountLabel(account: ExistingAccountInfo, index: number): string {
 	const num = account.quickSwitchNumber ?? (index + 1);
-	const label = account.accountLabel?.trim();
-	const email = account.email?.trim();
-	const accountId = account.accountId?.trim();
+	const sanitizeFallbackLabel = (value: string | undefined): string | undefined => {
+		if (!value) return undefined;
+		const sanitized = value.replace(ANSI_CSI_REGEX, "").replace(CONTROL_CHAR_REGEX, "").trim();
+		return sanitized.length > 0 ? sanitized : undefined;
+	};
+	const label = sanitizeFallbackLabel(account.accountLabel);
+	const email = sanitizeFallbackLabel(account.email);
+	const accountId = sanitizeFallbackLabel(account.accountId);
 	const accountIdDisplay =
 		accountId && accountId.length > 14
 			? `${accountId.slice(0, 8)}...${accountId.slice(-6)}`
