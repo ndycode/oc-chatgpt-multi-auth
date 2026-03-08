@@ -1391,28 +1391,43 @@ export async function previewImportAccounts(
 	const { normalized } = await readAndNormalizeImportFile(filePath);
 
 	return withAccountStorageTransaction((existing) => {
-		const existingAccounts = existing?.accounts ?? [];
-		const merged = [...existingAccounts, ...normalized.accounts];
-		const hasFiniteAccountLimit = Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS);
-
-		if (hasFiniteAccountLimit && merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-			const deduped = deduplicateAccountsForStorage(merged);
-			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
-				throw new Error(
-					`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
-				);
-			}
-		}
-
-		const deduplicatedAccounts = deduplicateAccountsForStorage(merged);
-		const imported = deduplicatedAccounts.length - existingAccounts.length;
-		const skipped = normalized.accounts.length - imported;
-		return Promise.resolve({
-			imported,
-			total: deduplicatedAccounts.length,
-			skipped,
-		});
+		return Promise.resolve(previewImportAccountsAgainstExistingNormalized(normalized, existing));
 	});
+}
+
+export async function previewImportAccountsWithExistingStorage(
+	filePath: string,
+	existing: AccountStorageV3 | null | undefined,
+): Promise<{ imported: number; total: number; skipped: number }> {
+	const { normalized } = await readAndNormalizeImportFile(filePath);
+	return previewImportAccountsAgainstExistingNormalized(normalized, existing);
+}
+
+function previewImportAccountsAgainstExistingNormalized(
+	normalized: AccountStorageV3,
+	existing: AccountStorageV3 | null | undefined,
+): { imported: number; total: number; skipped: number } {
+	const existingAccounts = existing?.accounts ?? [];
+	const merged = [...existingAccounts, ...normalized.accounts];
+	const hasFiniteAccountLimit = Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS);
+
+	if (hasFiniteAccountLimit && merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+		const deduped = deduplicateAccountsForStorage(merged);
+		if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+			throw new Error(
+				`Import would exceed maximum of ${ACCOUNT_LIMITS.MAX_ACCOUNTS} accounts (would have ${deduped.length})`,
+			);
+		}
+	}
+
+	const deduplicatedAccounts = deduplicateAccountsForStorage(merged);
+	const imported = deduplicatedAccounts.length - existingAccounts.length;
+	const skipped = normalized.accounts.length - imported;
+	return {
+		imported,
+		total: deduplicatedAccounts.length,
+		skipped,
+	};
 }
 
 /**

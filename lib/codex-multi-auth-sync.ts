@@ -8,12 +8,14 @@ import {
 	deduplicateAccountsByEmail,
 	getStoragePath,
 	importAccounts,
+	loadAccounts,
 	normalizeAccountStorage,
-	previewImportAccounts,
+	previewImportAccountsWithExistingStorage,
 	withAccountStorageTransaction,
 	type AccountStorageV3,
 	type ImportAccountsResult,
 } from "./storage.js";
+import { migrateV1ToV3, type AccountStorageV1 } from "./storage/migrations.js";
 import { findProjectRoot, getProjectStorageKeyCandidates } from "./storage/paths.js";
 
 const EXTERNAL_ROOT_SUFFIX = "multi-auth";
@@ -24,7 +26,7 @@ const EXTERNAL_ACCOUNT_FILE_NAMES = [
 const SYNC_ACCOUNT_TAG = "codex-multi-auth-sync";
 const SYNC_MAX_ACCOUNTS_OVERRIDE_ENV = "CODEX_AUTH_SYNC_MAX_ACCOUNTS";
 const NORMALIZED_IMPORT_TEMP_PREFIX = "oc-chatgpt-multi-auth-sync-";
-const STALE_NORMALIZED_IMPORT_MAX_AGE_MS = 60 * 60 * 1000;
+const STALE_NORMALIZED_IMPORT_MAX_AGE_MS = 10 * 60 * 1000;
 
 export interface CodexMultiAuthResolvedSource {
 	rootDir: string;
@@ -662,10 +664,11 @@ function validateCodexMultiAuthRootDir(pathValue: string): string {
 	}
 	if (process.platform === "win32") {
 		const normalized = trimmed.replace(/\//g, "\\");
-		if (normalized.startsWith("\\\\") || normalized.startsWith("\\?\\") || normalized.startsWith("\\.\\")) {
-			throw new Error("CODEX_MULTI_AUTH_DIR must use a local absolute path on Windows");
+		const isExtendedDrivePath = /^\\\\[?.]\\[a-zA-Z]:\\/.test(normalized);
+		if (normalized.startsWith("\\\\") && !isExtendedDrivePath) {
+			throw new Error("CODEX_MULTI_AUTH_DIR must use a local absolute path, not a UNC network share");
 		}
-		if (!/^[a-zA-Z]:\\/.test(normalized)) {
+		if (!/^[a-zA-Z]:\\/.test(normalized) && !isExtendedDrivePath) {
 			throw new Error("CODEX_MULTI_AUTH_DIR must be an absolute local path");
 		}
 		return normalized;
@@ -821,24 +824,23 @@ function createEmptyAccountStorage(): AccountStorageV3 {
 async function prepareCodexMultiAuthPreviewStorage(
 	resolved: CodexMultiAuthResolvedSource & { storage: AccountStorageV3 },
 ): Promise<CodexMultiAuthResolvedSource & { storage: AccountStorageV3 }> {
-	return withAccountStorageTransaction((current) => {
-		const existing = current ?? createEmptyAccountStorage();
-		const preparedStorage = filterSourceAccountsAgainstExistingEmails(
-			resolved.storage,
-			existing.accounts,
-		);
-		const maxAccounts = getSyncCapacityLimit();
-		if (Number.isFinite(maxAccounts)) {
-			const details = computeSyncCapacityDetails(resolved, preparedStorage, existing, maxAccounts);
-			if (details) {
-				throw new CodexMultiAuthSyncCapacityError(details);
-			}
+	const current = await loadAccounts();
+	const existing = current ?? createEmptyAccountStorage();
+	const preparedStorage = filterSourceAccountsAgainstExistingEmails(
+		resolved.storage,
+		existing.accounts,
+	);
+	const maxAccounts = getSyncCapacityLimit();
+	if (Number.isFinite(maxAccounts)) {
+		const details = computeSyncCapacityDetails(resolved, preparedStorage, existing, maxAccounts);
+		if (details) {
+			throw new CodexMultiAuthSyncCapacityError(details);
 		}
-		return Promise.resolve({
-			...resolved,
-			storage: preparedStorage,
-		});
-	});
+	}
+	return {
+		...resolved,
+		storage: preparedStorage,
+	};
 }
 
 export async function previewSyncFromCodexMultiAuth(
@@ -846,9 +848,10 @@ export async function previewSyncFromCodexMultiAuth(
 ): Promise<CodexMultiAuthSyncPreview> {
 	const loadedSource = await loadCodexMultiAuthSourceStorage(projectPath);
 	const resolved = await prepareCodexMultiAuthPreviewStorage(loadedSource);
+	const current = await loadAccounts();
 	const preview = await withNormalizedImportFile(
 		resolved.storage,
-		(filePath) => previewImportAccounts(filePath),
+		(filePath) => previewImportAccountsWithExistingStorage(filePath, current),
 	);
 	return {
 		rootDir: resolved.rootDir,
@@ -1016,27 +1019,21 @@ function normalizeOverlapCleanupSourceStorage(data: unknown): AccountStorageV3 |
 		return null;
 	}
 
-	const record = data as {
-		accounts: unknown[];
-		activeIndex?: unknown;
-		activeIndexByFamily?: unknown;
-	};
-	const accounts = record.accounts.filter((account): account is AccountStorageV3["accounts"][number] => {
-		return (
-			typeof account === "object" &&
-			account !== null &&
-			typeof (account as { refreshToken?: unknown }).refreshToken === "string" &&
-			(account as { refreshToken: string }).refreshToken.trim().length > 0
-		);
+	const baseRecord =
+		(data as { version?: unknown }).version === 1
+			? migrateV1ToV3(data as AccountStorageV1)
+			: (data as AccountStorageV3);
+	const accounts = baseRecord.accounts.filter((account): account is AccountStorageV3["accounts"][number] => {
+		return typeof account.refreshToken === "string" && account.refreshToken.trim().length > 0;
 	});
 	const activeIndexValue =
-		typeof record.activeIndex === "number" && Number.isFinite(record.activeIndex)
-			? record.activeIndex
+		typeof baseRecord.activeIndex === "number" && Number.isFinite(baseRecord.activeIndex)
+			? baseRecord.activeIndex
 			: 0;
 	const activeIndex = Math.max(0, Math.min(accounts.length - 1, activeIndexValue));
 	const rawActiveIndexByFamily =
-		record.activeIndexByFamily && typeof record.activeIndexByFamily === "object"
-			? record.activeIndexByFamily
+		baseRecord.activeIndexByFamily && typeof baseRecord.activeIndexByFamily === "object"
+			? baseRecord.activeIndexByFamily
 			: {};
 	const activeIndexByFamily = Object.fromEntries(
 		Object.entries(rawActiveIndexByFamily).flatMap(([family, value]) => {
