@@ -4298,6 +4298,125 @@ while (attempted.size < Math.max(1, accountCount)) {
 						return name.replace(/[_-]+/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
 					};
 
+					const sanitizeUsageErrorMessage = (status: number, bodyText: string): string => {
+						const normalized = bodyText.replace(/\s+/g, " ").trim();
+						const redacted = normalized
+							.replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+							.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted-token]")
+							.replace(/\bsk-[A-Za-z0-9][A-Za-z0-9._:-]{19,}\b/gi, "[redacted-token]")
+							.replace(/\b[a-f0-9]{40,}\b/gi, "[redacted-token]");
+						return redacted ? `HTTP ${status}: ${redacted.slice(0, 200)}` : `HTTP ${status}`;
+					};
+
+					const isAbortError = (error: unknown): boolean =>
+						(error instanceof Error && error.name === "AbortError") ||
+						(typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError");
+
+					const applyRefreshedCredentials = (
+						target: {
+							refreshToken: string;
+							accessToken?: string;
+							expiresAt?: number;
+						},
+						result: {
+							refresh: string;
+							access: string;
+							expires: number;
+						},
+					): void => {
+						target.refreshToken = result.refresh;
+						target.accessToken = result.access;
+						target.expiresAt = result.expires;
+					};
+					const usageErrorBodyMaxChars = 4096;
+
+					const persistRefreshedCredentials = async (params: {
+						previousRefreshToken: string;
+						accountId?: string;
+						organizationId?: string;
+						email?: string;
+						refreshResult: {
+							refresh: string;
+							access: string;
+							expires: number;
+						};
+					}): Promise<boolean> => {
+						return await withAccountStorageTransaction(async (current, persist) => {
+							const latestStorage: AccountStorageV3 =
+								current ??
+								({
+									version: 3,
+									accounts: [],
+									activeIndex: 0,
+									activeIndexByFamily: {},
+								} satisfies AccountStorageV3);
+
+							const uniqueMatch = <T>(matches: T[]): T | undefined =>
+								matches.length === 1 ? matches[0] : undefined;
+
+							let updated = false;
+							if (params.previousRefreshToken) {
+								for (const storedAccount of latestStorage.accounts) {
+									if (storedAccount.refreshToken === params.previousRefreshToken) {
+										applyRefreshedCredentials(storedAccount, params.refreshResult);
+										updated = true;
+									}
+								}
+							}
+
+							if (!updated) {
+								const normalizedOrganizationId = params.organizationId?.trim() ?? "";
+								const normalizedEmail = params.email?.trim().toLowerCase();
+								const orgScopedMatches = params.accountId
+									? latestStorage.accounts.filter(
+											(storedAccount) =>
+												storedAccount.accountId === params.accountId &&
+												(storedAccount.organizationId?.trim() ?? "") === normalizedOrganizationId,
+										)
+									: [];
+								const accountIdMatches = params.accountId
+									? latestStorage.accounts.filter(
+											(storedAccount) => storedAccount.accountId === params.accountId,
+										)
+									: [];
+								const emailMatches =
+									normalizedEmail && !params.accountId
+										? latestStorage.accounts.filter(
+												(storedAccount) =>
+													storedAccount.email?.trim().toLowerCase() === normalizedEmail,
+											)
+										: [];
+
+								const fallbackTarget =
+									uniqueMatch(orgScopedMatches) ??
+									uniqueMatch(accountIdMatches) ??
+									uniqueMatch(emailMatches);
+
+								if (fallbackTarget) {
+									applyRefreshedCredentials(fallbackTarget, params.refreshResult);
+									updated = true;
+								}
+							}
+
+							if (updated) {
+								await persist(latestStorage);
+							}
+							if (!updated) {
+								logWarn(
+									`[${PLUGIN_NAME}] persistRefreshedCredentials could not find a matching stored account. Refreshed credentials remain in-memory for this invocation only.`,
+									{
+										accountId: params.accountId,
+										organizationId: params.organizationId,
+									},
+								);
+							}
+
+							return updated;
+						});
+					};
+
+					const usageFetchTimeoutMs = getFetchTimeoutMs(loadPluginConfig());
+
 					const fetchUsage = async (params: {
 						accountId: string;
 						accessToken: string;
@@ -4307,16 +4426,39 @@ while (attempted.size < Math.max(1, accountCount)) {
 							organizationId: params.organizationId,
 						});
 						headers.set("accept", "application/json");
+						const controller = new AbortController();
+						const timeout = setTimeout(() => controller.abort(), usageFetchTimeoutMs);
 
-						const response = await fetch(`${CODEX_BASE_URL}/wham/usage`, {
-							method: "GET",
-							headers,
-						});
-						if (!response.ok) {
-							const bodyText = await response.text().catch(() => "");
-							throw new Error(bodyText || `HTTP ${response.status}`);
+						try {
+							const response = await fetch(`${CODEX_BASE_URL}/wham/usage`, {
+								method: "GET",
+								headers,
+								signal: controller.signal,
+							});
+							if (!response.ok) {
+								let bodyText = "";
+								try {
+									bodyText = (await response.text()).slice(0, usageErrorBodyMaxChars);
+								} catch (error) {
+									if (isAbortError(error) || controller.signal.aborted) {
+										throw new Error("Usage request timed out");
+									}
+									throw error;
+								}
+								if (controller.signal.aborted) {
+									throw new Error("Usage request timed out");
+								}
+								throw new Error(sanitizeUsageErrorMessage(response.status, bodyText));
+							}
+							return (await response.json()) as UsagePayload;
+						} catch (error) {
+							if (isAbortError(error)) {
+								throw new Error("Usage request timed out");
+							}
+							throw error;
+						} finally {
+							clearTimeout(timeout);
 						}
-						return (await response.json()) as UsagePayload;
 					};
 
 					// Deduplicate accounts by refreshToken (same credential = same limits)
@@ -4325,8 +4467,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 					for (let i = 0; i < storage.accounts.length; i++) {
 						const acct = storage.accounts[i];
 						if (!acct) continue;
-						if (seenTokens.has(acct.refreshToken)) continue;
-						seenTokens.add(acct.refreshToken);
+						const refreshToken =
+							typeof acct.refreshToken === "string" ? acct.refreshToken.trim() : "";
+						if (refreshToken && seenTokens.has(refreshToken)) continue;
+						if (refreshToken) seenTokens.add(refreshToken);
 						uniqueIndices.push(i);
 					}
 
@@ -4334,13 +4478,29 @@ while (attempted.size < Math.max(1, accountCount)) {
 						? [...formatUiHeader(ui, "Codex limits"), ""]
 						: [`Codex limits (${uniqueIndices.length} account${uniqueIndices.length === 1 ? "" : "s"}):`, ""];
 					const activeIndex = resolveActiveIndex(storage, "codex");
+					const activeRefreshToken =
+						typeof activeIndex === "number" && activeIndex >= 0 && activeIndex < storage.accounts.length
+							? storage.accounts[activeIndex]?.refreshToken?.trim() || undefined
+							: undefined;
 					let storageChanged = false;
 
 					for (const i of uniqueIndices) {
 						const account = storage.accounts[i];
 						if (!account) continue;
-						const label = formatCommandAccountLabel(account, i);
-						const activeSuffix = i === activeIndex ? (ui.v2Enabled ? ` ${formatUiBadge(ui, "active", "accent")}` : " [active]") : "";
+						const sharesActiveCredential =
+							!!activeRefreshToken && account.refreshToken === activeRefreshToken;
+						const displayIndex =
+							sharesActiveCredential && typeof activeIndex === "number" ? activeIndex : i;
+						const displayAccount = storage.accounts[displayIndex];
+						if (sharesActiveCredential && !displayAccount) {
+							logWarn(
+								`[${PLUGIN_NAME}] active account entry missing for index ${displayIndex}, falling back to account ${i}`,
+							);
+						}
+						const effectiveDisplayAccount = displayAccount ?? account;
+						const label = formatCommandAccountLabel(effectiveDisplayAccount, displayIndex);
+						const isActive = i === activeIndex || sharesActiveCredential;
+						const activeSuffix = isActive ? (ui.v2Enabled ? ` ${formatUiBadge(ui, "active", "accent")}` : " [active]") : "";
 
 						try {
 							let accessToken = account.accessToken;
@@ -4350,18 +4510,41 @@ while (attempted.size < Math.max(1, accountCount)) {
 								typeof account.expiresAt !== "number" ||
 								account.expiresAt <= Date.now() + 30_000
 							) {
-								const refreshResult = await queuedRefresh(account.refreshToken);
+								const previousRefreshToken = account.refreshToken;
+								if (!previousRefreshToken) {
+									throw new Error("Cannot refresh: account has no refresh token");
+								}
+								const refreshResult = await queuedRefresh(previousRefreshToken);
 								if (refreshResult.type !== "success") {
 									throw new Error(refreshResult.message ?? refreshResult.reason);
 								}
-								account.refreshToken = refreshResult.refresh;
-								account.accessToken = refreshResult.access;
-								account.expiresAt = refreshResult.expires;
+
+								let refreshedCount = 0;
+								for (const storedAccount of storage.accounts) {
+									if (!storedAccount) continue;
+									if (storedAccount.refreshToken === previousRefreshToken) {
+										applyRefreshedCredentials(storedAccount, refreshResult);
+										refreshedCount += 1;
+									}
+								}
+								if (refreshedCount === 0) {
+									applyRefreshedCredentials(account, refreshResult);
+								}
+
+								const persistedRefresh = await persistRefreshedCredentials({
+									previousRefreshToken,
+									accountId: account.accountId,
+									organizationId: account.organizationId,
+									email: account.email,
+									refreshResult,
+								});
+
 								accessToken = refreshResult.access;
-								storageChanged = true;
+								storageChanged = storageChanged || persistedRefresh;
 							}
 
-							const accountId = account.accountId ?? extractAccountId(accessToken);
+							const effectiveAccount = sharesActiveCredential ? effectiveDisplayAccount : account;
+							const accountId = effectiveAccount.accountId ?? extractAccountId(accessToken);
 							if (!accountId) {
 								throw new Error("Missing account id");
 							}
@@ -4369,7 +4552,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							const payload = await fetchUsage({
 								accountId,
 								accessToken,
-								organizationId: account.organizationId,
+								organizationId: effectiveAccount.organizationId,
 							});
 
 							const primary = mapWindow(payload.rate_limit?.primary_window ?? null);
@@ -4379,7 +4562,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								payload.additional_rate_limits?.find((entry) => entry.limit_name === "code_review_rate_limit")?.rate_limit ??
 								null;
 							const codeReview = mapWindow(codeReviewRateLimit?.primary_window ?? null);
-						const credits = formatCredits(payload.credits ?? null);
+							const credits = formatCredits(payload.credits ?? null);
 							const additionalLimits = (payload.additional_rate_limits ?? []).filter(
 								(entry) => entry.limit_name !== "code_review_rate_limit",
 							);
@@ -4434,12 +4617,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 
 					if (storageChanged) {
-						await saveAccounts(storage);
-						if (cachedAccountManager) {
-							const reloadedManager = await AccountManager.loadFromDisk();
-							cachedAccountManager = reloadedManager;
-							accountManagerPromise = Promise.resolve(reloadedManager);
-						}
+						invalidateAccountManagerCache();
 					}
 
 					while (lines.length > 0 && lines[lines.length - 1] === "") {
