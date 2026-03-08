@@ -124,8 +124,10 @@ describe("CLI Module", () => {
       expect(result).toEqual({ mode: "add" });
     });
 
-    it("returns 'fresh' for 'f' input", async () => {
-      mockRl.question.mockResolvedValueOnce("f");
+    it("returns 'fresh' for 'f' input after typed confirmation", async () => {
+      mockRl.question
+        .mockResolvedValueOnce("f")
+        .mockResolvedValueOnce("DELETE");
       
       const { promptLoginMode } = await import("../lib/cli.js");
       const result = await promptLoginMode([{ index: 0 }]);
@@ -133,13 +135,27 @@ describe("CLI Module", () => {
       expect(result).toEqual({ mode: "fresh", deleteAll: true });
     });
 
-    it("returns 'fresh' for 'fresh' input", async () => {
-      mockRl.question.mockResolvedValueOnce("fresh");
+    it("returns 'fresh' for 'fresh' input after typed confirmation", async () => {
+      mockRl.question
+        .mockResolvedValueOnce("fresh")
+        .mockResolvedValueOnce("DELETE");
       
       const { promptLoginMode } = await import("../lib/cli.js");
       const result = await promptLoginMode([{ index: 0 }]);
       
       expect(result).toEqual({ mode: "fresh", deleteAll: true });
+    });
+
+    it("cancels fallback delete-all when typed confirmation is missing", async () => {
+      mockRl.question
+        .mockResolvedValueOnce("fresh")
+        .mockResolvedValueOnce("nope")
+        .mockResolvedValueOnce("q");
+
+      const { promptLoginMode } = await import("../lib/cli.js");
+      const result = await promptLoginMode([{ index: 0 }]);
+
+      expect(result).toEqual({ mode: "cancel" });
     });
 
     it("routes fallback settings input to experimental sync actions", async () => {
@@ -200,7 +216,7 @@ describe("CLI Module", () => {
     });
 
     it("displays account with accountId suffix when no email", async () => {
-      mockRl.question.mockResolvedValueOnce("f");
+      mockRl.question.mockResolvedValueOnce("a");
       const consoleSpy = vi.spyOn(console, "log");
       
       const { promptLoginMode } = await import("../lib/cli.js");
@@ -212,7 +228,7 @@ describe("CLI Module", () => {
     });
 
 		it("displays plain Account N when no email or accountId", async () => {
-			mockRl.question.mockResolvedValueOnce("f");
+			mockRl.question.mockResolvedValueOnce("a");
 			const consoleSpy = vi.spyOn(console, "log");
 			
 			const { promptLoginMode } = await import("../lib/cli.js");

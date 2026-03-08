@@ -206,13 +206,19 @@ function resolveAccountSourceIndex(account: ExistingAccountInfo): number {
 	return -1;
 }
 
-async function promptDeleteAllTypedConfirm(): Promise<boolean> {
-	const rl = createInterface({ input, output });
-	try {
+async function promptDeleteAllTypedConfirm(
+	rl?: ReturnType<typeof createInterface>,
+): Promise<boolean> {
+	if (rl) {
 		const answer = await rl.question("Type DELETE to remove all saved accounts: ");
 		return answer.trim() === "DELETE";
+	}
+	const localRl = createInterface({ input, output });
+	try {
+		const answer = await localRl.question("Type DELETE to remove all saved accounts: ");
+		return answer.trim() === "DELETE";
 	} finally {
-		rl.close();
+		localRl.close();
 	}
 }
 
@@ -273,7 +279,13 @@ async function promptLoginModeFallback(
 				if (settingsResult) return settingsResult;
 				continue;
 			}
-			if (normalized === "f" || normalized === "fresh") return { mode: "fresh", deleteAll: true };
+			if (normalized === "f" || normalized === "fresh") {
+				if (!(await promptDeleteAllTypedConfirm(rl))) {
+					console.log("\nDelete all cancelled.\n");
+					continue;
+				}
+				return { mode: "fresh", deleteAll: true };
+			}
 			if (normalized === "c" || normalized === "check") return { mode: "check" };
 			if (normalized === "d" || normalized === "deep") return { mode: "deep-check" };
 			if (normalized === "g" || normalized === "verify" || normalized === "problem") return { mode: "verify-flagged" };

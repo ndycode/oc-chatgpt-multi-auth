@@ -203,6 +203,17 @@ vi.mock("../lib/codex-multi-auth-sync.js", () => ({
 		removed: 0,
 		updated: 0,
 	})),
+	loadCodexMultiAuthSourceStorage: vi.fn(async () => ({
+		rootDir: "/tmp/codex-root",
+		accountsPath: "/tmp/codex-root/openai-codex-accounts.json",
+		scope: "global",
+		storage: {
+			version: 3 as const,
+			accounts: [],
+			activeIndex: 0,
+			activeIndexByFamily: {},
+		},
+	})),
 	syncFromCodexMultiAuth: vi.fn(async () => ({
 		rootDir: "/tmp/codex-root",
 		accountsPath: "/tmp/codex-root/openai-codex-accounts.json",
@@ -2768,7 +2779,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		};
 
 		await expect(
-			autoMethod.authorize({ loginMode: "add", accountCount: "2" }),
+			autoMethod.authorize({ loginMode: "add", accountCount: "101" }),
 		).resolves.toMatchObject({
 			method: "auto",
 		});
@@ -3006,6 +3017,27 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 				mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
 			});
+			vi.mocked(storageModule.loadAccounts).mockImplementation(async () => ({
+				...mockStorage,
+				accounts: mockStorage.accounts.map((account) => ({ ...account })),
+				activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+			}));
+			vi.mocked(storageModule.withAccountStorageTransaction).mockImplementation(
+				async (callback) => {
+					const loadedStorage = {
+						...mockStorage,
+						accounts: mockStorage.accounts.map((account) => ({ ...account })),
+						activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+					};
+					const persist = async (nextStorage: typeof mockStorage) => {
+						mockStorage.version = nextStorage.version;
+						mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
+						mockStorage.activeIndex = nextStorage.activeIndex;
+						mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+					};
+					await callback(loadedStorage, persist);
+				},
+			);
 
 			const capacityError = new syncModule.CodexMultiAuthSyncCapacityError({
 				rootDir: tempDir,
@@ -3371,6 +3403,27 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 				mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
 			});
+			vi.mocked(storageModule.loadAccounts).mockImplementation(async () => ({
+				...mockStorage,
+				accounts: mockStorage.accounts.map((account) => ({ ...account })),
+				activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+			}));
+			vi.mocked(storageModule.withAccountStorageTransaction).mockImplementation(
+				async (callback) => {
+					const loadedStorage = {
+						...mockStorage,
+						accounts: mockStorage.accounts.map((account) => ({ ...account })),
+						activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+					};
+					const persist = async (nextStorage: typeof mockStorage) => {
+						mockStorage.version = nextStorage.version;
+						mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
+						mockStorage.activeIndex = nextStorage.activeIndex;
+						mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+					};
+					await callback(loadedStorage, persist);
+				},
+			);
 
 			const capacityError = new syncModule.CodexMultiAuthSyncCapacityError({
 				rootDir: tempDir,
@@ -3493,6 +3546,27 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 				mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
 			});
+			vi.mocked(storageModule.loadAccounts).mockImplementation(async () => ({
+				...mockStorage,
+				accounts: mockStorage.accounts.map((account) => ({ ...account })),
+				activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+			}));
+			vi.mocked(storageModule.withAccountStorageTransaction).mockImplementation(
+				async (callback) => {
+					const loadedStorage = {
+						...mockStorage,
+						accounts: mockStorage.accounts.map((account) => ({ ...account })),
+						activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+					};
+					const persist = async (nextStorage: typeof mockStorage) => {
+						mockStorage.version = nextStorage.version;
+						mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
+						mockStorage.activeIndex = nextStorage.activeIndex;
+						mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+					};
+					await callback(loadedStorage, persist);
+				},
+			);
 
 			const capacityError = new syncModule.CodexMultiAuthSyncCapacityError({
 				rootDir: tempDir,
