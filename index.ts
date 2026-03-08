@@ -4399,7 +4399,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 									{
 										accountId: params.accountId,
 										organizationId: params.organizationId,
-										email: params.email,
 									},
 								);
 							}
@@ -4485,7 +4484,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 							sharesActiveCredential && typeof activeIndex === "number" ? activeIndex : i;
 						const displayAccount = storage.accounts[displayIndex];
 						if (sharesActiveCredential && !displayAccount) {
-							throw new Error(`Active account entry missing for index ${displayIndex}`);
+							logWarn(
+								`[${PLUGIN_NAME}] active account entry missing for index ${displayIndex}, falling back to account ${i}`,
+							);
 						}
 						const effectiveDisplayAccount = displayAccount ?? account;
 						const label = formatCommandAccountLabel(effectiveDisplayAccount, displayIndex);
@@ -4501,6 +4502,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 								account.expiresAt <= Date.now() + 30_000
 							) {
 								const previousRefreshToken = account.refreshToken;
+								if (!previousRefreshToken) {
+									throw new Error("Cannot refresh: account has no refresh token");
+								}
 								const refreshResult = await queuedRefresh(account.refreshToken);
 								if (refreshResult.type !== "success") {
 									throw new Error(refreshResult.message ?? refreshResult.reason);
@@ -4518,7 +4522,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									applyRefreshedCredentials(account, refreshResult);
 								}
 
-								await persistRefreshedCredentials({
+								const persistedRefresh = await persistRefreshedCredentials({
 									previousRefreshToken,
 									accountId: account.accountId,
 									organizationId: account.organizationId,
@@ -4527,7 +4531,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								});
 
 								accessToken = refreshResult.access;
-								storageChanged = true;
+								storageChanged = storageChanged || persistedRefresh;
 							}
 
 							const effectiveAccount = sharesActiveCredential ? effectiveDisplayAccount : account;
