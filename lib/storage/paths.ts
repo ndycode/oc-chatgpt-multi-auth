@@ -125,7 +125,6 @@ export function isProjectDirectory(dir: string): boolean {
 
 export function findProjectRoot(startDir: string): string | null {
 	let current = startDir;
-	const root = dirname(current) === current ? current : null;
 	
 	while (current) {
 		if (isProjectDirectory(current)) {
@@ -139,7 +138,7 @@ export function findProjectRoot(startDir: string): string | null {
 		current = parent;
 	}
 	
-	return root && isProjectDirectory(root) ? root : null;
+	return null;
 }
 
 function normalizePathForComparison(filePath: string): string {

@@ -2748,6 +2748,13 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const authResult = await autoMethod.authorize();
 		expect(authResult.instructions).toBe("Authentication cancelled");
+		expect(vi.mocked(storageModule.createTimestampedBackupPath)).toHaveBeenCalledWith(
+			"codex-auto-repair-backup",
+		);
+		expect(vi.mocked(storageModule.backupRawAccountsFile)).toHaveBeenCalledWith(
+			"/tmp/codex-auto-repair-backup-20260101-000000.json",
+			true,
+		);
 		expect(mockStorage.accounts).toHaveLength(1);
 		expect(mockStorage.accounts[0]?.email).toBe("keep@example.com");
 	});

@@ -4498,6 +4498,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 									}
 									const appliedFixes: string[] = [];
 									const fixErrors: string[] = [];
+									const backupPath = await createMaintenanceAccountsBackup("codex-auto-repair-backup");
+									emit(`Backup created: ${backupPath}`, "muted");
 									const cleanupResult = await cleanupCodexMultiAuthSyncedOverlaps();
 									if (cleanupResult.removed > 0) {
 										appliedFixes.push(`Removed ${cleanupResult.removed} synced overlap(s).`);

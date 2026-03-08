@@ -68,6 +68,11 @@ export interface CodexMultiAuthSyncCapacityDetails extends CodexMultiAuthResolve
 	}>;
 }
 
+function normalizeTrimmedIdentity(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
 function normalizeSourceStorage(storage: AccountStorageV3): AccountStorageV3 {
 	const normalizedAccounts = storage.accounts.map((account) => {
 		const accountId = account.accountId?.trim();
@@ -162,6 +167,8 @@ async function withNormalizedImportFile<T>(
 	};
 
 	const secureTempRoot = join(getResolvedUserHomeDir(), ".opencode", "tmp");
+	// On Windows the mode/chmod calls are ignored; the home-directory ACLs remain
+	// the actual isolation boundary for this temporary token material.
 	await fs.mkdir(secureTempRoot, { recursive: true, mode: 0o700 });
 	const tempDir = await fs.mkdtemp(join(secureTempRoot, "oc-chatgpt-multi-auth-sync-"));
 	return runWithTempDir(tempDir);
@@ -245,7 +252,7 @@ function buildExistingSyncIdentityState(existingAccounts: AccountStorageV3["acco
 	for (const account of existingAccounts) {
 		const organizationId = normalizeIdentity(account.organizationId);
 		const accountId = normalizeIdentity(account.accountId);
-		const refreshToken = normalizeIdentity(account.refreshToken);
+		const refreshToken = normalizeTrimmedIdentity(account.refreshToken);
 		const email = normalizeIdentity(account.email);
 		if (organizationId) organizationIds.add(organizationId);
 		if (accountId) accountIds.add(accountId);
@@ -282,7 +289,7 @@ function filterSourceAccountsAgainstExistingEmails(
 			if (accountId) {
 				return !existingState.accountIds.has(accountId);
 			}
-			const refreshToken = normalizeIdentity(account.refreshToken);
+			const refreshToken = normalizeTrimmedIdentity(account.refreshToken);
 			if (refreshToken && existingState.refreshTokens.has(refreshToken)) {
 				return false;
 			}
@@ -408,7 +415,7 @@ function toCleanupIdentityKeys(account: {
 	if (organizationId) keys.push(`org:${organizationId}`);
 	const accountId = normalizeIdentity(account.accountId);
 	if (accountId) keys.push(`account:${accountId}`);
-	const refreshToken = normalizeIdentity(account.refreshToken);
+	const refreshToken = normalizeTrimmedIdentity(account.refreshToken);
 	if (refreshToken) keys.push(`refresh:${refreshToken}`);
 	return keys;
 }
@@ -975,7 +982,7 @@ async function loadRawCodexMultiAuthOverlapCleanupStorage(
 		throw new Error("Invalid raw storage snapshot for synced overlap cleanup.");
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
+		if (code === "ENOENT" || code === "EBUSY" || code === "EACCES" || code === "EPERM") {
 			return fallback;
 		}
 		const message = error instanceof Error ? error.message : String(error);
