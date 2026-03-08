@@ -34,6 +34,10 @@ export interface CodexMultiAuthResolvedSource {
 	scope: "project" | "global";
 }
 
+export interface LoadedCodexMultiAuthSourceStorage extends CodexMultiAuthResolvedSource {
+	storage: AccountStorageV3;
+}
+
 export interface CodexMultiAuthSyncPreview extends CodexMultiAuthResolvedSource {
 	imported: number;
 	skipped: number;
@@ -144,6 +148,19 @@ async function removeNormalizedImportTempDir(
 	if (options.postSuccessCleanupFailureMode !== "warn") {
 		throw new Error(`Failed to remove temporary codex sync directory ${tempDir}: ${lastMessage}`);
 	}
+}
+
+function stableSerialize(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map((entry) => stableSerialize(entry)).join(",")}]`;
+	}
+	if (value && typeof value === "object") {
+		const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+			left.localeCompare(right),
+		);
+		return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableSerialize(entryValue)}`).join(",")}}`;
+	}
+	return JSON.stringify(value);
 }
 
 async function withNormalizedImportFile<T>(
@@ -796,7 +813,7 @@ function getSyncCapacityLimit(): number {
 
 export async function loadCodexMultiAuthSourceStorage(
 	projectPath = process.cwd(),
-): Promise<CodexMultiAuthResolvedSource & { storage: AccountStorageV3 }> {
+): Promise<LoadedCodexMultiAuthSourceStorage> {
 	const resolved = resolveCodexMultiAuthAccountsSource(projectPath);
 	const raw = await fs.readFile(resolved.accountsPath, "utf-8");
 	let parsed: unknown;
@@ -854,9 +871,10 @@ async function prepareCodexMultiAuthPreviewStorage(
 
 export async function previewSyncFromCodexMultiAuth(
 	projectPath = process.cwd(),
+	loadedSource?: LoadedCodexMultiAuthSourceStorage,
 ): Promise<CodexMultiAuthSyncPreview> {
-	const loadedSource = await loadCodexMultiAuthSourceStorage(projectPath);
-	const { resolved, existing } = await prepareCodexMultiAuthPreviewStorage(loadedSource);
+	const source = loadedSource ?? (await loadCodexMultiAuthSourceStorage(projectPath));
+	const { resolved, existing } = await prepareCodexMultiAuthPreviewStorage(source);
 	const preview = await withNormalizedImportFile(
 		resolved.storage,
 		(filePath) => previewImportAccountsWithExistingStorage(filePath, existing),
@@ -871,8 +889,9 @@ export async function previewSyncFromCodexMultiAuth(
 
 export async function syncFromCodexMultiAuth(
 	projectPath = process.cwd(),
+	loadedSource?: LoadedCodexMultiAuthSourceStorage,
 ): Promise<CodexMultiAuthSyncResult> {
-	const resolved = await loadCodexMultiAuthSourceStorage(projectPath);
+	const resolved = loadedSource ?? (await loadCodexMultiAuthSourceStorage(projectPath));
 	const result: ImportAccountsResult = await withNormalizedImportFile(
 		tagSyncedAccounts(resolved.storage),
 		(filePath) => {
@@ -1001,10 +1020,10 @@ function buildCodexMultiAuthOverlapCleanupPlan(existing: AccountStorageV3): {
 		if (!key) return count;
 		const original = originalAccountsByKey.get(key);
 		if (!original) return count;
-		return JSON.stringify(original) === JSON.stringify(account) ? count : count + 1;
+		return stableSerialize(original) === stableSerialize(account) ? count : count + 1;
 	}, 0);
 	const changed =
-		removed > 0 || after !== before || JSON.stringify(normalized) !== JSON.stringify(existing);
+		removed > 0 || after !== before || stableSerialize(normalized) !== stableSerialize(existing);
 
 	return {
 		result: {

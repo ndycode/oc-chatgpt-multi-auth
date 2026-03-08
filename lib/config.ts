@@ -320,6 +320,16 @@ async function tryRecoverStalePluginConfigLock(rawLockContents: string): Promise
 		return false;
 	}
 
+	if (existsSync(CONFIG_LOCK_PATH)) {
+		try {
+			await fs.unlink(staleLockPath);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			logWarn(`Failed to remove stale plugin config lock artifact ${staleLockPath}: ${message}`);
+		}
+		return false;
+	}
+
 	try {
 		await fs.unlink(staleLockPath);
 	} catch (error) {

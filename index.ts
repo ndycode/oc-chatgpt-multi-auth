@@ -197,10 +197,12 @@ import {
 	CodexMultiAuthSyncCapacityError,
 	cleanupCodexMultiAuthSyncedOverlaps,
 	isCodexMultiAuthSourceTooLargeForCapacity,
+	loadCodexMultiAuthSourceStorage,
 	previewCodexMultiAuthSyncedOverlapCleanup,
 	previewSyncFromCodexMultiAuth,
 	syncFromCodexMultiAuth,
 } from "./lib/codex-multi-auth-sync.js";
+import { createSyncPruneBackupPayload } from "./lib/sync-prune-backup.js";
 
 /**
  * OpenAI Codex OAuth authentication plugin for opencode
@@ -3869,18 +3871,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 									const currentFlaggedStorage = await loadFlaggedAccounts();
 									const backupPath = createTimestampedBackupPath("codex-sync-prune-backup");
 									await fsPromises.mkdir(dirname(backupPath), { recursive: true });
-									const backupPayload = {
-										version: 1 as const,
-										accounts: {
-											...currentAccountsStorage,
-											accounts: currentAccountsStorage.accounts.map((account) => ({ ...account })),
-											activeIndexByFamily: { ...(currentAccountsStorage.activeIndexByFamily ?? {}) },
-										},
-										flagged: {
-											...currentFlaggedStorage,
-											accounts: currentFlaggedStorage.accounts.map((flagged) => ({ ...flagged })),
-										},
-									};
+									const backupPayload = createSyncPruneBackupPayload(currentAccountsStorage, currentFlaggedStorage);
+									// On Windows, mode bits are ignored and the backup relies on the parent directory ACLs.
 									await fsPromises.writeFile(backupPath, `${JSON.stringify(backupPayload, null, 2)}\n`, {
 										encoding: "utf-8",
 										mode: 0o600,
@@ -4143,7 +4135,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 								};
 								while (true) {
 									try {
-										const preview = await previewSyncFromCodexMultiAuth(process.cwd());
+										const loadedSource = await loadCodexMultiAuthSourceStorage(process.cwd());
+										const preview = await previewSyncFromCodexMultiAuth(process.cwd(), loadedSource);
 										console.log("");
 										console.log(`codex-multi-auth source: ${preview.accountsPath}`);
 										console.log(`Scope: ${preview.scope}`);
@@ -4179,7 +4172,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											return;
 										}
 
-										const result = await syncFromCodexMultiAuth(process.cwd());
+										const result = await syncFromCodexMultiAuth(process.cwd(), loadedSource);
 										pruneBackup = null;
 										invalidateAccountManagerCache();
 										const backupLabel =

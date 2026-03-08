@@ -910,7 +910,7 @@ describe('Plugin Configuration', () => {
 				throw error;
 			});
 			mockExistsSync.mockReturnValue(true);
-			mockReadFile.mockImplementation(async (filePath: fs.PathLike | number) => {
+			mockReadFile.mockImplementation(async (filePath: Parameters<typeof fs.promises.readFile>[0]) => {
 				if (String(filePath) === lockPath) {
 					return '424242';
 				}
@@ -941,9 +941,11 @@ describe('Plugin Configuration', () => {
 		it('sweeps old stale lock artifacts before acquiring the config lock', async () => {
 			const configPath = path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json');
 			const stalePath = `${configPath}.lock.424242.777777.1700000000000.stale`;
-			mockReaddir.mockResolvedValue([
-				{ isFile: () => true, name: path.basename(stalePath) } as fs.Dirent,
-			]);
+			mockReaddir.mockResolvedValue(
+				[
+					{ isFile: () => true, name: path.basename(stalePath) } as unknown as fs.Dirent,
+				] as unknown as Awaited<ReturnType<typeof fs.promises.readdir>>,
+			);
 			mockStat.mockResolvedValue({
 				mtimeMs: Date.now() - (25 * 60 * 60 * 1000),
 			} as fs.Stats);
@@ -961,7 +963,7 @@ describe('Plugin Configuration', () => {
 				throw error;
 			});
 			mockExistsSync.mockReturnValue(true);
-			mockReadFile.mockImplementation(async (filePath: fs.PathLike | number) => {
+			mockReadFile.mockImplementation(async (filePath: Parameters<typeof fs.promises.readFile>[0]) => {
 				if (String(filePath) === lockPath) {
 					return '424242';
 				}
@@ -990,6 +992,59 @@ describe('Plugin Configuration', () => {
 				expect(mockLogWarn).toHaveBeenCalledWith(
 					expect.stringContaining('Failed to remove stale plugin config lock artifact'),
 				);
+			} finally {
+				killSpy.mockRestore();
+			}
+		});
+
+		it('backs off when a live lock reappears during stale-lock recovery', async () => {
+			const configPath = path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json');
+			const lockPath = `${configPath}.lock`;
+			const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+				const error = new Error('process not found') as NodeJS.ErrnoException;
+				error.code = 'ESRCH';
+				throw error;
+			});
+			let lockExistsChecks = 0;
+			mockExistsSync.mockImplementation((filePath) => {
+				const candidate = String(filePath);
+				if (candidate === configPath) {
+					return true;
+				}
+				if (candidate === lockPath) {
+					lockExistsChecks += 1;
+					return lockExistsChecks >= 1;
+				}
+				return false;
+			});
+			mockReadFile.mockImplementation(async (filePath: Parameters<typeof fs.promises.readFile>[0]) => {
+				if (String(filePath) === lockPath || String(filePath).includes('.stale')) {
+					return '424242';
+				}
+				return JSON.stringify({ codexMode: false });
+			});
+			let lockWriteAttempts = 0;
+			mockWriteFile.mockImplementation(async (filePath) => {
+				if (String(filePath) === lockPath) {
+					lockWriteAttempts += 1;
+					if (lockWriteAttempts === 1) {
+						const error = new Error('exists') as NodeJS.ErrnoException;
+						error.code = 'EEXIST';
+						throw error;
+					}
+				}
+				return undefined;
+			});
+
+			try {
+				await expect(setSyncFromCodexMultiAuthEnabled(true)).resolves.toBeUndefined();
+				expect(lockWriteAttempts).toBeGreaterThan(1);
+				expect(
+					mockRename.mock.calls.some(
+						([source, destination]) =>
+							String(source).includes('.stale') && String(destination) === lockPath,
+					),
+				).toBe(false);
 			} finally {
 				killSpy.mockRestore();
 			}
