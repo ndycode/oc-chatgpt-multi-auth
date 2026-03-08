@@ -4769,7 +4769,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 									? 1
 									: startFresh
 										? ACCOUNT_LIMITS.MAX_ACCOUNTS
-										: ACCOUNT_LIMITS.MAX_ACCOUNTS - existingCount;
+										: Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS)
+											? ACCOUNT_LIMITS.MAX_ACCOUNTS - existingCount
+											: Number.POSITIVE_INFINITY;
 
 							if (availableSlots <= 0) {
 								return {
@@ -4888,7 +4890,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 									});
 								}
 
-								if (accounts.length >= ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+								if (
+									Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS) &&
+									accounts.length >= ACCOUNT_LIMITS.MAX_ACCOUNTS
+								) {
 									break;
 								}
 

@@ -413,11 +413,29 @@ describe("codex-multi-auth sync", () => {
 		});
 	});
 
-	it("keeps overlap cleanup preview on the read-only path without the storage transaction lock", async () => {
+	it("takes the same transaction-backed path for overlap cleanup preview as cleanup", async () => {
 		const storageModule = await import("../lib/storage.js");
-		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async () => {
-			throw new Error("overlap preview should not take write transaction lock");
-		});
+		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
+			handler(
+				{
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "org-sync",
+							organizationId: "org-sync",
+							accountIdSource: "org",
+							accountTags: ["codex-multi-auth-sync"],
+							refreshToken: "sync-token",
+							addedAt: 2,
+							lastUsed: 2,
+						},
+					],
+				},
+				vi.fn(async () => {}),
+			),
+		);
 		vi.mocked(storageModule.loadAccounts).mockResolvedValue({
 			version: 3,
 			activeIndex: 0,
@@ -442,6 +460,8 @@ describe("codex-multi-auth sync", () => {
 			removed: 0,
 			updated: 0,
 		});
+		expect(storageModule.withAccountStorageTransaction).toHaveBeenCalledTimes(1);
+		expect(storageModule.loadAccounts).not.toHaveBeenCalled();
 	});
 
 	it("uses a single account snapshot for preview capacity filtering and preview counts", async () => {
@@ -564,6 +584,65 @@ describe("codex-multi-auth sync", () => {
 			imported: 1,
 			backupStatus: "created",
 		});
+	});
+
+	it("uses the same locked raw storage snapshot for overlap preview as cleanup", async () => {
+		const storageModule = await import("../lib/storage.js");
+		vi.mocked(storageModule.loadAccounts).mockResolvedValueOnce({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [],
+		});
+		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
+			handler(
+				{
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [],
+				},
+				vi.fn(async () => {}),
+			),
+		);
+		mockSourceStorageFile(
+			"/tmp/opencode-accounts.json",
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [
+					{
+						accountId: "org-sync",
+						organizationId: "org-sync",
+						accountIdSource: "org",
+						accountTags: ["codex-multi-auth-sync"],
+						email: "sync@example.com",
+						refreshToken: "sync-token",
+						addedAt: 2,
+						lastUsed: 2,
+					},
+					{
+						accountId: "org-sync",
+						accountIdSource: "org",
+						email: "sync@example.com",
+						refreshToken: "sync-token",
+						addedAt: 1,
+						lastUsed: 1,
+					},
+				],
+			}),
+		);
+
+		const { previewCodexMultiAuthSyncedOverlapCleanup } = await import("../lib/codex-multi-auth-sync.js");
+		await expect(previewCodexMultiAuthSyncedOverlapCleanup()).resolves.toEqual({
+			before: 2,
+			after: 1,
+			removed: 1,
+			updated: 0,
+		});
+		expect(storageModule.withAccountStorageTransaction).toHaveBeenCalledTimes(1);
+		expect(storageModule.loadAccounts).not.toHaveBeenCalled();
 	});
 
 	it("does not retry through a fallback temp directory when the handler throws", async () => {

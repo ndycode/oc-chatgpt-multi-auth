@@ -2759,6 +2759,21 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts[0]?.email).toBe("keep@example.com");
 	});
 
+	it("supports add-account flow when max accounts is unlimited", async () => {
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ method: string; instructions: string }>;
+		};
+
+		await expect(
+			autoMethod.authorize({ loginMode: "add", accountCount: "2" }),
+		).resolves.toMatchObject({
+			method: "auto",
+		});
+	});
+
 	it("runs legacy duplicate email cleanup from maintenance settings with confirmation and backup", async () => {
 		const cliModule = await import("../lib/cli.js");
 		const storageModule = await import("../lib/storage.js");
