@@ -215,12 +215,7 @@ const mockStorage = {
 	activeIndexByFamily: {} as Record<string, number>,
 };
 
-const cloneAccount = (account: (typeof mockStorage.accounts)[number]) => ({
-	...account,
-	rateLimitResetTimes: account.rateLimitResetTimes
-		? { ...account.rateLimitResetTimes }
-		: undefined,
-});
+const cloneAccount = (account: (typeof mockStorage.accounts)[number]) => structuredClone(account);
 
 const cloneMockStorage = () => ({
 	...mockStorage,
@@ -238,11 +233,11 @@ vi.mock("../lib/storage.js", () => ({
 		mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 	}),
 	withAccountStorageTransaction: vi.fn(
-		async (
+		async <T>(
 			callback: (
 				loadedStorage: typeof mockStorage,
 				persist: (nextStorage: typeof mockStorage) => Promise<void>,
-			) => Promise<void>,
+			) => Promise<T>,
 		) => {
 			const loadedStorage = cloneMockStorage();
 			const persist = async (nextStorage: typeof mockStorage) => {
@@ -251,7 +246,7 @@ vi.mock("../lib/storage.js", () => ({
 				mockStorage.activeIndex = nextStorage.activeIndex;
 				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 			};
-			await callback(loadedStorage, persist);
+			return await callback(loadedStorage, persist);
 		},
 	),
 	clearAccounts: vi.fn(async () => {}),
@@ -1225,6 +1220,56 @@ describe("OpenAIOAuthPlugin", () => {
 			} finally {
 				vi.useRealTimers();
 			}
+		});
+
+		it("preserves non-abort text read failures from unsuccessful responses", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockImplementation(async () => ({
+				ok: false,
+				status: 502,
+				headers: new Headers({ "content-type": "text/plain" }),
+				text: async () => {
+					throw new Error("body read failed");
+				},
+			} as Response));
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Error: body read failed");
+			expect(result).not.toContain("Usage request timed out");
+		});
+
+		it("preserves non-abort json read failures from successful responses", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockImplementation(async () => ({
+				ok: true,
+				status: 200,
+				headers: new Headers({ "content-type": "application/json" }),
+				json: async () => {
+					throw new Error("body read failed");
+				},
+			} as Response));
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Error: body read failed");
+			expect(result).not.toContain("Usage request timed out");
 		});
 	});
 
