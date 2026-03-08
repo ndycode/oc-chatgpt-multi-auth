@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
-import { getTokenTracker } from "../lib/rotation.js";
+import { getTokenTracker, DEFAULT_TOKEN_BUCKET_CONFIG } from "../lib/rotation.js";
 import {
   deduplicateAccounts,
   deduplicateAccountsByEmail,
@@ -173,7 +173,7 @@ describe("Multi-Account Rotation Integration", () => {
       const firstAccount = manager.setActiveIndex(0);
       expect(firstAccount).not.toBeNull();
       manager.removeAccount(firstAccount!);
-      expect(getTokenTracker().getTokens(0, "codex")).toBeGreaterThan(0);
+      expect(getTokenTracker().getTokens(0, "codex")).toBe(DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
     });
 
     it("returns null when all accounts are rate-limited", () => {

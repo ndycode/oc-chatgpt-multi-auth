@@ -1,6 +1,7 @@
 import { existsSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Auth } from "@opencode-ai/sdk";
 import { createLogger } from "./logger.js";
 import {
@@ -174,6 +175,7 @@ function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 
 export interface ManagedAccount {
 	index: number;
+	immutableId: string;
 	accountId?: string;
 	organizationId?: string;
 	accountIdSource?: AccountIdSource;
@@ -216,12 +218,10 @@ type AccountAvailabilitySnapshot = {
 	eligible: boolean;
 };
 
-function getRequestAttemptKey(account: Pick<ManagedAccount, "refreshToken" | "organizationId" | "accountId" | "addedAt">): string {
+function getRequestAttemptKey(account: Pick<ManagedAccount, "immutableId" | "organizationId">): string {
 	return [
-		account.refreshToken,
+		account.immutableId,
 		account.organizationId ?? "",
-		account.accountId ?? "",
-		String(account.addedAt),
 	].join("::");
 }
 
@@ -317,6 +317,7 @@ export class AccountManager {
  
 					return {
 						index,
+						immutableId: randomUUID(),
 						accountId: matchesFallback ? fallbackAccountId ?? account.accountId : account.accountId,
 						organizationId: account.organizationId,
 						accountIdSource: account.accountIdSource,
@@ -353,6 +354,7 @@ export class AccountManager {
 				const now = nowMs();
 				this.accounts.push({
 					index: this.accounts.length,
+					immutableId: randomUUID(),
 					accountId: fallbackAccountId,
 					organizationId: undefined,
 					accountIdSource: fallbackAccountId ? "token" : undefined,
@@ -386,6 +388,7 @@ export class AccountManager {
 			this.accounts = [
 				{
 					index: 0,
+					immutableId: randomUUID(),
 					accountId: fallbackAccountId,
 					organizationId: undefined,
 					accountIdSource: fallbackAccountId ? "token" : undefined,
