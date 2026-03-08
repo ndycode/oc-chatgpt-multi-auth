@@ -180,6 +180,18 @@ export class TokenBucketTracker {
     return this.refillTokens(entry);
   }
 
+  getWaitTimeUntilTokenAvailable(accountIndex: number, quotaKey?: string): number {
+    const key = this.getKey(accountIndex, quotaKey);
+    const entry = this.buckets.get(key);
+    const currentTokens = entry ? this.refillTokens(entry) : this.config.maxTokens;
+    if (currentTokens >= 1) return 0;
+    if (this.config.tokensPerMinute <= 0) return Number.POSITIVE_INFINITY;
+
+    const tokensNeeded = 1 - currentTokens;
+    const minutesUntilAvailable = tokensNeeded / this.config.tokensPerMinute;
+    return Math.max(0, Math.ceil(minutesUntilAvailable * 60_000));
+  }
+
   /**
    * Attempt to consume a token. Returns true if successful, false if bucket is empty.
    */
@@ -296,6 +308,11 @@ export const DEFAULT_HYBRID_SELECTION_CONFIG: HybridSelectionConfig = {
  * - freshness: Hours since last used (higher = more fresh for rotation)
  */
 export interface HybridSelectionOptions {
+  pidOffsetEnabled?: boolean;
+}
+
+export interface RequestHybridSelectionOptions {
+  attemptedIndices?: ReadonlySet<number>;
   pidOffsetEnabled?: boolean;
 }
 

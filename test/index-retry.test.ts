@@ -55,6 +55,10 @@ vi.mock("../lib/accounts.js", () => {
 			return this.getCurrentOrNextForFamily();
 		}
 
+		getNextRequestEligibleForFamilyHybrid() {
+			return this.getCurrentOrNextForFamily();
+		}
+
 		getSelectionExplainability() {
 			return [];
 		}

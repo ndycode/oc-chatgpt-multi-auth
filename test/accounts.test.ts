@@ -955,6 +955,29 @@ describe("AccountManager", () => {
       expect(waitTime).toBeGreaterThan(0);
       expect(waitTime).toBeLessThanOrEqual(45000);
     });
+
+    it("considers local token bucket recovery time", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        activeIndexByFamily: { codex: 0 },
+        accounts: [
+          {
+            refreshToken: "token-1",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored as never);
+      getTokenTracker().drain(0, "codex", 50);
+
+      const waitTime = manager.getMinWaitTimeForFamily("codex");
+      expect(waitTime).toBeGreaterThan(0);
+      expect(waitTime).toBeLessThanOrEqual(10000);
+    });
   });
 
   describe("updateFromAuth", () => {
@@ -2041,6 +2064,66 @@ describe("AccountManager", () => {
       const selected = manager.getCurrentOrNextForFamilyHybrid("codex");
       expect(selected).not.toBeNull();
       expect(selected?.index).toBe(0);
+    });
+
+    it("request selector skips attempted current account and picks the next eligible account", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        activeIndexByFamily: { codex: 0 },
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          { refreshToken: "token-2", addedAt: now, lastUsed: now - 10000 },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored as never);
+      const selected = manager.getNextRequestEligibleForFamilyHybrid("codex", undefined, {
+        attemptedIndices: new Set([0]),
+      });
+
+      expect(selected).not.toBeNull();
+      expect(selected?.index).toBe(1);
+    });
+
+    it("request selector treats token-bucket-empty current account as ineligible", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        activeIndexByFamily: { codex: 0 },
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          { refreshToken: "token-2", addedAt: now, lastUsed: now - 10000 },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored as never);
+      getTokenTracker().drain(0, "codex", 50);
+
+      const selected = manager.getNextRequestEligibleForFamilyHybrid("codex");
+      expect(selected).not.toBeNull();
+      expect(selected?.index).toBe(1);
+    });
+
+    it("request selector returns null instead of falling back to unavailable accounts", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        activeIndexByFamily: { codex: 0 },
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored as never);
+      const account0 = manager.setActiveIndex(0)!;
+      manager.markRateLimited(account0, 60000, "codex");
+
+      const selected = manager.getNextRequestEligibleForFamilyHybrid("codex");
+      expect(selected).toBeNull();
     });
 
     it("reports selection explainability with eligibility reasons", () => {

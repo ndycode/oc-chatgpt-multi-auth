@@ -2101,8 +2101,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 					quotaKey,
 					explainability: selectionExplainability,
 				};
-				const account = accountManager.getCurrentOrNextForFamilyHybrid(modelFamily, model, { pidOffsetEnabled });
-				if (!account || attempted.has(account.index)) {
+				const account = accountManager.getNextRequestEligibleForFamilyHybrid(modelFamily, model, {
+					attemptedIndices: attempted,
+					pidOffsetEnabled,
+				});
+				if (!account) {
 					break;
 				}
 							attempted.add(account.index);
@@ -2264,7 +2267,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									logWarn(
 										`Skipping account ${account.index + 1}: local token bucket depleted for ${modelFamily}${model ? `:${model}` : ""}`,
 									);
-									break;
+									continue;
 								}
 
 							while (true) {

@@ -156,6 +156,16 @@ describe("Multi-Account Rotation Integration", () => {
       expect(account1?.index).toBe(1);
     });
 
+    it("request selector skips attempted accounts and returns the next eligible account", () => {
+      const family: ModelFamily = "codex";
+
+      const selected = manager.getNextRequestEligibleForFamilyHybrid(family, undefined, {
+        attemptedIndices: new Set([0]),
+      });
+
+      expect(selected?.index).toBe(1);
+    });
+
     it("returns null when all accounts are rate-limited", () => {
       const family: ModelFamily = "codex";
 
