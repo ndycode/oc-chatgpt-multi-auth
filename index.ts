@@ -4351,6 +4351,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 									activeIndexByFamily: {},
 								} satisfies AccountStorageV3);
 
+							const uniqueMatch = <T>(matches: T[]): T | undefined =>
+								matches.length === 1 ? matches[0] : undefined;
+
 							let updated = false;
 							if (params.previousRefreshToken) {
 								for (const storedAccount of latestStorage.accounts) {
@@ -4364,28 +4367,30 @@ while (attempted.size < Math.max(1, accountCount)) {
 							if (!updated) {
 								const normalizedOrganizationId = params.organizationId?.trim() ?? "";
 								const normalizedEmail = params.email?.trim().toLowerCase();
+								const orgScopedMatches = params.accountId
+									? latestStorage.accounts.filter(
+											(storedAccount) =>
+												storedAccount.accountId === params.accountId &&
+												(storedAccount.organizationId?.trim() ?? "") === normalizedOrganizationId,
+										)
+									: [];
+								const accountIdMatches = params.accountId
+									? latestStorage.accounts.filter(
+											(storedAccount) => storedAccount.accountId === params.accountId,
+										)
+									: [];
+								const emailMatches =
+									normalizedEmail && !params.accountId
+										? latestStorage.accounts.filter(
+												(storedAccount) =>
+													storedAccount.email?.trim().toLowerCase() === normalizedEmail,
+											)
+										: [];
+
 								const fallbackTarget =
-									(params.accountId
-										? latestStorage.accounts.find(
-												(storedAccount) =>
-													storedAccount.accountId === params.accountId &&
-													(storedAccount.organizationId?.trim() ?? "") === normalizedOrganizationId,
-											)
-										: undefined) ??
-									(params.accountId
-										? latestStorage.accounts.find(
-												(storedAccount) => storedAccount.accountId === params.accountId,
-											)
-										: undefined) ??
-									(normalizedEmail
-										? latestStorage.accounts.find(
-												(storedAccount) =>
-													storedAccount.email?.trim().toLowerCase() === normalizedEmail &&
-													(!params.accountId ||
-														!storedAccount.accountId ||
-														storedAccount.accountId === params.accountId),
-											)
-										: undefined);
+									uniqueMatch(orgScopedMatches) ??
+									uniqueMatch(accountIdMatches) ??
+									uniqueMatch(emailMatches);
 
 								if (fallbackTarget) {
 									applyRefreshedCredentials(fallbackTarget, params.refreshResult);
@@ -4462,7 +4467,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 					for (let i = 0; i < storage.accounts.length; i++) {
 						const acct = storage.accounts[i];
 						if (!acct) continue;
-						const refreshToken = typeof acct.refreshToken === "string" ? acct.refreshToken : "";
+						const refreshToken =
+							typeof acct.refreshToken === "string" ? acct.refreshToken.trim() : "";
 						if (refreshToken && seenTokens.has(refreshToken)) continue;
 						if (refreshToken) seenTokens.add(refreshToken);
 						uniqueIndices.push(i);
@@ -4474,7 +4480,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					const activeIndex = resolveActiveIndex(storage, "codex");
 					const activeRefreshToken =
 						typeof activeIndex === "number" && activeIndex >= 0 && activeIndex < storage.accounts.length
-							? storage.accounts[activeIndex]?.refreshToken
+							? storage.accounts[activeIndex]?.refreshToken?.trim() || undefined
 							: undefined;
 					let storageChanged = false;
 

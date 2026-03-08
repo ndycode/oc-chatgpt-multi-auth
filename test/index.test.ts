@@ -1085,8 +1085,17 @@ describe("OpenAIOAuthPlugin", () => {
 					{
 						refreshToken: "different-refresh",
 						accountId: "acc-other",
+						organizationId: "org-a",
 						email: "user@example.com",
 						accessToken: "other-access",
+						expiresAt: Date.now() + 3600_000,
+					},
+					{
+						refreshToken: "different-refresh-2",
+						accountId: "acc-other-2",
+						organizationId: "org-b",
+						email: "user@example.com",
+						accessToken: "other-access-2",
 						expiresAt: Date.now() + 3600_000,
 					},
 				],
@@ -1156,6 +1165,11 @@ describe("OpenAIOAuthPlugin", () => {
 				accountId: "acc-other",
 				refreshToken: "different-refresh",
 				accessToken: "other-access",
+			});
+			expect(transactionStorage.accounts[1]).toMatchObject({
+				accountId: "acc-other-2",
+				refreshToken: "different-refresh-2",
+				accessToken: "other-access-2",
 			});
 			const reloadedStorage = await vi.mocked(loadAccounts)();
 			expect(reloadedStorage?.accounts[0]).toMatchObject({
