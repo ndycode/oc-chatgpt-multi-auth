@@ -51,6 +51,11 @@ export interface ImportAccountsOptions {
 	backupMode?: ImportBackupMode;
 }
 
+type PrepareImportStorage = (
+	normalized: AccountStorageV3,
+	existing: AccountStorageV3 | null,
+) => AccountStorageV3;
+
 export type ImportBackupStatus = "created" | "skipped" | "failed";
 
 export interface ImportAccountsResult {
@@ -60,6 +65,12 @@ export interface ImportAccountsResult {
 	backupStatus: ImportBackupStatus;
 	backupPath?: string;
 	backupError?: string;
+}
+
+export interface CleanupDuplicateEmailAccountsResult {
+	before: number;
+	after: number;
+	removed: number;
 }
 
 /**
@@ -415,6 +426,196 @@ function mergeAccountRecords<T extends AccountLike>(target: T, source: T): T {
   };
 }
 
+function normalizeEmailIdentity(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed.toLowerCase() : undefined;
+}
+
+function deduplicateAccountsByEmailForMaintenance<T extends AccountLike & { email?: string }>(accounts: T[]): T[] {
+  const working = [...accounts];
+  const emailToIndex = new Map<string, number>();
+  const indicesToRemove = new Set<number>();
+
+  for (let i = 0; i < working.length; i += 1) {
+    const account = working[i];
+    if (!account) continue;
+
+    const organizationId = account.organizationId?.trim();
+    if (organizationId) continue;
+
+    const accountId = account.accountId?.trim();
+    if (accountId) continue;
+
+    const email = normalizeEmailIdentity(account.email);
+    if (!email) continue;
+
+    const existingIndex = emailToIndex.get(email);
+    if (existingIndex === undefined) {
+      emailToIndex.set(email, i);
+      continue;
+    }
+
+    const newestIndex = pickNewestAccountIndex(working, existingIndex, i);
+    const obsoleteIndex = newestIndex === existingIndex ? i : existingIndex;
+    const newest = working[newestIndex];
+    const older = working[obsoleteIndex];
+    if (newest && older) {
+      working[newestIndex] = mergeAccountRecords(newest, older);
+    }
+    indicesToRemove.add(obsoleteIndex);
+    emailToIndex.set(email, newestIndex);
+  }
+
+  const deduplicated: T[] = [];
+  for (let i = 0; i < working.length; i += 1) {
+    if (indicesToRemove.has(i)) continue;
+    const account = working[i];
+    if (account) deduplicated.push(account);
+  }
+  return deduplicated;
+}
+
+function buildDuplicateEmailCleanupPlan(existing: AccountStorageV3): {
+  result: CleanupDuplicateEmailAccountsResult;
+  nextStorage?: AccountStorageV3;
+} {
+  const before = existing.accounts.length;
+  const existingActiveIndex = clampIndex(existing.activeIndex, existing.accounts.length);
+  const existingActiveKeys = extractActiveKeys(existing.accounts, existingActiveIndex);
+  const existingActiveEmail = extractActiveEmail(existing.accounts, existingActiveIndex);
+  const deduplicatedAccounts = deduplicateAccountsByEmailForMaintenance(existing.accounts);
+  const after = deduplicatedAccounts.length;
+  const removed = Math.max(0, before - after);
+
+  if (removed === 0) {
+    return {
+      result: {
+        before,
+        after,
+        removed,
+      },
+    };
+  }
+
+  const mappedActiveIndex = (() => {
+    if (deduplicatedAccounts.length === 0) return 0;
+    if (existingActiveKeys.length > 0) {
+      const byIdentity = findAccountIndexByIdentityKeys(deduplicatedAccounts, existingActiveKeys);
+      if (byIdentity >= 0) return byIdentity;
+    }
+    const byEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, existingActiveEmail);
+    if (byEmail >= 0) return byEmail;
+    return clampIndex(existingActiveIndex, deduplicatedAccounts.length);
+  })();
+
+  const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
+  const rawFamilyIndices = existing.activeIndexByFamily ?? {};
+
+  for (const family of MODEL_FAMILIES) {
+    const rawIndexValue = rawFamilyIndices[family];
+    const rawIndex =
+      typeof rawIndexValue === "number" && Number.isFinite(rawIndexValue)
+        ? rawIndexValue
+        : existingActiveIndex;
+    const clampedRawIndex = clampIndex(rawIndex, existing.accounts.length);
+    const familyKeys = extractActiveKeys(existing.accounts, clampedRawIndex);
+    const familyEmail = extractActiveEmail(existing.accounts, clampedRawIndex);
+
+    let mappedIndex = mappedActiveIndex;
+    if (familyKeys.length > 0) {
+      const byIdentity = findAccountIndexByIdentityKeys(deduplicatedAccounts, familyKeys);
+      if (byIdentity >= 0) {
+        mappedIndex = byIdentity;
+        activeIndexByFamily[family] = mappedIndex;
+        continue;
+      }
+    }
+
+    const byEmail = findAccountIndexByNormalizedEmail(deduplicatedAccounts, familyEmail);
+    if (byEmail >= 0) {
+      mappedIndex = byEmail;
+    }
+    activeIndexByFamily[family] = mappedIndex;
+  }
+
+  return {
+    result: {
+      before,
+      after,
+      removed,
+    },
+    nextStorage: {
+      version: 3,
+      accounts: deduplicatedAccounts,
+      activeIndex: mappedActiveIndex,
+      activeIndexByFamily,
+    },
+  };
+}
+
+function normalizeDuplicateCleanupSourceStorage(data: unknown): AccountStorageV3 | null {
+  if (!isRecord(data) || (data.version !== 1 && data.version !== 3) || !Array.isArray(data.accounts)) {
+    return null;
+  }
+
+  const accounts = data.accounts
+    .filter(
+      (account): account is AccountStorageV3["accounts"][number] =>
+        isRecord(account) &&
+        typeof account.refreshToken === "string" &&
+        account.refreshToken.trim().length > 0,
+    )
+    .map((account) => ({ ...account }));
+  const activeIndexValue =
+    typeof data.activeIndex === "number" && Number.isFinite(data.activeIndex)
+      ? data.activeIndex
+      : 0;
+  const activeIndex = clampIndex(activeIndexValue, accounts.length);
+  const rawActiveIndexByFamily = isRecord(data.activeIndexByFamily) ? data.activeIndexByFamily : {};
+  const activeIndexByFamily = Object.fromEntries(
+    MODEL_FAMILIES.map((family) => {
+      const rawValue = rawActiveIndexByFamily[family];
+      const nextIndex =
+        typeof rawValue === "number" && Number.isFinite(rawValue)
+          ? clampIndex(rawValue, accounts.length)
+          : activeIndex;
+      return [family, nextIndex];
+    }),
+  ) as AccountStorageV3["activeIndexByFamily"];
+
+  return {
+    version: 3,
+    accounts,
+    activeIndex,
+    activeIndexByFamily,
+  };
+}
+
+async function loadDuplicateCleanupSourceStorage(): Promise<AccountStorageV3> {
+  const fallback = await loadAccountsInternal(saveAccountsUnlocked);
+  try {
+    const rawContent = await fs.readFile(getStoragePath(), "utf-8");
+    const rawData = JSON.parse(rawContent) as unknown;
+    const normalized = normalizeDuplicateCleanupSourceStorage(rawData);
+    if (normalized) {
+      return normalized;
+    }
+    throw new Error("Invalid raw storage snapshot for duplicate cleanup.");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "EBUSY" || code === "EACCES" || code === "EPERM") {
+      return fallback ?? {
+        version: 3,
+        accounts: [],
+        activeIndex: 0,
+        activeIndexByFamily: {},
+      };
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to read raw storage snapshot for duplicate cleanup: ${message}`);
+  }
+}
+
 /**
  * Removes duplicate accounts, keeping the most recently used entry for each unique key.
  * Deduplication identity hierarchy: organizationId -> accountId -> refreshToken.
@@ -559,6 +760,15 @@ function extractActiveKeys(accounts: unknown[], activeIndex: number): string[] {
   });
 }
 
+function extractActiveEmail(accounts: unknown[], activeIndex: number): string | undefined {
+  const candidate = accounts[activeIndex];
+  if (!isRecord(candidate)) return undefined;
+
+  return typeof candidate.email === "string"
+    ? normalizeEmailIdentity(candidate.email)
+    : undefined;
+}
+
 function findAccountIndexByIdentityKeys(
   accounts: Pick<AccountMetadataV3, "organizationId" | "accountId" | "refreshToken">[],
   identityKeys: string[],
@@ -571,6 +781,14 @@ function findAccountIndexByIdentityKeys(
     }
   }
   return -1;
+}
+
+function findAccountIndexByNormalizedEmail(
+  accounts: Pick<AccountMetadataV3, "email">[],
+  normalizedEmail: string | undefined,
+): number {
+  if (!normalizedEmail) return -1;
+  return accounts.findIndex((account) => normalizeEmailIdentity(account.email) === normalizedEmail);
 }
 
 /**
@@ -916,6 +1134,24 @@ export async function clearAccounts(): Promise<void> {
   });
 }
 
+export async function previewDuplicateEmailCleanup(): Promise<CleanupDuplicateEmailAccountsResult> {
+  return withStorageLock(async () => {
+    const existing = await loadDuplicateCleanupSourceStorage();
+    return buildDuplicateEmailCleanupPlan(existing).result;
+  });
+}
+
+export async function cleanupDuplicateEmailAccounts(): Promise<CleanupDuplicateEmailAccountsResult> {
+  return withStorageLock(async () => {
+    const existing = await loadDuplicateCleanupSourceStorage();
+    const plan = buildDuplicateEmailCleanupPlan(existing);
+    if (plan.nextStorage) {
+      await saveAccountsUnlocked(plan.nextStorage);
+    }
+    return plan.result;
+  });
+}
+
 function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 	if (!isRecord(data) || data.version !== 1 || !Array.isArray(data.accounts)) {
 		return { version: 1, accounts: [] };
@@ -1157,8 +1393,9 @@ export async function previewImportAccounts(
 	return withAccountStorageTransaction((existing) => {
 		const existingAccounts = existing?.accounts ?? [];
 		const merged = [...existingAccounts, ...normalized.accounts];
+		const hasFiniteAccountLimit = Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS);
 
-		if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+		if (hasFiniteAccountLimit && merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 			const deduped = deduplicateAccountsForStorage(merged);
 			if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
 				throw new Error(
@@ -1203,6 +1440,26 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
   log.info("Exported accounts", { path: resolvedPath, count: storage.accounts.length });
 }
 
+export async function backupRawAccountsFile(filePath: string, force = true): Promise<void> {
+  await withStorageLock(async () => {
+    const resolvedPath = resolvePath(filePath);
+
+    if (!force && existsSync(resolvedPath)) {
+      throw new Error(`File already exists: ${resolvedPath}`);
+    }
+
+    const storagePath = getStoragePath();
+    if (!existsSync(storagePath)) {
+      throw new Error("No accounts to back up");
+    }
+
+    await fs.mkdir(dirname(resolvedPath), { recursive: true });
+    await fs.copyFile(storagePath, resolvedPath);
+    await fs.chmod(resolvedPath, 0o600).catch(() => undefined);
+    log.info("Backed up raw accounts storage", { path: resolvedPath, source: storagePath });
+  });
+}
+
 /**
  * Imports accounts from a JSON file, merging with existing accounts.
  * Deduplicates by identity key first (organizationId -> accountId -> refreshToken),
@@ -1213,6 +1470,7 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
 export async function importAccounts(
 	filePath: string,
 	options: ImportAccountsOptions = {},
+	prepare?: PrepareImportStorage,
 ): Promise<ImportAccountsResult> {
   const { resolvedPath, normalized } = await readAndNormalizeImportFile(filePath);
   const backupMode = options.backupMode ?? "none";
@@ -1227,6 +1485,11 @@ export async function importAccounts(
     backupError,
   } =
     await withAccountStorageTransaction(async (existing, persist) => {
+      const preparedNormalized = prepare ? prepare(normalized, existing) : normalized;
+      const skippedByPrepare = Math.max(
+        0,
+        normalized.accounts.length - preparedNormalized.accounts.length,
+      );
       const existingStorage: AccountStorageV3 =
         existing ??
         ({
@@ -1262,9 +1525,10 @@ export async function importAccounts(
         }
       }
 
-      const merged = [...existingAccounts, ...normalized.accounts];
+      const merged = [...existingAccounts, ...preparedNormalized.accounts];
+      const hasFiniteAccountLimit = Number.isFinite(ACCOUNT_LIMITS.MAX_ACCOUNTS);
 
-      if (merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
+      if (hasFiniteAccountLimit && merged.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
         const deduped = deduplicateAccountsForStorage(merged);
         if (deduped.length > ACCOUNT_LIMITS.MAX_ACCOUNTS) {
           throw new Error(
@@ -1309,8 +1573,8 @@ export async function importAccounts(
 
       await persist(newStorage);
 
-      const imported = deduplicatedAccounts.length - existingAccounts.length;
-      const skipped = normalized.accounts.length - imported;
+      const imported = Math.max(0, deduplicatedAccounts.length - existingAccounts.length);
+      const skipped = skippedByPrepare + Math.max(0, preparedNormalized.accounts.length - imported);
       return {
         imported,
         total: deduplicatedAccounts.length,
