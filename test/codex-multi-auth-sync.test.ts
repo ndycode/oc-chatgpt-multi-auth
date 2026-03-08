@@ -183,10 +183,14 @@ describe("codex-multi-auth sync", () => {
 	});
 
 	afterEach(() => {
-		process.env.CODEX_MULTI_AUTH_DIR = originalEnv.CODEX_MULTI_AUTH_DIR;
-		process.env.CODEX_HOME = originalEnv.CODEX_HOME;
-		process.env.USERPROFILE = originalEnv.USERPROFILE;
-		process.env.HOME = originalEnv.HOME;
+		if (originalEnv.CODEX_MULTI_AUTH_DIR === undefined) delete process.env.CODEX_MULTI_AUTH_DIR;
+		else process.env.CODEX_MULTI_AUTH_DIR = originalEnv.CODEX_MULTI_AUTH_DIR;
+		if (originalEnv.CODEX_HOME === undefined) delete process.env.CODEX_HOME;
+		else process.env.CODEX_HOME = originalEnv.CODEX_HOME;
+		if (originalEnv.USERPROFILE === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = originalEnv.USERPROFILE;
+		if (originalEnv.HOME === undefined) delete process.env.HOME;
+		else process.env.HOME = originalEnv.HOME;
 		delete process.env.CODEX_AUTH_SYNC_MAX_ACCOUNTS;
 	});
 
@@ -1511,6 +1515,9 @@ describe("codex-multi-auth sync", () => {
 	it("falls back to in-memory overlap cleanup state on transient Windows lock errors", async () => {
 		const storageModule = await import("../lib/storage.js");
 		const persist = vi.fn(async (_next: AccountStorageV3) => {});
+		vi.mocked(storageModule.deduplicateAccounts).mockImplementationOnce((accounts) => {
+			return accounts.length > 1 ? [accounts[1] ?? accounts[0]].filter(Boolean) : accounts;
+		});
 		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
 			handler(
 				{
@@ -1547,15 +1554,15 @@ describe("codex-multi-auth sync", () => {
 		const { cleanupCodexMultiAuthSyncedOverlaps } = await import("../lib/codex-multi-auth-sync.js");
 		await expect(cleanupCodexMultiAuthSyncedOverlaps()).resolves.toEqual({
 			before: 2,
-			after: 2,
-			removed: 0,
-			updated: 1,
+			after: 1,
+			removed: 1,
+			updated: 0,
 		});
 		const saved = persist.mock.calls[0]?.[0];
 		if (!saved) {
 			throw new Error("Expected persisted overlap cleanup result");
 		}
-		expect(saved.accounts).toHaveLength(2);
+		expect(saved.accounts).toHaveLength(1);
 		expect(saved.accounts[0]?.organizationId).toBe("org-sync");
 	});
 

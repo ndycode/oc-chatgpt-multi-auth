@@ -985,9 +985,10 @@ function buildCodexMultiAuthOverlapCleanupPlan(existing: AccountStorageV3): {
 		normalizedSyncedStorage,
 		preservedAccounts,
 	).accounts;
+	const deduplicatedSyncedAccounts = deduplicateAccounts(filteredSyncedAccounts);
 	const normalized = {
 		...existing,
-		accounts: [...preservedAccounts, ...filteredSyncedAccounts],
+		accounts: [...preservedAccounts, ...deduplicatedSyncedAccounts],
 	} satisfies AccountStorageV3;
 	const existingActiveKeys = extractCleanupActiveKeys(existing.accounts, existing.activeIndex);
 	const mappedActiveIndex = (() => {

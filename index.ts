@@ -4232,6 +4232,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											details.suggestedRemovals,
 										);
 										if (!indexesToRemove || indexesToRemove.length === 0) {
+											await restorePruneBackup();
 											console.log("Sync cancelled.\n");
 											return;
 										}
