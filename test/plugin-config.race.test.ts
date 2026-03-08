@@ -9,11 +9,14 @@ vi.mock("node:fs", async () => {
 	return {
 		...actual,
 		existsSync: vi.fn(),
-		readFileSync: vi.fn(),
-		mkdirSync: vi.fn(),
-		renameSync: vi.fn(),
-		unlinkSync: vi.fn(),
-		writeFileSync: vi.fn(),
+		promises: {
+			...actual.promises,
+			mkdir: vi.fn(),
+			readFile: vi.fn(),
+			rename: vi.fn(),
+			unlink: vi.fn(),
+			writeFile: vi.fn(),
+		},
 	};
 });
 
@@ -27,21 +30,22 @@ vi.mock("../lib/logger.js", async () => {
 
 describe("plugin config lock retry", () => {
 	const mockExistsSync = vi.mocked(fs.existsSync);
-	const mockReadFileSync = vi.mocked(fs.readFileSync);
-	const mockMkdirSync = vi.mocked(fs.mkdirSync);
-	const mockRenameSync = vi.mocked(fs.renameSync);
-	const mockUnlinkSync = vi.mocked(fs.unlinkSync);
-	const mockWriteFileSync = vi.mocked(fs.writeFileSync);
+	const mockMkdir = vi.mocked(fs.promises.mkdir);
+	const mockReadFile = vi.mocked(fs.promises.readFile);
+	const mockRename = vi.mocked(fs.promises.rename);
+	const mockUnlink = vi.mocked(fs.promises.unlink);
+	const mockWriteFile = vi.mocked(fs.promises.writeFile);
 	const originalPlatform = process.platform;
 
 	beforeEach(() => {
 		vi.resetModules();
 		vi.clearAllMocks();
 		mockExistsSync.mockReturnValue(false);
-		mockReadFileSync.mockReturnValue("{}");
-		mockMkdirSync.mockImplementation(() => undefined);
-		mockRenameSync.mockImplementation(() => undefined);
-		mockUnlinkSync.mockImplementation(() => undefined);
+		mockReadFile.mockResolvedValue("{}");
+		mockMkdir.mockResolvedValue(undefined);
+		mockRename.mockResolvedValue(undefined);
+		mockUnlink.mockResolvedValue(undefined);
+		mockWriteFile.mockResolvedValue(undefined);
 	});
 
 	afterEach(() => {
@@ -53,7 +57,7 @@ describe("plugin config lock retry", () => {
 		Object.defineProperty(process, "platform", { value: "win32" });
 
 		let lockAttempts = 0;
-		mockWriteFileSync.mockImplementation((filePath) => {
+		mockWriteFile.mockImplementation(async (filePath) => {
 			const path = String(filePath);
 			if (path.endsWith(".lock")) {
 				lockAttempts += 1;
@@ -76,7 +80,7 @@ describe("plugin config lock retry", () => {
 		).resolves.toBeUndefined();
 
 		expect(lockAttempts).toBeGreaterThanOrEqual(2);
-		expect(mockWriteFileSync).toHaveBeenCalled();
+		expect(mockWriteFile).toHaveBeenCalled();
 		expect(vi.mocked(logger.logWarn)).not.toHaveBeenCalled();
 	});
 
@@ -96,7 +100,7 @@ describe("plugin config lock retry", () => {
 		});
 
 		mockExistsSync.mockImplementation((filePath) => String(filePath) === lockPath && lockFilePresent);
-		mockReadFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+		mockReadFile.mockImplementation(async (filePath: fs.PathLike | number) => {
 			const path = String(filePath);
 			if (path === lockPath) {
 				return lockAttempts === 1 ? "111" : "{}";
@@ -106,7 +110,7 @@ describe("plugin config lock retry", () => {
 			}
 			return "{}";
 		});
-		mockRenameSync.mockImplementation((source, destination) => {
+		mockRename.mockImplementation(async (source, destination) => {
 			if (String(source) === lockPath) {
 				lockFilePresent = false;
 			}
@@ -115,7 +119,7 @@ describe("plugin config lock retry", () => {
 			}
 			return undefined;
 		});
-		mockWriteFileSync.mockImplementation((filePath) => {
+		mockWriteFile.mockImplementation(async (filePath) => {
 			const path = String(filePath);
 			if (path === lockPath) {
 				lockAttempts += 1;
@@ -137,7 +141,7 @@ describe("plugin config lock retry", () => {
 					experimental: { syncFromCodexMultiAuth: { enabled: true } },
 				})),
 			).resolves.toBeUndefined();
-			const lockRenameCalls = mockRenameSync.mock.calls.filter(
+			const lockRenameCalls = mockRename.mock.calls.filter(
 				([source, destination]) =>
 					String(source) === lockPath || String(destination) === lockPath,
 			);
@@ -163,7 +167,7 @@ describe("plugin config lock retry", () => {
 		});
 
 		mockExistsSync.mockImplementation((filePath) => String(filePath) === lockPath && lockFilePresent);
-		mockReadFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+		mockReadFile.mockImplementation(async (filePath: fs.PathLike | number) => {
 			const pathValue = String(filePath);
 			if (pathValue === lockPath) {
 				return "111";
@@ -173,7 +177,7 @@ describe("plugin config lock retry", () => {
 			}
 			return "{}";
 		});
-		mockRenameSync.mockImplementation((source, destination) => {
+		mockRename.mockImplementation(async (source, destination) => {
 			if (String(source) === lockPath) {
 				lockFilePresent = false;
 			}
@@ -182,7 +186,7 @@ describe("plugin config lock retry", () => {
 			}
 			return undefined;
 		});
-		mockWriteFileSync.mockImplementation((filePath) => {
+		mockWriteFile.mockImplementation(async (filePath) => {
 			const pathValue = String(filePath);
 			if (pathValue === lockPath) {
 				lockAttempts += 1;
@@ -205,9 +209,34 @@ describe("plugin config lock retry", () => {
 				})),
 			).resolves.toBeUndefined();
 			expect(killSpy).toHaveBeenCalledWith(111, 0);
-			expect(mockRenameSync).toHaveBeenCalled();
+			expect(mockRename).toHaveBeenCalled();
 		} finally {
 			killSpy.mockRestore();
 		}
+	});
+
+	it("fails cleanly when config rename stays EBUSY on Windows", async () => {
+		Object.defineProperty(process, "platform", { value: "win32" });
+		const configPath = path.join(os.homedir(), ".opencode", "openai-codex-auth-config.json");
+
+		mockExistsSync.mockReturnValue(false);
+		mockRename.mockImplementation(async (source, destination) => {
+			if (String(source).includes(".tmp") && String(destination) === configPath) {
+				const error = new Error("busy") as NodeJS.ErrnoException;
+				error.code = "EBUSY";
+				throw error;
+			}
+			return undefined;
+		});
+
+		const { savePluginConfigMutation } = await import("../lib/config.js");
+
+		await expect(
+			savePluginConfigMutation((current) => ({
+				...current,
+				experimental: { syncFromCodexMultiAuth: { enabled: true } },
+			})),
+		).rejects.toThrow("busy");
+		expect(mockUnlink).toHaveBeenCalledWith(expect.stringContaining(".tmp"));
 	});
 });

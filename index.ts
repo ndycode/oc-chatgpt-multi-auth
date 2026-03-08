@@ -3982,7 +3982,20 @@ while (attempted.size < Math.max(1, accountCount)) {
 									if (removedTargets.length === 0) {
 										return;
 									}
-									if (removedTargets.length !== targetKeySet.size) {
+									const matchedKeySet = new Set(
+										removedTargets.map((entry) =>
+											getSyncRemovalTargetKey({
+												refreshToken: entry.account.refreshToken,
+												organizationId: entry.account.organizationId,
+												accountId: entry.account.accountId,
+											}),
+										),
+									);
+									if (
+										removedTargets.length !== targetKeySet.size ||
+										matchedKeySet.size !== targetKeySet.size ||
+										[...targetKeySet].some((key) => !matchedKeySet.has(key))
+									) {
 										throw new Error("Selected accounts changed before removal. Re-run sync and confirm again.");
 									}
 									const activeAccountIdentity = {
@@ -4041,13 +4054,26 @@ while (attempted.size < Math.max(1, accountCount)) {
 								if (removedTargets.length === 0) {
 									return;
 								}
-								const removedRefreshTokens = new Set(
-									removedTargets.map((entry) => entry.account?.refreshToken).filter((token): token is string => Boolean(token)),
+								const removedFlaggedKeys = new Set(
+									removedTargets.map((entry) =>
+										getSyncRemovalTargetKey({
+											refreshToken: entry.account.refreshToken,
+											organizationId: entry.account.organizationId,
+											accountId: entry.account.accountId,
+										}),
+									),
 								);
 								await saveFlaggedAccounts({
 									version: 1,
 									accounts: currentFlaggedStorage.accounts.filter(
-										(flagged) => !removedRefreshTokens.has(flagged.refreshToken),
+										(flagged) =>
+											!removedFlaggedKeys.has(
+												getSyncRemovalTargetKey({
+													refreshToken: flagged.refreshToken,
+													organizationId: flagged.organizationId,
+													accountId: flagged.accountId,
+												}),
+											),
 									),
 								});
 								invalidateAccountManagerCache();

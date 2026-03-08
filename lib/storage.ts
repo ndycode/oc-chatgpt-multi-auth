@@ -603,7 +603,7 @@ async function loadDuplicateCleanupSourceStorage(): Promise<AccountStorageV3> {
     throw new Error("Invalid raw storage snapshot for duplicate cleanup.");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
+    if (code === "ENOENT" || code === "EBUSY" || code === "EACCES" || code === "EPERM") {
       return fallback ?? {
         version: 3,
         accounts: [],
@@ -1441,21 +1441,23 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
 }
 
 export async function backupRawAccountsFile(filePath: string, force = true): Promise<void> {
-  const resolvedPath = resolvePath(filePath);
+  await withStorageLock(async () => {
+    const resolvedPath = resolvePath(filePath);
 
-  if (!force && existsSync(resolvedPath)) {
-    throw new Error(`File already exists: ${resolvedPath}`);
-  }
+    if (!force && existsSync(resolvedPath)) {
+      throw new Error(`File already exists: ${resolvedPath}`);
+    }
 
-  const storagePath = getStoragePath();
-  if (!existsSync(storagePath)) {
-    throw new Error("No accounts to back up");
-  }
+    const storagePath = getStoragePath();
+    if (!existsSync(storagePath)) {
+      throw new Error("No accounts to back up");
+    }
 
-  await fs.mkdir(dirname(resolvedPath), { recursive: true });
-  await fs.copyFile(storagePath, resolvedPath);
-  await fs.chmod(resolvedPath, 0o600).catch(() => undefined);
-  log.info("Backed up raw accounts storage", { path: resolvedPath, source: storagePath });
+    await fs.mkdir(dirname(resolvedPath), { recursive: true });
+    await fs.copyFile(storagePath, resolvedPath);
+    await fs.chmod(resolvedPath, 0o600).catch(() => undefined);
+    log.info("Backed up raw accounts storage", { path: resolvedPath, source: storagePath });
+  });
 }
 
 /**

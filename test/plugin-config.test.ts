@@ -37,10 +37,14 @@ vi.mock('node:fs', async () => {
 		...actual,
 		existsSync: vi.fn(),
 		readFileSync: vi.fn(),
-		mkdirSync: vi.fn(),
-		renameSync: vi.fn(),
-		unlinkSync: vi.fn(),
-		writeFileSync: vi.fn(),
+		promises: {
+			...actual.promises,
+			mkdir: vi.fn(),
+			readFile: vi.fn(),
+			rename: vi.fn(),
+			unlink: vi.fn(),
+			writeFile: vi.fn(),
+		},
 	};
 });
 
@@ -56,10 +60,11 @@ vi.mock('../lib/logger.js', async () => {
 describe('Plugin Configuration', () => {
 	const mockExistsSync = vi.mocked(fs.existsSync);
 	const mockReadFileSync = vi.mocked(fs.readFileSync);
-	const mockMkdirSync = vi.mocked(fs.mkdirSync);
-	const mockRenameSync = vi.mocked(fs.renameSync);
-	const mockUnlinkSync = vi.mocked(fs.unlinkSync);
-	const mockWriteFileSync = vi.mocked(fs.writeFileSync);
+	const mockMkdir = vi.mocked(fs.promises.mkdir);
+	const mockReadFile = vi.mocked(fs.promises.readFile);
+	const mockRename = vi.mocked(fs.promises.rename);
+	const mockUnlink = vi.mocked(fs.promises.unlink);
+	const mockWriteFile = vi.mocked(fs.promises.writeFile);
 	const envKeys = [
 		'CODEX_MODE',
 		'CODEX_TUI_V2',
@@ -84,10 +89,11 @@ describe('Plugin Configuration', () => {
 		vi.clearAllMocks();
 		mockExistsSync.mockReturnValue(false);
 		mockReadFileSync.mockReturnValue('{}');
-		mockMkdirSync.mockImplementation(() => undefined);
-		mockRenameSync.mockImplementation(() => undefined);
-		mockUnlinkSync.mockImplementation(() => undefined);
-		mockWriteFileSync.mockImplementation(() => undefined);
+		mockMkdir.mockResolvedValue(undefined);
+		mockReadFile.mockResolvedValue('{}');
+		mockRename.mockResolvedValue(undefined);
+		mockUnlink.mockResolvedValue(undefined);
+		mockWriteFile.mockResolvedValue(undefined);
 	});
 
 	afterEach(() => {
@@ -783,7 +789,7 @@ describe('Plugin Configuration', () => {
 
 		it('persists sync-from-codex-multi-auth while preserving unrelated keys', async () => {
 			mockExistsSync.mockReturnValue(true);
-			mockReadFileSync.mockReturnValue(
+			mockReadFile.mockResolvedValue(
 				JSON.stringify({
 					codexMode: false,
 					customKey: 'keep-me',
@@ -792,15 +798,15 @@ describe('Plugin Configuration', () => {
 
 			await setSyncFromCodexMultiAuthEnabled(true);
 
-			expect(mockMkdirSync).toHaveBeenCalledWith(
+			expect(mockMkdir).toHaveBeenCalledWith(
 				path.join(os.homedir(), '.opencode'),
 				{ recursive: true },
 			);
-			expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
+			expect(mockWriteFile).toHaveBeenCalledTimes(2);
 			// calls[0] is the lock file write, calls[1] is the temp config write
-			const [writtenPath, writtenContent] = mockWriteFileSync.mock.calls[1] ?? [];
+			const [writtenPath, writtenContent] = mockWriteFile.mock.calls[1] ?? [];
 			expect(String(writtenPath)).toContain('.tmp');
-			expect(mockRenameSync).toHaveBeenCalled();
+			expect(mockRename).toHaveBeenCalled();
 			expect(JSON.parse(String(writtenContent))).toEqual({
 				codexMode: false,
 				customKey: 'keep-me',
@@ -810,7 +816,7 @@ describe('Plugin Configuration', () => {
 					},
 				},
 			});
-			expect(mockUnlinkSync).not.toHaveBeenCalledWith(
+			expect(mockUnlink).not.toHaveBeenCalledWith(
 				path.join(os.homedir(), '.opencode', 'openai-codex-auth-config.json'),
 			);
 		});
@@ -820,7 +826,7 @@ describe('Plugin Configuration', () => {
 
 			await setSyncFromCodexMultiAuthEnabled(true);
 
-			const [, writtenContent] = mockWriteFileSync.mock.calls[1] ?? [];
+			const [, writtenContent] = mockWriteFile.mock.calls[1] ?? [];
 			expect(JSON.parse(String(writtenContent))).toEqual({
 				experimental: {
 					syncFromCodexMultiAuth: {
@@ -832,15 +838,15 @@ describe('Plugin Configuration', () => {
 
 		it('throws when mutating an invalid existing config file to avoid clobbering it', async () => {
 			mockExistsSync.mockReturnValue(true);
-			mockReadFileSync.mockReturnValue('invalid json');
+			mockReadFile.mockResolvedValue('invalid json');
 
 			await expect(savePluginConfigMutation((current) => current)).rejects.toThrow();
-			expect(mockRenameSync).not.toHaveBeenCalled();
+			expect(mockRename).not.toHaveBeenCalled();
 		});
 
 		it('rejects array roots when reading raw plugin config', async () => {
 			mockExistsSync.mockReturnValue(true);
-			mockReadFileSync.mockReturnValue('[]');
+			mockReadFile.mockResolvedValue('[]');
 
 			await expect(savePluginConfigMutation((current) => current)).rejects.toThrow(
 				'Plugin config root must be a JSON object',
@@ -849,20 +855,18 @@ describe('Plugin Configuration', () => {
 
 		it('throws when toggling sync setting on malformed config to preserve existing settings', async () => {
 			mockExistsSync.mockReturnValue(true);
-			mockReadFileSync.mockReturnValue('invalid json');
+			mockReadFile.mockResolvedValue('invalid json');
 
 			await expect(setSyncFromCodexMultiAuthEnabled(true)).rejects.toThrow();
-			expect(mockRenameSync).not.toHaveBeenCalled();
+			expect(mockRename).not.toHaveBeenCalled();
 		});
 
 		it('cleans up temp config files when the initial rename fails', async () => {
 			mockExistsSync.mockReturnValue(false);
-			mockRenameSync.mockImplementation(() => {
-				throw Object.assign(new Error('rename failed'), { code: 'EACCES' });
-			});
+			mockRename.mockRejectedValueOnce(Object.assign(new Error('rename failed'), { code: 'EACCES' }));
 
 			await expect(setSyncFromCodexMultiAuthEnabled(true)).rejects.toThrow('rename failed');
-			expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining('.tmp'));
+			expect(mockUnlink).toHaveBeenCalledWith(expect.stringContaining('.tmp'));
 		});
 
 		it('cleans up temp config files when the Windows fallback retry fails', async () => {
@@ -872,7 +876,7 @@ describe('Plugin Configuration', () => {
 				String(filePath).endsWith('openai-codex-auth-config.json'),
 			);
 			let renameCalls = 0;
-			mockRenameSync.mockImplementation((source, destination) => {
+			mockRename.mockImplementation(async (source, destination) => {
 				if (String(source).includes('.tmp') && String(destination).endsWith('openai-codex-auth-config.json')) {
 					renameCalls += 1;
 					if (renameCalls <= 2) {
@@ -884,7 +888,7 @@ describe('Plugin Configuration', () => {
 
 			try {
 				await expect(setSyncFromCodexMultiAuthEnabled(true)).rejects.toThrow('rename failed');
-				expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining('.tmp'));
+				expect(mockUnlink).toHaveBeenCalledWith(expect.stringContaining('.tmp'));
 			} finally {
 				Object.defineProperty(process, 'platform', { value: originalPlatform });
 			}
@@ -899,7 +903,7 @@ describe('Plugin Configuration', () => {
 				throw error;
 			});
 			mockExistsSync.mockReturnValue(true);
-			mockReadFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+			mockReadFile.mockImplementation(async (filePath: fs.PathLike | number) => {
 				if (String(filePath) === lockPath) {
 					return '424242';
 				}
@@ -908,8 +912,8 @@ describe('Plugin Configuration', () => {
 				}
 				return JSON.stringify({ codexMode: false });
 			});
-			mockWriteFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
-				if (String(filePath) === lockPath && mockWriteFileSync.mock.calls.length === 1) {
+			mockWriteFile.mockImplementation(async (filePath) => {
+				if (String(filePath) === lockPath && mockWriteFile.mock.calls.length === 1) {
 					const error = new Error('exists') as NodeJS.ErrnoException;
 					error.code = 'EEXIST';
 					throw error;
@@ -919,9 +923,9 @@ describe('Plugin Configuration', () => {
 
 			try {
 				await expect(setSyncFromCodexMultiAuthEnabled(true)).resolves.toBeUndefined();
-				expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining('.stale'));
+				expect(mockUnlink).toHaveBeenCalledWith(expect.stringContaining('.stale'));
 				expect(killSpy).toHaveBeenCalledWith(424242, 0);
-				expect(mockRenameSync).toHaveBeenCalled();
+				expect(mockRename).toHaveBeenCalled();
 			} finally {
 				killSpy.mockRestore();
 			}

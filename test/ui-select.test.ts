@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coalesceTerminalInput, tokenizeTerminalInput, type PendingInputSequence } from "../lib/ui/select.js";
+import { coalesceTerminalInput, sanitizeAuditValue, tokenizeTerminalInput, type PendingInputSequence } from "../lib/ui/select.js";
 
 describe("ui-select", () => {
 	it("reconstructs orphan bracket arrow chunks", () => {
@@ -64,5 +64,14 @@ describe("ui-select", () => {
 
 	it("tokenizes packed SS3 arrow sequences", () => {
 		expect(tokenizeTerminalInput("\u001bOA\u001bOB")).toEqual(["\u001bOA", "\u001bOB"]);
+	});
+
+	it("redacts subtitle and hint audit fields by key", () => {
+		expect(sanitizeAuditValue("subtitle", "sensitive subtitle")).toBe("[redacted:18]");
+		expect(sanitizeAuditValue("hint", "sensitive hint")).toBe("[redacted:14]");
+	});
+
+	it("redacts secret-like audit strings even when the key is not prelisted", () => {
+		expect(sanitizeAuditValue("custom", "sk-live-abcdefghijklmnopqrstuvwxyz0123456789")).toBe("[redacted-token]");
 	});
 });

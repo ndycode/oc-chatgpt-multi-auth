@@ -225,6 +225,62 @@ describe("storage", () => {
         await fs.rm(testStoragePath, { force: true });
       }
     });
+
+		it.each(["EBUSY", "EACCES", "EPERM"] as const)(
+			"falls back to the current duplicate-cleanup snapshot when raw storage read fails with %s",
+			async (errorCode) => {
+				const testStoragePath = join(
+					tmpdir(),
+					`codex-clean-duplicate-email-fallback-${errorCode}-${Math.random().toString(36).slice(2)}.json`,
+				);
+				setStoragePathDirect(testStoragePath);
+
+				try {
+					await fs.writeFile(
+						testStoragePath,
+						JSON.stringify({
+							version: 3,
+							activeIndex: 0,
+							activeIndexByFamily: {},
+							accounts: [
+								{ email: "shared@example.com", refreshToken: "older", addedAt: 1, lastUsed: 1 },
+								{ email: "shared@example.com", refreshToken: "newer", addedAt: 2, lastUsed: 2 },
+							],
+						}),
+						"utf8",
+					);
+
+					const originalReadFile = fs.readFile.bind(fs);
+					let readAttempts = 0;
+					const readSpy = vi.spyOn(fs, "readFile").mockImplementation(async (path, options) => {
+						readAttempts += 1;
+						if (String(path) === testStoragePath && readAttempts === 2) {
+							const error = new Error("locked") as NodeJS.ErrnoException;
+							error.code = errorCode;
+							throw error;
+						}
+						return originalReadFile(path, options as never);
+					});
+
+					try {
+						await expect(cleanupDuplicateEmailAccounts()).resolves.toEqual({
+							before: 1,
+							after: 1,
+							removed: 0,
+						});
+					} finally {
+						readSpy.mockRestore();
+					}
+
+					const loaded = await loadAccounts();
+					expect(loaded?.accounts).toHaveLength(1);
+					expect(loaded?.accounts[0]?.refreshToken).toBe("newer");
+				} finally {
+					setStoragePathDirect(null);
+					await fs.rm(testStoragePath, { force: true });
+				}
+			},
+		);
   });
 
   describe("import/export (TDD)", () => {

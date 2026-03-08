@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { PluginConfig } from "./types.js";
@@ -72,9 +72,7 @@ export function loadPluginConfig(): PluginConfig {
 			return DEFAULT_CONFIG;
 		}
 
-		const fileContent = readFileSync(CONFIG_PATH, "utf-8");
-		const normalizedFileContent = stripUtf8Bom(fileContent);
-		const userConfig = JSON.parse(normalizedFileContent) as unknown;
+		const userConfig = readRawPluginConfig(false) as unknown;
 		const hasFallbackEnvOverride =
 			process.env.CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL !== undefined ||
 			process.env.CODEX_AUTH_FALLBACK_GPT53_TO_GPT52 !== undefined;
@@ -131,12 +129,34 @@ function readRawPluginConfig(recoverInvalid = false): RawPluginConfig {
 	}
 }
 
+async function readRawPluginConfigAsync(recoverInvalid = false): Promise<RawPluginConfig> {
+	if (!existsSync(CONFIG_PATH)) {
+		return {};
+	}
+
+	try {
+		const fileContent = await fs.readFile(CONFIG_PATH, "utf-8");
+		const normalizedFileContent = stripUtf8Bom(fileContent);
+		const parsed = JSON.parse(normalizedFileContent) as unknown;
+		if (!isRecord(parsed)) {
+			throw new Error("Plugin config root must be a JSON object");
+		}
+		return { ...parsed };
+	} catch (error) {
+		if (recoverInvalid) {
+			logWarn(`Failed to read raw plugin config from ${CONFIG_PATH}: ${(error as Error).message}`);
+			return {};
+		}
+		throw error;
+	}
+}
+
 export async function savePluginConfigMutation(
 	mutate: (current: RawPluginConfig) => RawPluginConfig,
 	options: { recoverInvalidCurrent?: boolean } = {},
 ): Promise<void> {
-	await withPluginConfigLock(() => {
-		const current = readRawPluginConfig(options.recoverInvalidCurrent === true);
+	await withPluginConfigLock(async () => {
+		const current = await readRawPluginConfigAsync(options.recoverInvalidCurrent === true);
 		const next = mutate({ ...current });
 
 		if (!isRecord(next)) {
@@ -146,13 +166,13 @@ export async function savePluginConfigMutation(
 		const tempPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
 		let tempFilePresent = false;
 		try {
-			writeFileSync(tempPath, `${JSON.stringify(next, null, 2)}\n`, {
+			await fs.writeFile(tempPath, `${JSON.stringify(next, null, 2)}\n`, {
 				encoding: "utf-8",
 				mode: 0o600,
 			});
 			tempFilePresent = true;
 			try {
-				renameSync(tempPath, CONFIG_PATH);
+				await fs.rename(tempPath, CONFIG_PATH);
 				tempFilePresent = false;
 				return;
 			} catch (error) {
@@ -165,12 +185,12 @@ export async function savePluginConfigMutation(
 					const backupPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.bak`;
 					let backupMoved = false;
 					try {
-						renameSync(CONFIG_PATH, backupPath);
+						await fs.rename(CONFIG_PATH, backupPath);
 						backupMoved = true;
-						renameSync(tempPath, CONFIG_PATH);
+						await fs.rename(tempPath, CONFIG_PATH);
 						tempFilePresent = false;
 						try {
-							unlinkSync(backupPath);
+							await fs.unlink(backupPath);
 						} catch {
 							// best effort backup cleanup
 						}
@@ -179,7 +199,7 @@ export async function savePluginConfigMutation(
 						if (backupMoved) {
 							try {
 								if (!existsSync(CONFIG_PATH)) {
-									renameSync(backupPath, CONFIG_PATH);
+									await fs.rename(backupPath, CONFIG_PATH);
 									backupMoved = false;
 								}
 							} catch {
@@ -190,7 +210,7 @@ export async function savePluginConfigMutation(
 					} finally {
 						if (backupMoved) {
 							try {
-								unlinkSync(backupPath);
+								await fs.unlink(backupPath);
 							} catch {
 								// best effort backup cleanup
 							}
@@ -202,7 +222,7 @@ export async function savePluginConfigMutation(
 		} finally {
 			if (tempFilePresent) {
 				try {
-					unlinkSync(tempPath);
+					await fs.unlink(tempPath);
 				} catch {
 					// best effort temp cleanup
 				}
@@ -233,7 +253,7 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
-function tryRecoverStalePluginConfigLock(rawLockContents: string): boolean {
+async function tryRecoverStalePluginConfigLock(rawLockContents: string): Promise<boolean> {
 	const lockOwnerPid = Number.parseInt(rawLockContents.trim(), 10);
 	if (
 		!Number.isFinite(lockOwnerPid) ||
@@ -245,17 +265,17 @@ function tryRecoverStalePluginConfigLock(rawLockContents: string): boolean {
 
 	const staleLockPath = `${CONFIG_LOCK_PATH}.${lockOwnerPid}.${process.pid}.${Date.now()}.stale`;
 	try {
-		renameSync(CONFIG_LOCK_PATH, staleLockPath);
+		await fs.rename(CONFIG_LOCK_PATH, staleLockPath);
 	} catch {
 		return false;
 	}
 
 	try {
-		const movedLockContents = readFileSync(staleLockPath, "utf-8");
+		const movedLockContents = await fs.readFile(staleLockPath, "utf-8");
 		if (movedLockContents !== rawLockContents) {
 			try {
 				if (!existsSync(CONFIG_LOCK_PATH)) {
-					renameSync(staleLockPath, CONFIG_LOCK_PATH);
+					await fs.rename(staleLockPath, CONFIG_LOCK_PATH);
 				}
 			} catch {
 				// best effort restore when a live lock was moved unexpectedly
@@ -265,7 +285,7 @@ function tryRecoverStalePluginConfigLock(rawLockContents: string): boolean {
 	} catch {
 		try {
 			if (!existsSync(CONFIG_LOCK_PATH)) {
-				renameSync(staleLockPath, CONFIG_LOCK_PATH);
+				await fs.rename(staleLockPath, CONFIG_LOCK_PATH);
 			}
 		} catch {
 			// best effort restore when stale-lock verification fails
@@ -274,7 +294,7 @@ function tryRecoverStalePluginConfigLock(rawLockContents: string): boolean {
 	}
 
 	try {
-		unlinkSync(staleLockPath);
+		await fs.unlink(staleLockPath);
 	} catch {
 		// best effort stale-lock cleanup
 	}
@@ -282,11 +302,11 @@ function tryRecoverStalePluginConfigLock(rawLockContents: string): boolean {
 }
 
 async function withPluginConfigLock<T>(fn: () => T | Promise<T>): Promise<T> {
-	mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+	await fs.mkdir(dirname(CONFIG_PATH), { recursive: true });
 	const deadline = Date.now() + 2_000;
 	while (true) {
 		try {
-			writeFileSync(CONFIG_LOCK_PATH, `${process.pid}`, { encoding: "utf-8", flag: "wx" });
+			await fs.writeFile(CONFIG_LOCK_PATH, `${process.pid}`, { encoding: "utf-8", flag: "wx" });
 			break;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
@@ -297,8 +317,8 @@ async function withPluginConfigLock<T>(fn: () => T | Promise<T>): Promise<T> {
 			}
 			if (code === "EEXIST") {
 				try {
-					const rawLockContents = readFileSync(CONFIG_LOCK_PATH, "utf-8");
-					if (tryRecoverStalePluginConfigLock(rawLockContents)) {
+					const rawLockContents = await fs.readFile(CONFIG_LOCK_PATH, "utf-8");
+					if (await tryRecoverStalePluginConfigLock(rawLockContents)) {
 						continue;
 					}
 				} catch {
@@ -313,7 +333,7 @@ async function withPluginConfigLock<T>(fn: () => T | Promise<T>): Promise<T> {
 		return await fn();
 	} finally {
 		try {
-			unlinkSync(CONFIG_LOCK_PATH);
+			await fs.unlink(CONFIG_LOCK_PATH);
 		} catch {
 			// best effort cleanup
 		}

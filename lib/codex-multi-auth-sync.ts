@@ -23,6 +23,8 @@ const EXTERNAL_ACCOUNT_FILE_NAMES = [
 ];
 const SYNC_ACCOUNT_TAG = "codex-multi-auth-sync";
 const SYNC_MAX_ACCOUNTS_OVERRIDE_ENV = "CODEX_AUTH_SYNC_MAX_ACCOUNTS";
+const NORMALIZED_IMPORT_TEMP_PREFIX = "oc-chatgpt-multi-auth-sync-";
+const STALE_NORMALIZED_IMPORT_MAX_AGE_MS = 60 * 60 * 1000;
 
 export interface CodexMultiAuthResolvedSource {
 	rootDir: string;
@@ -169,8 +171,46 @@ async function withNormalizedImportFile<T>(
 	// On Windows the mode/chmod calls are ignored; the home-directory ACLs remain
 	// the actual isolation boundary for this temporary token material.
 	await fs.mkdir(secureTempRoot, { recursive: true, mode: 0o700 });
-	const tempDir = await fs.mkdtemp(join(secureTempRoot, "oc-chatgpt-multi-auth-sync-"));
+	await cleanupStaleNormalizedImportTempDirs(secureTempRoot);
+	const tempDir = await fs.mkdtemp(join(secureTempRoot, NORMALIZED_IMPORT_TEMP_PREFIX));
 	return runWithTempDir(tempDir);
+}
+
+async function cleanupStaleNormalizedImportTempDirs(
+	secureTempRoot: string,
+	now = Date.now(),
+): Promise<void> {
+	try {
+		const entries = await fs.readdir(secureTempRoot, { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isDirectory() || !entry.name.startsWith(NORMALIZED_IMPORT_TEMP_PREFIX)) {
+				continue;
+			}
+
+			const candidateDir = join(secureTempRoot, entry.name);
+			try {
+				const stats = await fs.stat(candidateDir);
+				if (now - stats.mtimeMs < STALE_NORMALIZED_IMPORT_MAX_AGE_MS) {
+					continue;
+				}
+				await fs.rm(candidateDir, { recursive: true, force: true });
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === "ENOENT") {
+					continue;
+				}
+				const message = error instanceof Error ? error.message : String(error);
+				logWarn(`Failed to sweep stale codex sync temp directory ${candidateDir}: ${message}`);
+			}
+		}
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return;
+		}
+		const message = error instanceof Error ? error.message : String(error);
+		logWarn(`Failed to list codex sync temp root ${secureTempRoot}: ${message}`);
+	}
 }
 
 function deduplicateAccountsForSync(storage: AccountStorageV3): AccountStorageV3 {
@@ -769,26 +809,43 @@ export async function loadCodexMultiAuthSourceStorage(
 	};
 }
 
-async function loadPreparedCodexMultiAuthSourceStorage(
-	projectPath = process.cwd(),
-): Promise<CodexMultiAuthResolvedSource & { storage: AccountStorageV3 }> {
-	const resolved = await loadCodexMultiAuthSourceStorage(projectPath);
-	const currentStorage = await withAccountStorageTransaction((current) => Promise.resolve(current));
-	const preparedStorage = filterSourceAccountsAgainstExistingEmails(
-		resolved.storage,
-		currentStorage?.accounts ?? [],
-	);
+function createEmptyAccountStorage(): AccountStorageV3 {
 	return {
-		...resolved,
-		storage: preparedStorage,
+		version: 3,
+		accounts: [],
+		activeIndex: 0,
+		activeIndexByFamily: {},
 	};
+}
+
+async function prepareCodexMultiAuthPreviewStorage(
+	resolved: CodexMultiAuthResolvedSource & { storage: AccountStorageV3 },
+): Promise<CodexMultiAuthResolvedSource & { storage: AccountStorageV3 }> {
+	return withAccountStorageTransaction((current) => {
+		const existing = current ?? createEmptyAccountStorage();
+		const preparedStorage = filterSourceAccountsAgainstExistingEmails(
+			resolved.storage,
+			existing.accounts,
+		);
+		const maxAccounts = getSyncCapacityLimit();
+		if (Number.isFinite(maxAccounts)) {
+			const details = computeSyncCapacityDetails(resolved, preparedStorage, existing, maxAccounts);
+			if (details) {
+				throw new CodexMultiAuthSyncCapacityError(details);
+			}
+		}
+		return Promise.resolve({
+			...resolved,
+			storage: preparedStorage,
+		});
+	});
 }
 
 export async function previewSyncFromCodexMultiAuth(
 	projectPath = process.cwd(),
 ): Promise<CodexMultiAuthSyncPreview> {
-	const resolved = await loadPreparedCodexMultiAuthSourceStorage(projectPath);
-	await assertSyncWithinCapacity(resolved);
+	const loadedSource = await loadCodexMultiAuthSourceStorage(projectPath);
+	const resolved = await prepareCodexMultiAuthPreviewStorage(loadedSource);
 	const preview = await withNormalizedImportFile(
 		resolved.storage,
 		(filePath) => previewImportAccounts(filePath),
@@ -804,8 +861,7 @@ export async function previewSyncFromCodexMultiAuth(
 export async function syncFromCodexMultiAuth(
 	projectPath = process.cwd(),
 ): Promise<CodexMultiAuthSyncResult> {
-	const resolved = await loadPreparedCodexMultiAuthSourceStorage(projectPath);
-	await assertSyncWithinCapacity(resolved);
+	const resolved = await loadCodexMultiAuthSourceStorage(projectPath);
 	const result: ImportAccountsResult = await withNormalizedImportFile(
 		tagSyncedAccounts(resolved.storage),
 		(filePath) => {
@@ -1088,28 +1144,4 @@ export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiA
 		}
 		return plan.result;
 	});
-}
-
-async function assertSyncWithinCapacity(
-	resolved: CodexMultiAuthResolvedSource & { storage: AccountStorageV3 },
-): Promise<void> {
-	// Unlimited remains the default, but a finite override keeps the sync prune/capacity
-	// path testable and available for operators who intentionally enforce a soft cap.
-	const maxAccounts = getSyncCapacityLimit();
-	if (!Number.isFinite(maxAccounts)) {
-		return;
-	}
-	const details = await withAccountStorageTransaction<CodexMultiAuthSyncCapacityDetails | null>((current) => {
-		const existing = current ?? {
-			version: 3 as const,
-			accounts: [],
-			activeIndex: 0,
-			activeIndexByFamily: {},
-		};
-		return Promise.resolve(computeSyncCapacityDetails(resolved, resolved.storage, existing, maxAccounts));
-	});
-
-	if (details) {
-		throw new CodexMultiAuthSyncCapacityError(details);
-	}
 }

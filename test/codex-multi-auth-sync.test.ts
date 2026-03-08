@@ -88,8 +88,30 @@ describe("codex-multi-auth sync", () => {
 			);
 		});
 	};
+	const defaultTransactionalStorage = (): AccountStorageV3 => ({
+		version: 3,
+		activeIndex: 0,
+		activeIndexByFamily: {},
+		accounts: [
+			{
+				accountId: "org-example123",
+				accountIdSource: "org",
+				refreshToken: "sync-refresh",
+				addedAt: 1,
+				lastUsed: 1,
+			},
+			{
+				accountId: "org-example123",
+				organizationId: "org-example123",
+				accountIdSource: "org",
+				refreshToken: "sync-refresh",
+				addedAt: 2,
+				lastUsed: 2,
+			},
+		],
+	});
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.resetModules();
 		vi.clearAllMocks();
 		mockExistsSync.mockReset();
@@ -107,6 +129,23 @@ describe("codex-multi-auth sync", () => {
 		mockReadFile.mockReset();
 		mockReadFile.mockImplementation((path, options) =>
 			originalReadFile(path as Parameters<typeof fs.promises.readFile>[0], options as never),
+		);
+		const storageModule = await import("../lib/storage.js");
+		vi.mocked(storageModule.previewImportAccounts).mockReset();
+		vi.mocked(storageModule.previewImportAccounts).mockResolvedValue({ imported: 2, skipped: 0, total: 4 });
+		vi.mocked(storageModule.importAccounts).mockReset();
+		vi.mocked(storageModule.importAccounts).mockResolvedValue({
+			imported: 2,
+			skipped: 0,
+			total: 4,
+			backupStatus: "created",
+			backupPath: "/tmp/codex-multi-auth-sync-backup.json",
+		});
+		vi.mocked(storageModule.normalizeAccountStorage).mockReset();
+		vi.mocked(storageModule.normalizeAccountStorage).mockImplementation((value: unknown) => value as never);
+		vi.mocked(storageModule.withAccountStorageTransaction).mockReset();
+		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementation(async (handler) =>
+			handler(defaultTransactionalStorage(), vi.fn(async () => {})),
 		);
 		delete process.env.CODEX_MULTI_AUTH_DIR;
 		delete process.env.CODEX_HOME;
@@ -475,6 +514,47 @@ describe("codex-multi-auth sync", () => {
 		}
 	});
 
+	it("sweeps stale sync temp directories before creating a new import temp dir", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		const fakeHome = await fs.promises.mkdtemp(join(os.tmpdir(), "codex-sync-home-"));
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		process.env.HOME = fakeHome;
+		process.env.USERPROFILE = fakeHome;
+		const globalPath = join(rootDir, "openai-codex-accounts.json");
+		const tempRoot = join(fakeHome, ".opencode", "tmp");
+		const staleDir = join(tempRoot, "oc-chatgpt-multi-auth-sync-stale-test");
+		const staleFile = join(staleDir, "accounts.json");
+		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+		mockSourceStorageFile(
+			globalPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [{ accountId: "org-source", organizationId: "org-source", refreshToken: "rt-source", addedAt: 1, lastUsed: 1 }],
+			}),
+		);
+
+		try {
+			await fs.promises.mkdir(staleDir, { recursive: true });
+			await fs.promises.writeFile(staleFile, "sensitive", "utf8");
+			const oldTime = new Date(Date.now() - (65 * 60 * 1000));
+			await fs.promises.utimes(staleDir, oldTime, oldTime);
+			await fs.promises.utimes(staleFile, oldTime, oldTime);
+
+			const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+			await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+				rootDir,
+				accountsPath: globalPath,
+				scope: "global",
+			});
+
+			await expect(fs.promises.stat(staleDir)).rejects.toThrow();
+		} finally {
+			await fs.promises.rm(fakeHome, { recursive: true, force: true });
+		}
+	});
+
 	it("skips source accounts whose emails already exist locally during sync", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
@@ -546,10 +626,11 @@ describe("codex-multi-auth sync", () => {
 			]);
 			return { imported: 1, skipped: 0, total: 1 };
 		});
-		vi.mocked(storageModule.importAccounts).mockImplementationOnce(async (filePath) => {
+		vi.mocked(storageModule.importAccounts).mockImplementationOnce(async (filePath, _options, prepare) => {
 			const raw = await fs.promises.readFile(filePath, "utf8");
-			const parsed = JSON.parse(raw) as { accounts: Array<{ email?: string }> };
-			expect(parsed.accounts.map((account) => account.email)).toEqual([
+			const parsed = JSON.parse(raw) as AccountStorageV3;
+			const prepared = prepare ? prepare(parsed, currentStorage) : parsed;
+			expect(prepared.accounts.map((account) => account.email)).toEqual([
 				"new@example.com",
 			]);
 			return {
@@ -818,27 +899,36 @@ describe("codex-multi-auth sync", () => {
 		);
 
 		const storageModule = await import("../lib/storage.js");
-		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
-			handler(
+		const currentStorage = {
+			version: 3 as const,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [
 				{
-					version: 3,
-					activeIndex: 0,
-					activeIndexByFamily: {},
-					accounts: [
-						{
-							accountId: "org-existing",
-							organizationId: "org-existing",
-							accountIdSource: "org",
-							email: "existing@example.com",
-							refreshToken: "rt-existing",
-							addedAt: 10,
-							lastUsed: 10,
-						},
-					],
+					accountId: "org-existing",
+					organizationId: "org-existing",
+					accountIdSource: "org",
+					email: "existing@example.com",
+					refreshToken: "rt-existing",
+					addedAt: 10,
+					lastUsed: 10,
 				},
-				vi.fn(async () => {}),
-			),
-		);
+			],
+		};
+		vi.mocked(storageModule.importAccounts).mockImplementationOnce(async (filePath, _options, prepare) => {
+			const raw = await fs.promises.readFile(filePath, "utf8");
+			const parsed = JSON.parse(raw) as AccountStorageV3;
+			if (prepare) {
+				prepare(parsed, currentStorage);
+			}
+			return {
+				imported: 2,
+				skipped: 0,
+				total: 4,
+				backupStatus: "created",
+				backupPath: "/tmp/codex-multi-auth-sync-backup.json",
+			};
+		});
 
 		const { syncFromCodexMultiAuth, CodexMultiAuthSyncCapacityError } = await import("../lib/codex-multi-auth-sync.js");
 		await expect(syncFromCodexMultiAuth(process.cwd())).rejects.toBeInstanceOf(

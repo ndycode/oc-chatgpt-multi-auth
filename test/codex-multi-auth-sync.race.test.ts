@@ -72,4 +72,46 @@ describe("codex-multi-auth sync race paths", () => {
 			new Set(["rt-source-1"]),
 		);
 	});
+
+	it("keeps synced-overlap cleanup stable under concurrent cleanup runs", async () => {
+		const { cleanupCodexMultiAuthSyncedOverlaps } = await import("../lib/codex-multi-auth-sync.js");
+		const storageModule = await import("../lib/storage.js");
+
+		await storageModule.saveAccounts({
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [
+				{
+					accountId: "org-local",
+					organizationId: "org-local",
+					accountIdSource: "org",
+					email: "shared@example.com",
+					refreshToken: "rt-local",
+					addedAt: 2,
+					lastUsed: 2,
+				},
+				{
+					accountId: "org-sync",
+					organizationId: "org-sync",
+					accountIdSource: "org",
+					accountTags: ["codex-multi-auth-sync"],
+					email: "shared@example.com",
+					refreshToken: "rt-sync",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		});
+
+		const results = await Promise.allSettled([
+			cleanupCodexMultiAuthSyncedOverlaps(),
+			cleanupCodexMultiAuthSyncedOverlaps(),
+		]);
+		const loaded = await storageModule.loadAccounts();
+
+		expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+		expect(loaded?.accounts).toHaveLength(1);
+		expect(loaded?.accounts[0]?.accountId).toBe("org-local");
+	});
 });

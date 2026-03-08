@@ -78,13 +78,30 @@ function writeTuiAudit(event: Record<string, unknown>): void {
 	}
 }
 
-function sanitizeAuditValue(key: string, value: unknown): unknown {
+const AUDIT_REDACTED_STRING_KEYS = new Set([
+	"label",
+	"message",
+	"utf8",
+	"bytesHex",
+	"token",
+	"normalizedInput",
+	"pending",
+	"hint",
+	"subtitle",
+]);
+
+const AUDIT_SECRET_LIKE_PATTERN = /\b(?:Bearer\s+)?[A-Za-z0-9._-]{24,}(?:\.[A-Za-z0-9._-]{8,})*\b/;
+
+export function sanitizeAuditValue(key: string, value: unknown): unknown {
 	if (typeof value === "string") {
-		if (["label", "message", "utf8", "bytesHex", "token", "normalizedInput", "pending"].includes(key)) {
+		if (AUDIT_REDACTED_STRING_KEYS.has(key)) {
 			return `[redacted:${value.length}]`;
 		}
 		if (value.includes("@")) {
 			return "[redacted-email]";
+		}
+		if (AUDIT_SECRET_LIKE_PATTERN.test(value)) {
+			return "[redacted-token]";
 		}
 		return value;
 	}
