@@ -792,19 +792,22 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 		it("deduplicates accounts with same refreshToken and keeps the active marker", async () => {
+			const { createCodexHeaders } = await import("../lib/request/fetch-helpers.js");
 			mockStorage.accounts = [
 				{
 					refreshToken: "rt_same",
 					accountId: "acc-1",
+					organizationId: "org-1",
 					email: "a@test.com",
-					accessToken: "access-1",
+					accessToken: "shared-access",
 					expiresAt: Date.now() + 3600_000,
 				},
 				{
 					refreshToken: "rt_same",
 					accountId: "acc-2",
+					organizationId: "org-2",
 					email: "a@test.com",
-					accessToken: "access-2",
+					accessToken: "shared-access",
 					expiresAt: Date.now() + 3600_000,
 				},
 				{
@@ -828,6 +831,7 @@ describe("OpenAIOAuthPlugin", () => {
 					{ status: 200, headers: { "content-type": "application/json" } },
 				),
 			);
+			vi.mocked(createCodexHeaders).mockClear();
 
 			const result = await plugin.tool["codex-limits"].execute();
 
@@ -838,9 +842,17 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).not.toContain("Account 1 (a@test.com, id:acc-1):");
 			expect(result).toContain("Account 3 (b@test.com, id:acc-3):");
 			expect(result).not.toContain("Account 2 (a@test.com, id:acc-2):");
+			expect(vi.mocked(createCodexHeaders)).toHaveBeenCalledWith(
+				undefined,
+				"acc-2",
+				"shared-access",
+				expect.objectContaining({ organizationId: "org-2" }),
+			);
 		});
 
 		it("does not deduplicate accounts that are missing refreshToken", async () => {
+			mockStorage.activeIndex = 0;
+			mockStorage.activeIndexByFamily = {};
 			mockStorage.accounts = [
 				{
 					refreshToken: "",
@@ -1030,6 +1042,47 @@ describe("OpenAIOAuthPlugin", () => {
 						headers: new Headers({ "content-type": "text/plain" }),
 						text: async () =>
 							await new Promise<string>((_resolve, reject) => {
+								signal?.addEventListener(
+									"abort",
+									() => reject(new DOMException("The operation was aborted.", "AbortError")),
+									{ once: true },
+								);
+							}),
+					} as Response;
+				});
+
+				const resultPromise = plugin.tool["codex-limits"].execute();
+				await vi.runAllTimersAsync();
+				const result = await resultPromise;
+
+				expect(result).toContain("Error: Usage request timed out");
+				expect(result).not.toContain("AbortError");
+				expect(result).not.toContain("DOMException");
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("surfaces usage fetch timeouts during successful response body reads", async () => {
+			vi.useFakeTimers();
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			try {
+				globalThis.fetch = vi.fn().mockImplementation(async (_input, init) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					return {
+						ok: true,
+						status: 200,
+						headers: new Headers({ "content-type": "application/json" }),
+						json: async () =>
+							await new Promise<unknown>((_resolve, reject) => {
 								signal?.addEventListener(
 									"abort",
 									() => reject(new DOMException("The operation was aborted.", "AbortError")),

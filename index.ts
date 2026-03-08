@@ -4385,12 +4385,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 						if (!account) continue;
 						const sharesActiveCredential =
 							!!activeRefreshToken && account.refreshToken === activeRefreshToken;
-						const displayIndex = sharesActiveCredential ? activeIndex : i;
-						const displayAccount =
-							typeof displayIndex === "number" && displayIndex >= 0
-								? storage.accounts[displayIndex] ?? account
-								: account;
-						const label = formatCommandAccountLabel(displayAccount, displayIndex ?? i);
+						const displayIndex =
+							sharesActiveCredential && typeof activeIndex === "number" ? activeIndex : i;
+						const displayAccount = storage.accounts[displayIndex] ?? account;
+						const label = formatCommandAccountLabel(displayAccount, displayIndex);
 						const isActive = i === activeIndex || sharesActiveCredential;
 						const activeSuffix = isActive ? (ui.v2Enabled ? ` ${formatUiBadge(ui, "active", "accent")}` : " [active]") : "";
 
@@ -4436,7 +4434,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 								storageChanged = true;
 							}
 
-							const accountId = account.accountId ?? extractAccountId(accessToken);
+							const effectiveAccount = sharesActiveCredential ? displayAccount : account;
+							const accountId = effectiveAccount.accountId ?? extractAccountId(accessToken);
 							if (!accountId) {
 								throw new Error("Missing account id");
 							}
@@ -4444,7 +4443,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							const payload = await fetchUsage({
 								accountId,
 								accessToken,
-								organizationId: account.organizationId,
+								organizationId: effectiveAccount.organizationId,
 							});
 
 							const primary = mapWindow(payload.rate_limit?.primary_window ?? null);
