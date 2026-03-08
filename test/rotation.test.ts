@@ -196,6 +196,11 @@ describe("TokenBucketTracker", () => {
 			tracker.drain(0, undefined, DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
 			expect(tracker.getWaitTimeUntilTokenAvailable(0)).toBe(Number.POSITIVE_INFINITY);
 		});
+
+		it("returns a finite wait after the bucket is partially drained", () => {
+			tracker.drain(0, undefined, DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens);
+			expect(tracker.getWaitTimeUntilTokenAvailable(0)).toBeGreaterThan(0);
+		});
 	});
 
 	describe("tryConsume", () => {

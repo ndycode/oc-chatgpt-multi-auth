@@ -15,6 +15,7 @@ import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import {
 	getHealthTracker,
 	getTokenTracker,
+	resetTrackers,
 	selectHybridAccount,
 	type AccountWithMetrics,
 	type HybridSelectionOptions,
@@ -906,6 +907,8 @@ export class AccountManager {
 
 		for (const account of enabledAccounts) {
 			const accountWaits: number[] = [];
+			// `available` above clears stale blocker windows first, so any waits collected
+			// here reflect only blockers that are still preventing this account from serving.
 			const baseResetAt = account.rateLimitResetTimes[baseKey];
 			if (typeof baseResetAt === "number") {
 				accountWaits.push(Math.max(0, baseResetAt - now));
@@ -947,6 +950,9 @@ export class AccountManager {
 		this.accounts.forEach((acc, index) => {
 			acc.index = index;
 		});
+		// Trackers are keyed by account index, so any removal that renumbers accounts
+		// must clear in-memory tracker state to avoid leaking waits/health to new occupants.
+		resetTrackers();
 
 		if (this.accounts.length === 0) {
 			for (const family of MODEL_FAMILIES) {

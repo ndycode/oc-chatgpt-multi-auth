@@ -1038,11 +1038,16 @@ describe("AccountManager", () => {
         config: { tokensPerMinute: number };
         drain: (accountIndex: number, quotaKey?: string, drainAmount?: number) => void;
       };
-      tracker.config.tokensPerMinute = 0;
-      tracker.drain(0, "codex", 50);
+      const originalTokensPerMinute = tracker.config.tokensPerMinute;
+      try {
+        tracker.config.tokensPerMinute = 0;
+        tracker.drain(0, "codex", 50);
 
-      const waitTime = manager.getMinWaitTimeForFamily("codex");
-      expect(waitTime).toBe(Number.MAX_SAFE_INTEGER);
+        const waitTime = manager.getMinWaitTimeForFamily("codex");
+        expect(waitTime).toBe(Number.MAX_SAFE_INTEGER);
+      } finally {
+        tracker.config.tokensPerMinute = originalTokensPerMinute;
+      }
     });
   });
 

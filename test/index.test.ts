@@ -301,8 +301,16 @@ vi.mock("../lib/accounts.js", () => {
 			return this.accounts[0] ?? null;
 		}
 
-		getNextRequestEligibleForFamilyHybrid() {
-			return this.accounts[0] ?? null;
+		getNextRequestEligibleForFamilyHybrid(
+			_family?: unknown,
+			_model?: unknown,
+			options?: { attemptedIndices?: ReadonlySet<number> },
+		) {
+			const account = this.accounts[0];
+			if (!account || options?.attemptedIndices?.has(account.index)) {
+				return null;
+			}
+			return account;
 		}
 
 		getSelectionExplainability() {
@@ -2181,7 +2189,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		);
 	});
 
-	it("skips locally depleted account and uses the next eligible account", async () => {
+	it("uses the next eligible account when consumeToken loses the race after selection", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		const accounts = [
