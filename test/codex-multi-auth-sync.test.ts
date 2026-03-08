@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 import { findProjectRoot, getProjectStorageKey, getProjectStorageKeyCandidates } from "../lib/storage/paths.js";
+import type { AccountStorageV3 } from "../lib/storage.js";
 
 vi.mock("../lib/logger.js", () => ({
 	logWarn: vi.fn(),
@@ -13,6 +14,7 @@ vi.mock("node:fs", async () => {
 	return {
 		...actual,
 		existsSync: vi.fn(),
+		readdirSync: vi.fn(() => []),
 		readFileSync: vi.fn(),
 		statSync: vi.fn(),
 	};
@@ -64,6 +66,9 @@ vi.mock("../lib/storage.js", () => ({
 
 describe("codex-multi-auth sync", () => {
 	const mockExistsSync = vi.mocked(fs.existsSync);
+	const mockReaddirSync = vi.mocked(fs.readdirSync);
+	const mockReadFileSync = vi.mocked(fs.readFileSync);
+	const mockStatSync = vi.mocked(fs.statSync);
 	const originalReadFile = fs.promises.readFile.bind(fs.promises);
 	const mockReadFile = vi.spyOn(fs.promises, "readFile");
 	const originalEnv = {
@@ -87,6 +92,18 @@ describe("codex-multi-auth sync", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.clearAllMocks();
+		mockExistsSync.mockReset();
+		mockExistsSync.mockReturnValue(false);
+		mockReaddirSync.mockReset();
+		mockReaddirSync.mockReturnValue([] as ReturnType<typeof fs.readdirSync>);
+		mockReadFileSync.mockReset();
+		mockReadFileSync.mockImplementation((candidate) => {
+			throw new Error(`unexpected read: ${String(candidate)}`);
+		});
+		mockStatSync.mockReset();
+		mockStatSync.mockImplementation(() => ({
+			isDirectory: () => false,
+		}) as ReturnType<typeof fs.statSync>);
 		mockReadFile.mockReset();
 		mockReadFile.mockImplementation((path, options) =>
 			originalReadFile(path as Parameters<typeof fs.promises.readFile>[0], options as never),
@@ -385,6 +402,49 @@ describe("codex-multi-auth sync", () => {
 		expect(resolved).toEqual({
 			rootDir,
 			accountsPath: projectPath,
+			scope: "project",
+		});
+	});
+
+	it("prefers a later root with project-scoped accounts over an earlier settings-only root", async () => {
+		process.env.USERPROFILE = "C:\\Users\\tester";
+		process.env.HOME = "C:\\Users\\tester";
+		const projectRoot = findProjectRoot(process.cwd()) ?? process.cwd();
+		const candidateKey = getProjectStorageKeyCandidates(projectRoot)[0] ?? "missing";
+		const firstRootSettings = join("C:\\Users\\tester", "DevTools", "config", "codex", "multi-auth", "settings.json");
+		const secondProjectsDir = join("C:\\Users\\tester", ".codex", "multi-auth", "projects");
+		const repoPackageJson = join(process.cwd(), "package.json");
+		const secondProjectPath = join(
+			"C:\\Users\\tester",
+			".codex",
+			"multi-auth",
+			"projects",
+			candidateKey,
+			"openai-codex-accounts.json",
+		);
+		mockExistsSync.mockImplementation((candidate) => {
+			const pathValue = String(candidate);
+			return pathValue === firstRootSettings || pathValue === secondProjectPath || pathValue === repoPackageJson;
+		});
+		mockReaddirSync.mockImplementation((candidate) => {
+			if (String(candidate) === secondProjectsDir) {
+				return [
+					{
+						name: candidateKey,
+						isDirectory: () => true,
+					},
+				] as ReturnType<typeof fs.readdirSync>;
+			}
+			return [];
+		});
+
+		const { getCodexMultiAuthSourceRootDir, resolveCodexMultiAuthAccountsSource } =
+			await import("../lib/codex-multi-auth-sync.js");
+		expect(getCodexMultiAuthSourceRootDir()).toBe(join("C:\\Users\\tester", ".codex", "multi-auth"));
+		const resolved = resolveCodexMultiAuthAccountsSource(process.cwd());
+		expect(resolved).toEqual({
+			rootDir: join("C:\\Users\\tester", ".codex", "multi-auth"),
+			accountsPath: secondProjectPath,
 			scope: "project",
 		});
 	});
@@ -1097,6 +1157,54 @@ describe("codex-multi-auth sync", () => {
 			removed: 0,
 			updated: 1,
 		});
+	});
+
+	it("removes synced accounts that overlap preserved local accounts", async () => {
+		const storageModule = await import("../lib/storage.js");
+		let persisted: AccountStorageV3 | null = null;
+		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
+			handler(
+				{
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [
+						{
+							accountId: "org-local",
+							organizationId: "org-local",
+							accountIdSource: "org",
+							email: "shared@example.com",
+							refreshToken: "rt-local",
+							addedAt: 5,
+							lastUsed: 5,
+						},
+						{
+							accountId: "org-sync",
+							organizationId: "org-sync",
+							accountIdSource: "org",
+							accountTags: ["codex-multi-auth-sync"],
+							email: "shared@example.com",
+							refreshToken: "rt-sync",
+							addedAt: 4,
+							lastUsed: 4,
+						},
+					],
+				},
+				vi.fn(async (next) => {
+					persisted = next;
+				}),
+			),
+		);
+
+		const { cleanupCodexMultiAuthSyncedOverlaps } = await import("../lib/codex-multi-auth-sync.js");
+		await expect(cleanupCodexMultiAuthSyncedOverlaps()).resolves.toEqual({
+			before: 2,
+			after: 1,
+			removed: 1,
+			updated: 0,
+		});
+		expect(persisted?.accounts).toHaveLength(1);
+		expect(persisted?.accounts[0]?.accountId).toBe("org-local");
 	});
 
 	it("remaps active indices when synced overlap cleanup reorders accounts", async () => {

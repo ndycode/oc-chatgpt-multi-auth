@@ -53,6 +53,7 @@ const ANSI_REGEX = new RegExp("\\x1b\\[[0-9;]*m", "g");
 const ANSI_LEADING_REGEX = new RegExp("^\\x1b\\[[0-9;]*m");
 const CSI_FINAL_KEYS = new Set(["A", "B", "C", "D", "H", "F"]);
 const CSI_TILDE_PATTERN = /^\d+~$/;
+const CONTROL_CHAR_REGEX = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 
 export interface PendingInputSequence {
 	value: string;
@@ -103,6 +104,10 @@ function sanitizeAuditValue(key: string, value: unknown): unknown {
 
 function stripAnsi(input: string): string {
 	return input.replace(ANSI_REGEX, "");
+}
+
+function sanitizeDisplayText(input: string): string {
+	return stripAnsi(input).replace(CONTROL_CHAR_REGEX, "");
 }
 
 function truncateAnsi(input: string, maxVisibleChars: number): string {
@@ -468,9 +473,11 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 		const selectedGlyphColor = theme?.colors.success ?? ANSI.green;
 		const selectedChip = selectedLabelStart();
 
-		writeLine(`${border}+${reset} ${heading}${truncateAnsi(options.message, Math.max(1, columns - 4))}${reset}`);
+		const safeMessage = sanitizeDisplayText(options.message);
+		writeLine(`${border}+${reset} ${heading}${truncateAnsi(safeMessage, Math.max(1, columns - 4))}${reset}`);
 		if (subtitleText) {
-			writeLine(` ${muted}${truncateAnsi(subtitleText, Math.max(1, columns - 2))}${reset}`);
+			const safeSubtitle = sanitizeDisplayText(subtitleText);
+			writeLine(` ${muted}${truncateAnsi(safeSubtitle, Math.max(1, columns - 2))}${reset}`);
 		}
 		writeLine("");
 
@@ -485,20 +492,26 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 			}
 
 			if (item.kind === "heading") {
-				const headingText = truncateAnsi(`${muted}${item.label}${reset}`, Math.max(1, columns - 2));
+				const safeHeading = sanitizeDisplayText(item.label);
+				const headingText = truncateAnsi(`${muted}${safeHeading}${reset}`, Math.max(1, columns - 2));
 				writeLine(` ${headingText}`);
 				continue;
 			}
 
 			const selected = itemIndex === cursor;
+			const safeLabel = sanitizeDisplayText(item.label);
+			const safeSelectedLabel = item.selectedLabel ? sanitizeDisplayText(item.selectedLabel) : safeLabel;
+			const safeHintLines = item.hint
+				? item.hint.split("\n").map((line) => sanitizeDisplayText(line)).filter((line) => line.length > 0)
+				: [];
 			if (selected) {
 				const selectedText = item.selectedLabel
-					? stripAnsi(item.selectedLabel)
+					? safeSelectedLabel
 					: item.disabled
 						? item.hideUnavailableSuffix
-							? stripAnsi(item.label)
-							: `${stripAnsi(item.label)} (unavailable)`
-						: stripAnsi(item.label);
+							? safeLabel
+							: `${safeLabel} (unavailable)`
+						: safeLabel;
 				if (focusStyle === "row-invert") {
 					const rowText = `${selectedGlyph} ${selectedText}`;
 					const focusedRow = theme
@@ -509,8 +522,8 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 					const selectedLabel = `${selectedChip}${selectedText}${reset}`;
 					writeLine(` ${selectedGlyphColor}${selectedGlyph}${reset} ${truncateAnsi(selectedLabel, Math.max(1, columns - 4))}`);
 				}
-				if (item.hint) {
-					const detailLines = item.hint.split("\n").slice(0, 3);
+				if (safeHintLines.length > 0) {
+					const detailLines = safeHintLines.slice(0, 3);
 					for (const detailLine of detailLines) {
 						const detail = truncateAnsi(detailLine, Math.max(1, columns - 8));
 						writeLine(`   ${muted}${detail}${reset}`);
@@ -520,12 +533,12 @@ export async function select<T>(items: MenuItem<T>[], options: SelectOptions<T>)
 				const itemColor = codexColorCode(item.color);
 				const labelText = item.disabled
 					? item.hideUnavailableSuffix
-						? `${muted}${item.label}${reset}`
-						: `${muted}${item.label} (unavailable)${reset}`
-					: `${itemColor}${item.label}${reset}`;
+						? `${muted}${safeLabel}${reset}`
+						: `${muted}${safeLabel} (unavailable)${reset}`
+					: `${itemColor}${safeLabel}${reset}`;
 				writeLine(` ${muted}${unselectedGlyph}${reset} ${truncateAnsi(labelText, Math.max(1, columns - 4))}`);
-				if (item.hint && (options.showHintsForUnselected ?? true)) {
-					const detailLines = item.hint.split("\n").slice(0, 2);
+				if (safeHintLines.length > 0 && (options.showHintsForUnselected ?? true)) {
+					const detailLines = safeHintLines.slice(0, 2);
 					for (const detailLine of detailLines) {
 						const detail = truncateAnsi(`${muted}${detailLine}${reset}`, Math.max(1, columns - 8));
 						writeLine(`   ${detail}`);

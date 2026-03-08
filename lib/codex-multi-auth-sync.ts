@@ -1,4 +1,4 @@
-import { existsSync, promises as fs } from "node:fs";
+import { existsSync, readdirSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join, win32 } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
@@ -145,14 +145,15 @@ async function withNormalizedImportFile<T>(
 	const runWithTempDir = async (tempDir: string): Promise<T> => {
 		await fs.chmod(tempDir, 0o700).catch(() => undefined);
 		const tempPath = join(tempDir, "accounts.json");
-		await fs.writeFile(tempPath, `${JSON.stringify(storage, null, 2)}\n`, {
-			encoding: "utf-8",
-			mode: 0o600,
-			flag: "wx",
-		});
-		let result: T;
 		try {
-			result = await handler(tempPath);
+			await fs.writeFile(tempPath, `${JSON.stringify(storage, null, 2)}\n`, {
+				encoding: "utf-8",
+				mode: 0o600,
+				flag: "wx",
+			});
+			const result = await handler(tempPath);
+			await removeNormalizedImportTempDir(tempDir, tempPath, options);
+			return result;
 		} catch (error) {
 			try {
 				await removeNormalizedImportTempDir(tempDir, tempPath, { postSuccessCleanupFailureMode: "warn" });
@@ -162,8 +163,6 @@ async function withNormalizedImportFile<T>(
 			}
 			throw error;
 		}
-		await removeNormalizedImportTempDir(tempDir, tempPath, options);
-		return result;
 	};
 
 	const secureTempRoot = join(getResolvedUserHomeDir(), ".opencode", "tmp");
@@ -573,10 +572,30 @@ function hasStorageSignals(dir: string): boolean {
 	return existsSync(join(dir, "projects"));
 }
 
+function hasProjectScopedAccountsStorage(dir: string): boolean {
+	const projectsDir = join(dir, "projects");
+	try {
+		for (const entry of readdirSync(projectsDir, { withFileTypes: true })) {
+			if (!entry.isDirectory()) {
+				continue;
+			}
+			for (const fileName of EXTERNAL_ACCOUNT_FILE_NAMES) {
+				if (existsSync(join(projectsDir, entry.name, fileName))) {
+					return true;
+				}
+			}
+		}
+	} catch {
+		// best-effort probe; missing or unreadable project roots simply mean "no signal"
+	}
+	return false;
+}
+
 function hasAccountsStorage(dir: string): boolean {
-	return EXTERNAL_ACCOUNT_FILE_NAMES.some((fileName) => {
-		return existsSync(join(dir, fileName));
-	});
+	return (
+		EXTERNAL_ACCOUNT_FILE_NAMES.some((fileName) => existsSync(join(dir, fileName))) ||
+		hasProjectScopedAccountsStorage(dir)
+	);
 }
 
 function getCodexHomeDir(): string {
@@ -684,28 +703,35 @@ function getGlobalAccountsPath(rootDir: string): string | undefined {
 }
 
 export function resolveCodexMultiAuthAccountsSource(projectPath = process.cwd()): CodexMultiAuthResolvedSource {
-	const rootDir = getCodexMultiAuthSourceRootDir();
-	const projectScopedPath = getProjectScopedAccountsPath(rootDir, projectPath);
-	if (projectScopedPath) {
-		return {
-			rootDir,
-			accountsPath: projectScopedPath,
-			scope: "project",
-		};
+	const fromEnv = (process.env.CODEX_MULTI_AUTH_DIR ?? "").trim();
+	const userHome = getResolvedUserHomeDir();
+	const candidates =
+		fromEnv.length > 0
+			? [validateCodexMultiAuthRootDir(fromEnv)]
+			: getCodexMultiAuthRootCandidates(userHome);
+
+	for (const rootDir of candidates) {
+		const projectScopedPath = getProjectScopedAccountsPath(rootDir, projectPath);
+		if (projectScopedPath) {
+			return {
+				rootDir,
+				accountsPath: projectScopedPath,
+				scope: "project",
+			};
+		}
+
+		const globalPath = getGlobalAccountsPath(rootDir);
+		if (globalPath) {
+			return {
+				rootDir,
+				accountsPath: globalPath,
+				scope: "global",
+			};
+		}
 	}
 
-	const globalPath = getGlobalAccountsPath(rootDir);
-	if (globalPath) {
-		return {
-			rootDir,
-			accountsPath: globalPath,
-			scope: "global",
-		};
-	}
-
-	throw new Error(
-		`No codex-multi-auth accounts file found under ${rootDir}`,
-	);
+	const hintedRoot = candidates.find((candidate) => hasAccountsStorage(candidate) || hasStorageSignals(candidate)) ?? candidates[0];
+	throw new Error(`No codex-multi-auth accounts file found under ${hintedRoot}`);
 }
 
 function getSyncCapacityLimit(): number {
@@ -867,9 +893,13 @@ function buildCodexMultiAuthOverlapCleanupPlan(existing: AccountStorageV3): {
 			},
 		};
 	}
+	const filteredSyncedAccounts = filterSourceAccountsAgainstExistingEmails(
+		normalizedSyncedStorage,
+		preservedAccounts,
+	).accounts;
 	const normalized = {
 		...existing,
-		accounts: [...preservedAccounts, ...normalizedSyncedStorage.accounts],
+		accounts: [...preservedAccounts, ...filteredSyncedAccounts],
 	} satisfies AccountStorageV3;
 	const existingActiveKeys = extractCleanupActiveKeys(existing.accounts, existing.activeIndex);
 	const mappedActiveIndex = (() => {

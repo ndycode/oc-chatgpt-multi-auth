@@ -198,6 +198,15 @@ describe("Storage Paths Module", () => {
 			findProjectRoot("/a/b/c/d/e");
 			expect(mockedExistsSync.mock.calls.length).toBeGreaterThan(callCount);
 		});
+
+		it("returns the filesystem root when it contains a project marker", () => {
+			const root = path.parse(process.cwd()).root;
+			mockedExistsSync.mockImplementation((p) => {
+				return typeof p === "string" && p === path.join(root, ".git");
+			});
+			const nestedPath = path.join(root, "workspace", "repo", "src");
+			expect(findProjectRoot(nestedPath)).toBe(root);
+		});
 	});
 
 	describe("resolvePath", () => {

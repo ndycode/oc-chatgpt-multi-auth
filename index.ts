@@ -26,7 +26,7 @@
 import { tool } from "@opencode-ai/plugin/tool";
 import { promises as fsPromises } from "node:fs";
 import { createInterface } from "node:readline/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
 import {
@@ -1622,38 +1622,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					accountId: account.accountId,
 				}) === targetKey,
 			);
-		};
-
-		const getAccountIdentityKeys = (
-			account: {
-				refreshToken: string;
-				organizationId?: string;
-				accountId?: string;
-			},
-		): string[] => {
-			const keys: string[] = [];
-			if (account.organizationId) keys.push(`org:${account.organizationId}`);
-			if (account.accountId) keys.push(`account:${account.accountId}`);
-			keys.push(`refresh:${account.refreshToken}`);
-			return keys;
-		};
-
-		const findAccountIndexByIdentityKeys = (
-			accounts: AccountStorageV3["accounts"],
-			identityKeys: string[],
-		): number => {
-			if (identityKeys.length === 0) return -1;
-			for (const identityKey of identityKeys) {
-				const index = accounts.findIndex((account) =>
-					getAccountIdentityKeys({
-						refreshToken: account.refreshToken,
-						organizationId: account.organizationId,
-						accountId: account.accountId,
-					}).includes(identityKey),
-				);
-				if (index >= 0) return index;
-			}
-			return -1;
 		};
 
 		const normalizeAccountTags = (raw: string): string[] => {
