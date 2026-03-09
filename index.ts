@@ -1370,7 +1370,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 				writeInlineStatus("Paused. Press any key to return.");
 				await new Promise<void>((resolve) => {
-					const wasRaw = process.stdin.isRaw ?? false;
 					const onData = () => {
 						cleanup();
 						resolve();
@@ -3942,6 +3941,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 									const backupPath = createTimestampedBackupPath("codex-sync-prune-backup");
 									await fsPromises.mkdir(dirname(backupPath), { recursive: true });
 									const backupPayload = createSyncPruneBackupPayload(currentAccountsStorage, currentFlaggedStorage);
+									const restoreAccountsSnapshot = structuredClone(currentAccountsStorage);
+									const restoreFlaggedSnapshot = structuredClone(currentFlaggedStorage);
 									// On Windows, mode bits are ignored and the backup relies on the parent directory ACLs.
 									await fsPromises.writeFile(backupPath, `${JSON.stringify(backupPayload, null, 2)}\n`, {
 										encoding: "utf-8",
@@ -3952,15 +3953,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 										backupPath,
 										restore: async () => {
 											const backupRaw = await readPruneBackupFile(backupPath);
-											const parsed = JSON.parse(backupRaw) as {
-												accounts?: unknown;
-												flagged?: unknown;
-											};
-											const normalizedAccounts = normalizeAccountStorage(parsed.accounts);
+											JSON.parse(backupRaw);
+											const normalizedAccounts = normalizeAccountStorage(restoreAccountsSnapshot);
 											if (!normalizedAccounts) {
 												throw new Error("Prune backup account snapshot failed validation.");
 											}
-											const flaggedSnapshot = parsed.flagged;
+											const flaggedSnapshot = restoreFlaggedSnapshot;
 											if (
 												!flaggedSnapshot ||
 												typeof flaggedSnapshot !== "object" ||
@@ -4526,15 +4524,29 @@ while (attempted.size < Math.max(1, accountCount)) {
 										return;
 									}
 
-									storage.activeIndex = best.index;
-									storage.activeIndexByFamily = storage.activeIndexByFamily ?? {};
-									for (const family of MODEL_FAMILIES) {
-										storage.activeIndexByFamily[family] = best.index;
-									}
-									await saveAccounts(storage);
+									let selectedAccount: AccountStorageV3["accounts"][number] | undefined;
+									await withAccountStorageTransaction(async (loadedStorage, persist) => {
+										const workingStorage =
+											loadedStorage ??
+											({
+												version: 3,
+												accounts: [],
+												activeIndex: 0,
+												activeIndexByFamily: {},
+											} satisfies AccountStorageV3);
+										if (!workingStorage.accounts[best.index]) {
+											throw new Error(`Best account ${best.index + 1} changed before selection.`);
+										}
+										workingStorage.activeIndex = best.index;
+										workingStorage.activeIndexByFamily = workingStorage.activeIndexByFamily ?? {};
+										for (const family of MODEL_FAMILIES) {
+											workingStorage.activeIndexByFamily[family] = best.index;
+										}
+										await persist(workingStorage);
+										selectedAccount = workingStorage.accounts[best.index];
+									});
 									invalidateAccountManagerCache();
-									const account = storage.accounts[best.index];
-									const selectedLabel = formatCommandAccountLabel(account, best.index);
+									const selectedLabel = formatCommandAccountLabel(selectedAccount, best.index);
 
 									if (screen) {
 										screen.push(`Compared ${explainability.length} account(s); ${eligible.length} eligible.`, "muted");
@@ -4553,7 +4565,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										return;
 									}
 
-									console.log(`\nSelected best account: ${account?.email ?? `Account ${best.index + 1}`}\n`);
+									console.log(`\nSelected best account: ${selectedAccount?.email ?? `Account ${best.index + 1}`}\n`);
 								} catch (error) {
 									const message = error instanceof Error ? error.message : String(error);
 									if (screen) {

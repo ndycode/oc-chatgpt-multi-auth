@@ -3,7 +3,7 @@ import { createSyncPruneBackupPayload } from "../lib/sync-prune-backup.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 describe("sync prune backup payload", () => {
-	it("omits access tokens from the prune backup payload", () => {
+	it("omits live tokens from the prune backup payload", () => {
 		const storage: AccountStorageV3 = {
 			version: 3,
 			activeIndex: 0,
@@ -31,7 +31,9 @@ describe("sync prune backup payload", () => {
 		});
 
 		expect(payload.accounts.accounts[0]).not.toHaveProperty("accessToken");
+		expect(payload.accounts.accounts[0]).not.toHaveProperty("refreshToken");
 		expect(payload.flagged.accounts[0]).not.toHaveProperty("accessToken");
+		expect(payload.flagged.accounts[0]).not.toHaveProperty("refreshToken");
 	});
 
 	it("deep-clones nested metadata so later mutations do not leak into the snapshot", () => {
@@ -77,10 +79,10 @@ describe("sync prune backup payload", () => {
 		expect(payload.accounts.accounts[0]?.accountTags).toEqual(["work"]);
 		expect(payload.accounts.accounts[0]?.lastSelectedModelByFamily).toEqual({ codex: "gpt-5.4" });
 		expect(payload.flagged.accounts[0]).toMatchObject({
-			refreshToken: "refresh-token",
 			metadata: {
 				source: "flagged",
 			},
 		});
+		expect(payload.flagged.accounts[0]).not.toHaveProperty("refreshToken");
 	});
 });

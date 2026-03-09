@@ -3107,13 +3107,6 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			.mockResolvedValueOnce({ mode: "forecast" })
 			.mockResolvedValueOnce({ mode: "cancel" });
 
-		vi.mocked(storageModule.saveAccounts).mockImplementation(async (nextStorage) => {
-			mockStorage.version = nextStorage.version;
-			mockStorage.activeIndex = nextStorage.activeIndex;
-			mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
-			mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
-		});
-
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		const plugin = (await OpenAIOAuthPlugin({ client: mockClient } as never)) as unknown as PluginType;
@@ -3123,7 +3116,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const authResult = await autoMethod.authorize();
 		expect(authResult.instructions).toBe("Authentication cancelled");
-		expect(vi.mocked(storageModule.saveAccounts)).toHaveBeenCalled();
+		expect(vi.mocked(storageModule.withAccountStorageTransaction)).toHaveBeenCalled();
 		expect(mockStorage.activeIndex).toBe(0);
 		expect(mockStorage.activeIndexByFamily.codex).toBe(0);
 	});
@@ -3148,13 +3141,6 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		vi.mocked(cliModule.promptLoginMode)
 			.mockResolvedValueOnce({ mode: "forecast" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		vi.mocked(storageModule.saveAccounts).mockImplementation(async (nextStorage) => {
-			mockStorage.version = nextStorage.version;
-			mockStorage.activeIndex = nextStorage.activeIndex;
-			mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
-			mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
-		});
-
 		await withInteractiveTerminal(async ({ writeSpy, setRawMode }) => {
 			vi.useFakeTimers();
 			try {
@@ -3200,7 +3186,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		vi.mocked(cliModule.promptLoginMode)
 			.mockResolvedValueOnce({ mode: "forecast" })
 			.mockResolvedValueOnce({ mode: "cancel" });
-		vi.mocked(storageModule.saveAccounts).mockRejectedValueOnce(new Error("save failed"));
+		vi.mocked(storageModule.withAccountStorageTransaction).mockRejectedValueOnce(new Error("save failed"));
 
 		await withInteractiveTerminal(async ({ writeSpy }) => {
 			const mockClient = createMockClient();

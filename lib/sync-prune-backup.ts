@@ -6,8 +6,12 @@ type FlaggedSnapshot<TAccount extends object> = {
 };
 
 function cloneWithoutAccessToken<TAccount extends object>(account: TAccount): TAccount {
-	const clone = structuredClone(account) as TAccount & { accessToken?: unknown };
+	const clone = structuredClone(account) as TAccount & {
+		accessToken?: unknown;
+		refreshToken?: unknown;
+	};
 	delete clone.accessToken;
+	delete clone.refreshToken;
 	return clone as TAccount;
 }
 
