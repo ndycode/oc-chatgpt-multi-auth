@@ -4856,16 +4856,23 @@ while (attempted.size < Math.max(1, accountCount)) {
 											break;
 										}
 										if (typeof menuResult.switchAccountIndex === "number") {
-											const target = workingStorage.accounts[menuResult.switchAccountIndex];
-											if (target) {
-												workingStorage.activeIndex = menuResult.switchAccountIndex;
-												workingStorage.activeIndexByFamily = workingStorage.activeIndexByFamily ?? {};
+											let targetLabel: string | null = null;
+											await withAccountStorageTransaction(async (loadedStorage, persist) => {
+												const txStorage = loadedStorage;
+												if (!txStorage) return;
+												const target = txStorage.accounts[menuResult.switchAccountIndex];
+												if (!target) return;
+												txStorage.activeIndex = menuResult.switchAccountIndex;
+												txStorage.activeIndexByFamily = txStorage.activeIndexByFamily ?? {};
 												for (const family of MODEL_FAMILIES) {
-													workingStorage.activeIndexByFamily[family] = menuResult.switchAccountIndex;
+													txStorage.activeIndexByFamily[family] = menuResult.switchAccountIndex;
 												}
-												await saveAccounts(workingStorage);
+												await persist(txStorage);
+												targetLabel = target.email ?? `Account ${menuResult.switchAccountIndex + 1}`;
+											});
+											if (targetLabel) {
 												invalidateAccountManagerCache();
-												console.log(`\nSet current account: ${target.email ?? `Account ${menuResult.switchAccountIndex + 1}`}.\n`);
+												console.log(`\nSet current account: ${targetLabel}.\n`);
 											}
 											continue;
 										}
