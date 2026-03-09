@@ -3436,6 +3436,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											continue;
 										}
 
+										try {
 										// If we already have a valid cached access token, don't force-refresh.
 										// This avoids flagging accounts where the refresh token has been burned
 										// but the access token is still valid (same behavior as Codex CLI).
@@ -3633,6 +3634,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 											errors += 1;
 											const message = error instanceof Error ? error.message : String(error);
 											emit(i, `error: ${message.slice(0, 160)}`, "danger");
+										}
+										} catch (error) {
+											errors += 1;
+											const message = error instanceof Error ? error.message : String(error);
+											emit(i, `error: ${message.slice(0, 120)}`, "danger");
 										}
 									}
 
