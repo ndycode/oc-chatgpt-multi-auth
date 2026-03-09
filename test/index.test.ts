@@ -3362,10 +3362,10 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 		const tempDir = await fs.mkdtemp(join(tmpdir(), "oc-sync-prune-read-retry-"));
 		const originalReadFile = fs.readFile.bind(fs);
-		let backupReadBlocked = false;
+		let backupReadAttempts = 0;
 		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (path, options) => {
-			if (!backupReadBlocked && String(path).includes("codex-sync-prune-backup")) {
-				backupReadBlocked = true;
+			if (String(path).includes("codex-sync-prune-backup") && backupReadAttempts < 2) {
+				backupReadAttempts += 1;
 				throw Object.assign(new Error("busy"), { code: "EBUSY" });
 			}
 			return originalReadFile(path, options as never);
@@ -3457,9 +3457,129 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 
 			const authResult = await autoMethod.authorize();
 			expect(authResult.instructions).toBe("Authentication cancelled");
-			expect(backupReadBlocked).toBe(true);
+			expect(backupReadAttempts).toBe(2);
+			expect(readFileSpy.mock.calls.filter(([path]) => String(path).includes("codex-sync-prune-backup"))).toHaveLength(3);
 			expect(mockStorage.accounts.map((account) => account.accountId)).toEqual(["org-keep", "org-prune"]);
 		} finally {
+			readFileSpy.mockRestore();
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("fails prune-backup restore after exhausting the Windows lock retry budget", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+		const syncModule = await import("../lib/codex-multi-auth-sync.js");
+		const configModule = await import("../lib/config.js");
+		const confirmModule = await import("../lib/ui/confirm.js");
+
+		const tempDir = await fs.mkdtemp(join(tmpdir(), "oc-sync-prune-read-fail-"));
+		const originalReadFile = fs.readFile.bind(fs);
+		let backupReadAttempts = 0;
+		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (path, options) => {
+			if (String(path).includes("codex-sync-prune-backup")) {
+				backupReadAttempts += 1;
+				throw Object.assign(new Error("busy"), { code: "EBUSY" });
+			}
+			return originalReadFile(path, options as never);
+		});
+		const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+		try {
+			mockStorage.accounts = [
+				{
+					accountId: "org-keep",
+					organizationId: "org-keep",
+					accountIdSource: "org",
+					email: "keep@example.com",
+					refreshToken: "refresh-keep",
+				},
+				{
+					accountId: "org-prune",
+					organizationId: "org-prune",
+					accountIdSource: "org",
+					email: "prune@example.com",
+					refreshToken: "refresh-prune",
+				},
+			];
+			mockStorage.activeIndex = 0;
+			mockStorage.activeIndexByFamily = {};
+
+			vi.mocked(cliModule.promptLoginMode)
+				.mockResolvedValueOnce({ mode: "experimental-sync-now" })
+				.mockResolvedValueOnce({ mode: "cancel" });
+			vi.mocked(cliModule.promptCodexMultiAuthSyncPrune).mockResolvedValueOnce([1]);
+			vi.mocked(configModule.getSyncFromCodexMultiAuthEnabled).mockReturnValue(true);
+			vi.mocked(confirmModule.confirm).mockResolvedValueOnce(true);
+
+			vi.mocked(storageModule.createTimestampedBackupPath).mockImplementation((prefix?: string) =>
+				join(tempDir, `${prefix ?? "codex-backup"}.json`),
+			);
+			vi.mocked(storageModule.exportAccounts).mockImplementation(async (filePath: string) => {
+				await fs.writeFile(
+					filePath,
+					JSON.stringify({
+						version: mockStorage.version,
+						activeIndex: mockStorage.activeIndex,
+						activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+						accounts: mockStorage.accounts.map((account) => ({ ...account })),
+					}),
+					"utf8",
+				);
+			});
+			vi.mocked(syncModule.previewSyncFromCodexMultiAuth)
+				.mockRejectedValueOnce(
+					new syncModule.CodexMultiAuthSyncCapacityError({
+						rootDir: tempDir,
+						accountsPath: join(tempDir, "openai-codex-accounts.json"),
+						scope: "global",
+						currentCount: 2,
+						sourceCount: 2,
+						sourceDedupedTotal: 3,
+						dedupedTotal: 3,
+						maxAccounts: 2,
+						needToRemove: 1,
+						importableNewAccounts: 1,
+						skippedOverlaps: 1,
+						suggestedRemovals: [
+							{
+								index: 1,
+								email: "prune@example.com",
+								accountLabel: "Workspace prune",
+								isCurrentAccount: false,
+								score: 180,
+								reason: "disabled",
+							},
+						],
+					}),
+				)
+				.mockResolvedValueOnce({
+					rootDir: tempDir,
+					accountsPath: join(tempDir, "openai-codex-accounts.json"),
+					scope: "global",
+					imported: 0,
+					skipped: 1,
+					total: 1,
+				});
+
+			const mockClient = createMockClient();
+			const { OpenAIOAuthPlugin } = await import("../index.js");
+			const plugin = (await OpenAIOAuthPlugin({ client: mockClient } as never)) as unknown as PluginType;
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
+
+			const authResult = await autoMethod.authorize();
+			expect(authResult.instructions).toBe("Authentication cancelled");
+			expect(backupReadAttempts).toBe(4);
+			expect(mockStorage.accounts.map((account) => account.accountId)).toEqual(["org-keep"]);
+			expect(
+				consoleSpy.mock.calls.some(([value]) =>
+					String(value).includes("Failed to restore previously pruned accounts after zero-import preview"),
+				),
+			).toBe(true);
+		} finally {
+			consoleSpy.mockRestore();
 			readFileSpy.mockRestore();
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}

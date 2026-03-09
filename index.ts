@@ -3889,21 +3889,33 @@ while (attempted.size < Math.max(1, accountCount)) {
 									return;
 								}
 
+							const PRUNE_BACKUP_READ_RETRY_DELAYS_MS = [100, 250, 500] as const;
+
 							const createSyncPruneBackup = async (): Promise<{
 								backupPath: string;
 								restore: () => Promise<void>;
 							}> => {
 								const readPruneBackupFile = async (backupPath: string): Promise<string> => {
-									try {
-										return await fsPromises.readFile(backupPath, "utf-8");
-									} catch (error) {
-										const code = (error as NodeJS.ErrnoException).code;
-										if (code !== "EBUSY" && code !== "EACCES" && code !== "EPERM") {
-											throw error;
+									const retryableCodes = new Set(["EBUSY", "EACCES", "EPERM"]);
+									for (
+										let attempt = 0;
+										attempt <= PRUNE_BACKUP_READ_RETRY_DELAYS_MS.length;
+										attempt += 1
+									) {
+										try {
+											return await fsPromises.readFile(backupPath, "utf-8");
+										} catch (error) {
+											const code = (error as NodeJS.ErrnoException).code;
+											if (!code || !retryableCodes.has(code) || attempt >= PRUNE_BACKUP_READ_RETRY_DELAYS_MS.length) {
+												throw error;
+											}
+											const delayMs = PRUNE_BACKUP_READ_RETRY_DELAYS_MS[attempt];
+											if (delayMs !== undefined) {
+												await new Promise((resolve) => setTimeout(resolve, delayMs));
+											}
 										}
-										await new Promise((resolve) => setTimeout(resolve, 100));
-										return await fsPromises.readFile(backupPath, "utf-8");
 									}
+									throw new Error("readPruneBackupFile: unexpected retry exit");
 								};
 								const currentAccountsStorage =
 									(await loadAccounts()) ??

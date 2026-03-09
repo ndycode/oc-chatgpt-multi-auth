@@ -131,10 +131,6 @@ function readRawPluginConfig(recoverInvalid = false): RawPluginConfig {
 }
 
 async function readRawPluginConfigAsync(recoverInvalid = false): Promise<RawPluginConfig> {
-	if (!existsSync(CONFIG_PATH)) {
-		return {};
-	}
-
 	try {
 		const fileContent = await fs.readFile(CONFIG_PATH, "utf-8");
 		const normalizedFileContent = stripUtf8Bom(fileContent);
@@ -144,6 +140,10 @@ async function readRawPluginConfigAsync(recoverInvalid = false): Promise<RawPlug
 		}
 		return { ...parsed };
 	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			return {};
+		}
 		if (recoverInvalid) {
 			logWarn(`Failed to read raw plugin config from ${CONFIG_PATH}: ${(error as Error).message}`);
 			return {};

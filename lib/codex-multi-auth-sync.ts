@@ -130,7 +130,7 @@ async function removeNormalizedImportTempDir(
 	tempPath: string,
 	options: NormalizedImportFileOptions,
 ): Promise<void> {
-	const retryableCodes = new Set(["EBUSY", "EAGAIN", "ENOTEMPTY"]);
+	const retryableCodes = new Set(["EBUSY", "EAGAIN", "ENOTEMPTY", "EACCES", "EPERM"]);
 	let lastMessage = "unknown cleanup failure";
 	for (let attempt = 0; attempt <= TEMP_CLEANUP_RETRY_DELAYS_MS.length; attempt += 1) {
 		try {

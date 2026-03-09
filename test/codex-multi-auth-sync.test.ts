@@ -726,7 +726,49 @@ describe("codex-multi-auth sync", () => {
 		}
 	});
 
-	it("fails fast on non-retryable Windows-style temp cleanup errors", async () => {
+	it.each(["EACCES", "EPERM"] as const)(
+		"retries Windows-style %s temp cleanup locks until they clear",
+		async (code) => {
+			const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+			process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+			const globalPath = join(rootDir, "openai-codex-accounts.json");
+			mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+			mockSourceStorageFile(
+				globalPath,
+				JSON.stringify({
+					version: 3,
+					activeIndex: 0,
+					activeIndexByFamily: {},
+					accounts: [{ refreshToken: "sync-refresh", addedAt: 1, lastUsed: 1 }],
+				}),
+			);
+
+			const rmSpy = vi
+				.spyOn(fs.promises, "rm")
+				.mockRejectedValueOnce(Object.assign(new Error("permission denied"), { code }))
+				.mockRejectedValueOnce(Object.assign(new Error("permission denied"), { code }))
+				.mockResolvedValueOnce(undefined);
+			const loggerModule = await import("../lib/logger.js");
+
+			try {
+				const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+				await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+					accountsPath: globalPath,
+					imported: 2,
+					skipped: 0,
+					total: 4,
+				});
+				expect(rmSpy).toHaveBeenCalledTimes(3);
+				expect(vi.mocked(loggerModule.logWarn)).not.toHaveBeenCalledWith(
+					expect.stringContaining("Failed to remove temporary codex sync directory"),
+				);
+			} finally {
+				rmSpy.mockRestore();
+			}
+		},
+	);
+
+	it("fails fast on non-retryable temp cleanup errors", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
 		const globalPath = join(rootDir, "openai-codex-accounts.json");
@@ -743,7 +785,7 @@ describe("codex-multi-auth sync", () => {
 
 		const rmSpy = vi
 			.spyOn(fs.promises, "rm")
-			.mockRejectedValue(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+			.mockRejectedValue(Object.assign(new Error("invalid temp dir"), { code: "EINVAL" }));
 		const loggerModule = await import("../lib/logger.js");
 
 		try {
