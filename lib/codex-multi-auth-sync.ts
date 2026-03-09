@@ -1123,12 +1123,12 @@ async function loadRawCodexMultiAuthOverlapCleanupStorage(
 		throw new Error("Invalid raw storage snapshot for synced overlap cleanup.");
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT" || code === "EBUSY") {
+		if (code === "ENOENT") {
 			return fallback;
 		}
-		if (code === "EACCES" || code === "EPERM") {
+		if (code === "EBUSY" || code === "EACCES" || code === "EPERM") {
 			logWarn(
-				`Permission denied reading raw storage snapshot for synced overlap cleanup (${code}); using transaction snapshot fallback.`,
+				`Failed reading raw storage snapshot for synced overlap cleanup (${code}); using transaction snapshot fallback.`,
 			);
 			return fallback;
 		}

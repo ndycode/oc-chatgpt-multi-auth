@@ -1711,6 +1711,7 @@ describe("codex-multi-auth sync", () => {
 
 	it("falls back to in-memory overlap cleanup state on transient Windows lock errors", async () => {
 		const storageModule = await import("../lib/storage.js");
+		const loggerModule = await import("../lib/logger.js");
 		const persist = vi.fn(async (_next: AccountStorageV3) => {});
 		vi.mocked(storageModule.deduplicateAccounts).mockImplementationOnce((accounts) => {
 			return accounts.length > 1 ? [accounts[1] ?? accounts[0]].filter(Boolean) : accounts;
@@ -1761,6 +1762,9 @@ describe("codex-multi-auth sync", () => {
 		}
 		expect(saved.accounts).toHaveLength(1);
 		expect(saved.accounts[0]?.organizationId).toBe("org-sync");
+		expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
+			expect.stringContaining("raw storage snapshot for synced overlap cleanup (EBUSY)"),
+		);
 	});
 
 	it("limits overlap cleanup to accounts tagged from codex-multi-auth sync", async () => {
