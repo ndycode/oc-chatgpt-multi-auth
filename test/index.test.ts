@@ -3,6 +3,17 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const readlineMocks = vi.hoisted(() => {
+	const question = vi.fn(async () => undefined);
+	const close = vi.fn();
+	const createInterface = vi.fn(() => ({ question, close }));
+	return { question, close, createInterface };
+});
+
+vi.mock("node:readline/promises", () => ({
+	createInterface: readlineMocks.createInterface,
+}));
+
 vi.mock("@opencode-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -503,12 +514,59 @@ const createMockClient = () => ({
 	session: { prompt: vi.fn() },
 });
 
+const withInteractiveTerminal = async (run: (context: {
+	writeSpy: ReturnType<typeof vi.spyOn>;
+	setRawMode: ReturnType<typeof vi.fn>;
+	readSpy: ReturnType<typeof vi.spyOn>;
+}) => Promise<void>) => {
+	const stdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+	const stdinIsRaw = Object.getOwnPropertyDescriptor(process.stdin, "isRaw");
+	const stdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+	const stdoutRows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+	const originalSetRawMode = (process.stdin as NodeJS.ReadStream & { setRawMode?: (value: boolean) => void }).setRawMode;
+	const setRawMode = vi.fn();
+	const writeSpy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+	const readSpy = vi.spyOn(process.stdin, "read").mockReturnValue(null);
+	Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+	Object.defineProperty(process.stdin, "isRaw", { value: false, configurable: true, writable: true });
+	Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+	Object.defineProperty(process.stdout, "rows", { value: 24, configurable: true });
+	(process.stdin as NodeJS.ReadStream & { setRawMode?: (value: boolean) => void }).setRawMode = setRawMode;
+
+	try {
+		await run({ writeSpy, setRawMode, readSpy });
+	} finally {
+		writeSpy.mockRestore();
+		readSpy.mockRestore();
+		if (stdinIsTTY) {
+			Object.defineProperty(process.stdin, "isTTY", stdinIsTTY);
+		} else {
+			delete (process.stdin as NodeJS.ReadStream & { isTTY?: boolean }).isTTY;
+		}
+		if (stdinIsRaw) {
+			Object.defineProperty(process.stdin, "isRaw", stdinIsRaw);
+		} else {
+			delete (process.stdin as NodeJS.ReadStream & { isRaw?: boolean }).isRaw;
+		}
+		if (stdoutIsTTY) {
+			Object.defineProperty(process.stdout, "isTTY", stdoutIsTTY);
+		} else {
+			delete (process.stdout as NodeJS.WriteStream & { isTTY?: boolean }).isTTY;
+		}
+		if (stdoutRows) {
+			Object.defineProperty(process.stdout, "rows", stdoutRows);
+		}
+		(process.stdin as NodeJS.ReadStream & { setRawMode?: (value: boolean) => void }).setRawMode = originalSetRawMode;
+	}
+};
+
 describe("OpenAIOAuthPlugin", () => {
 	let plugin: PluginType;
 	let mockClient: ReturnType<typeof createMockClient>;
 
 	beforeEach(async () => {
 		vi.clearAllMocks();
+		readlineMocks.question.mockResolvedValue(undefined);
 		mockClient = createMockClient();
 
 		mockStorage.accounts = [];
@@ -3068,6 +3126,98 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.activeIndexByFamily.codex).toBe(0);
 	});
 
+	it("renders and auto-closes the forecast operation screen in interactive terminals", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+		const { ANSI } = await import("../lib/ui/ansi.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "org-primary",
+				organizationId: "org-primary",
+				accountIdSource: "org",
+				email: "primary@example.com",
+				refreshToken: "refresh-primary",
+			},
+		];
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = {};
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "forecast" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		vi.mocked(storageModule.saveAccounts).mockImplementation(async (nextStorage) => {
+			mockStorage.version = nextStorage.version;
+			mockStorage.activeIndex = nextStorage.activeIndex;
+			mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+			mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
+		});
+
+		await withInteractiveTerminal(async ({ writeSpy, setRawMode }) => {
+			vi.useFakeTimers();
+			try {
+				const mockClient = createMockClient();
+				const { OpenAIOAuthPlugin } = await import("../index.js");
+				const plugin = (await OpenAIOAuthPlugin({ client: mockClient } as never)) as unknown as PluginType;
+				const autoMethod = plugin.auth.methods[0] as unknown as {
+					authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+				};
+
+				const resultPromise = autoMethod.authorize();
+				await vi.runAllTimersAsync();
+				const authResult = await resultPromise;
+				expect(authResult.instructions).toBe("Authentication cancelled");
+				expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining(ANSI.altScreenOn));
+				expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining(ANSI.altScreenOff));
+				expect(setRawMode).toHaveBeenCalledWith(true);
+				expect(setRawMode).toHaveBeenLastCalledWith(false);
+				expect(readlineMocks.createInterface).not.toHaveBeenCalled();
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	});
+
+	it("closes the interactive operation screen after a failed forecast action", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+		const { ANSI } = await import("../lib/ui/ansi.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "org-primary",
+				organizationId: "org-primary",
+				accountIdSource: "org",
+				email: "primary@example.com",
+				refreshToken: "refresh-primary",
+			},
+		];
+		mockStorage.activeIndex = 0;
+		mockStorage.activeIndexByFamily = {};
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "forecast" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		vi.mocked(storageModule.saveAccounts).mockRejectedValueOnce(new Error("save failed"));
+
+		await withInteractiveTerminal(async ({ writeSpy }) => {
+			const mockClient = createMockClient();
+			const { OpenAIOAuthPlugin } = await import("../index.js");
+			const plugin = (await OpenAIOAuthPlugin({ client: mockClient } as never)) as unknown as PluginType;
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
+
+			const authResult = await autoMethod.authorize();
+			expect(authResult.instructions).toBe("Authentication cancelled");
+			expect(readlineMocks.createInterface).toHaveBeenCalled();
+			expect(readlineMocks.question).toHaveBeenCalled();
+			expect(readlineMocks.close).toHaveBeenCalled();
+			expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining(ANSI.altScreenOn));
+			expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining(ANSI.altScreenOff));
+		});
+	});
+
 	it("restores pruned accounts when sync does not commit after a prune retry", async () => {
 		const cliModule = await import("../lib/cli.js");
 		const storageModule = await import("../lib/storage.js");
@@ -3197,6 +3347,118 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				"org-prune",
 			]);
 		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("retries prune-backup reads after a transient Windows lock", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+		const syncModule = await import("../lib/codex-multi-auth-sync.js");
+		const configModule = await import("../lib/config.js");
+		const confirmModule = await import("../lib/ui/confirm.js");
+
+		const tempDir = await fs.mkdtemp(join(tmpdir(), "oc-sync-prune-read-retry-"));
+		const originalReadFile = fs.readFile.bind(fs);
+		let backupReadBlocked = false;
+		const readFileSpy = vi.spyOn(fs, "readFile").mockImplementation(async (path, options) => {
+			if (!backupReadBlocked && String(path).includes("codex-sync-prune-backup")) {
+				backupReadBlocked = true;
+				throw Object.assign(new Error("busy"), { code: "EBUSY" });
+			}
+			return originalReadFile(path, options as never);
+		});
+
+		try {
+			mockStorage.accounts = [
+				{
+					accountId: "org-keep",
+					organizationId: "org-keep",
+					accountIdSource: "org",
+					email: "keep@example.com",
+					refreshToken: "refresh-keep",
+				},
+				{
+					accountId: "org-prune",
+					organizationId: "org-prune",
+					accountIdSource: "org",
+					email: "prune@example.com",
+					refreshToken: "refresh-prune",
+				},
+			];
+			mockStorage.activeIndex = 0;
+			mockStorage.activeIndexByFamily = {};
+
+			vi.mocked(cliModule.promptLoginMode)
+				.mockResolvedValueOnce({ mode: "experimental-sync-now" })
+				.mockResolvedValueOnce({ mode: "cancel" });
+			vi.mocked(cliModule.promptCodexMultiAuthSyncPrune).mockResolvedValueOnce([1]);
+			vi.mocked(configModule.getSyncFromCodexMultiAuthEnabled).mockReturnValue(true);
+			vi.mocked(confirmModule.confirm).mockResolvedValueOnce(true);
+
+			vi.mocked(storageModule.createTimestampedBackupPath).mockImplementation((prefix?: string) =>
+				join(tempDir, `${prefix ?? "codex-backup"}.json`),
+			);
+			vi.mocked(storageModule.exportAccounts).mockImplementation(async (filePath: string) => {
+				await fs.writeFile(
+					filePath,
+					JSON.stringify({
+						version: mockStorage.version,
+						activeIndex: mockStorage.activeIndex,
+						activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+						accounts: mockStorage.accounts.map((account) => ({ ...account })),
+					}),
+					"utf8",
+				);
+			});
+			vi.mocked(syncModule.previewSyncFromCodexMultiAuth)
+				.mockRejectedValueOnce(
+					new syncModule.CodexMultiAuthSyncCapacityError({
+						rootDir: tempDir,
+						accountsPath: join(tempDir, "openai-codex-accounts.json"),
+						scope: "global",
+						currentCount: 2,
+						sourceCount: 2,
+						sourceDedupedTotal: 3,
+						dedupedTotal: 3,
+						maxAccounts: 2,
+						needToRemove: 1,
+						importableNewAccounts: 1,
+						skippedOverlaps: 1,
+						suggestedRemovals: [
+							{
+								index: 1,
+								email: "prune@example.com",
+								accountLabel: "Workspace prune",
+								isCurrentAccount: false,
+								score: 180,
+								reason: "disabled",
+							},
+						],
+					}),
+				)
+				.mockResolvedValueOnce({
+					rootDir: tempDir,
+					accountsPath: join(tempDir, "openai-codex-accounts.json"),
+					scope: "global",
+					imported: 0,
+					skipped: 1,
+					total: 1,
+				});
+
+			const mockClient = createMockClient();
+			const { OpenAIOAuthPlugin } = await import("../index.js");
+			const plugin = (await OpenAIOAuthPlugin({ client: mockClient } as never)) as unknown as PluginType;
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
+
+			const authResult = await autoMethod.authorize();
+			expect(authResult.instructions).toBe("Authentication cancelled");
+			expect(backupReadBlocked).toBe(true);
+			expect(mockStorage.accounts.map((account) => account.accountId)).toEqual(["org-keep", "org-prune"]);
+		} finally {
+			readFileSpy.mockRestore();
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
 	});

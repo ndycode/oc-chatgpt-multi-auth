@@ -3883,13 +3883,25 @@ while (attempted.size < Math.max(1, accountCount)) {
 									return;
 								}
 
-								const createSyncPruneBackup = async (): Promise<{
-									backupPath: string;
-									restore: () => Promise<void>;
-								}> => {
-									const currentAccountsStorage =
-										(await loadAccounts()) ??
-										({
+							const createSyncPruneBackup = async (): Promise<{
+								backupPath: string;
+								restore: () => Promise<void>;
+							}> => {
+								const readPruneBackupFile = async (backupPath: string): Promise<string> => {
+									try {
+										return await fsPromises.readFile(backupPath, "utf-8");
+									} catch (error) {
+										const code = (error as NodeJS.ErrnoException).code;
+										if (code !== "EBUSY" && code !== "EACCES" && code !== "EPERM") {
+											throw error;
+										}
+										await new Promise((resolve) => setTimeout(resolve, 100));
+										return await fsPromises.readFile(backupPath, "utf-8");
+									}
+								};
+								const currentAccountsStorage =
+									(await loadAccounts()) ??
+									({
 											version: 3,
 											accounts: [],
 											activeIndex: 0,
@@ -3908,7 +3920,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 									return {
 										backupPath,
 										restore: async () => {
-											const backupRaw = await fsPromises.readFile(backupPath, "utf-8");
+											const backupRaw = await readPruneBackupFile(backupPath);
 											const parsed = JSON.parse(backupRaw) as {
 												accounts?: unknown;
 												flagged?: unknown;
