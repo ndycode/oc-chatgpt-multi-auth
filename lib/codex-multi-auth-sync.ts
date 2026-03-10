@@ -1177,7 +1177,7 @@ export function getCodexMultiAuthCapacityErrorMessage(
 	if (sourceExceedsCapacityWithoutLocalRelief(details)) {
 		return (
 			`Sync source alone exceeds the maximum of ${details.maxAccounts} accounts ` +
-			`(${details.sourceDedupedTotal} deduped source accounts). Reduce the source set or raise ${SYNC_MAX_ACCOUNTS_OVERRIDE_ENV}.`
+			`(${details.sourceDedupedTotal} deduped source accounts). Reduce the source set.`
 		);
 	}
 	return (
