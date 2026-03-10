@@ -1,5 +1,5 @@
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { promises as fs, readFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { PluginConfig } from "./types.js";
 import {
@@ -16,6 +16,7 @@ const TUI_GLYPH_MODES = new Set(["ascii", "unicode", "auto"]);
 const REQUEST_TRANSFORM_MODES = new Set(["native", "legacy"]);
 const UNSUPPORTED_CODEX_POLICIES = new Set(["strict", "fallback"]);
 const RETRY_PROFILES = new Set(["conservative", "balanced", "aggressive"]);
+let configMutationMutex: Promise<void> = Promise.resolve();
 
 export type UnsupportedCodexPolicy = "strict" | "fallback";
 
@@ -111,7 +112,39 @@ function stripUtf8Bom(content: string): string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object";
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+type RawPluginConfig = Record<string, unknown>;
+
+function withConfigMutationLock<T>(fn: () => Promise<T>): Promise<T> {
+	const previous = configMutationMutex;
+	let release: () => void;
+	configMutationMutex = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return previous.then(fn).finally(() => release());
+}
+
+async function renameConfigWithWindowsRetry(sourcePath: string, destinationPath: string): Promise<void> {
+	let lastError: NodeJS.ErrnoException | null = null;
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		try {
+			await fs.rename(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (process.platform === "win32" && (code === "EPERM" || code === "EBUSY")) {
+				lastError = error as NodeJS.ErrnoException;
+				await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
+				continue;
+			}
+			throw error;
+		}
+	}
+	if (lastError) {
+		throw lastError;
+	}
 }
 
 /**
@@ -500,4 +533,63 @@ export function getStreamStallTimeoutMs(pluginConfig: PluginConfig): number {
 		45_000,
 		{ min: 1_000 },
 	);
+}
+
+async function savePluginConfigMutation(
+	mutate: (current: RawPluginConfig) => RawPluginConfig,
+): Promise<void> {
+	await withConfigMutationLock(async () => {
+		await fs.mkdir(dirname(CONFIG_PATH), { recursive: true });
+		const current = existsSync(CONFIG_PATH)
+			? await (async () => {
+				const raw = stripUtf8Bom(await fs.readFile(CONFIG_PATH, "utf-8"));
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(raw) as unknown;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new Error(`Invalid JSON in config file ${CONFIG_PATH}: ${message}`);
+				}
+				if (!isRecord(parsed)) {
+					throw new Error(`Config file must contain a JSON object: ${CONFIG_PATH}`);
+				}
+				return { ...parsed };
+			})()
+			: {};
+		const next = mutate(current);
+		const tempPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+		try {
+			await fs.writeFile(tempPath, `${JSON.stringify(next, null, 2)}\n`, {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
+			await renameConfigWithWindowsRetry(tempPath, CONFIG_PATH);
+		} catch (error) {
+			try {
+				await fs.unlink(tempPath);
+			} catch {
+				// Best effort cleanup only.
+			}
+			throw error;
+		}
+	});
+}
+
+export function getSyncFromCodexMultiAuthEnabled(pluginConfig: PluginConfig): boolean {
+	return pluginConfig.experimental?.syncFromCodexMultiAuth?.enabled === true;
+}
+
+export async function setSyncFromCodexMultiAuthEnabled(enabled: boolean): Promise<void> {
+	await savePluginConfigMutation((current) => {
+		const experimental = isRecord(current.experimental) ? { ...current.experimental } : {};
+		const syncSettings = isRecord(experimental.syncFromCodexMultiAuth)
+			? { ...experimental.syncFromCodexMultiAuth }
+			: {};
+		syncSettings.enabled = enabled;
+		experimental.syncFromCodexMultiAuth = syncSettings;
+		return {
+			...current,
+			experimental,
+		};
+	});
 }
