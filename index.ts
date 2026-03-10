@@ -3422,11 +3422,21 @@ while (attempted.size < Math.max(1, accountCount)) {
 								);
 								const restoreAccountsSnapshot = structuredClone(currentAccountsStorage);
 								const restoreFlaggedSnapshot = structuredClone(currentFlaggedStorage);
-								await fsPromises.writeFile(backupPath, `${JSON.stringify(backupPayload, null, 2)}\n`, {
-									encoding: "utf-8",
-									mode: 0o600,
-									flag: "wx",
-								});
+								const tempBackupPath = `${backupPath}.${Date.now()}.tmp`;
+								try {
+									await fsPromises.writeFile(tempBackupPath, `${JSON.stringify(backupPayload, null, 2)}\n`, {
+										encoding: "utf-8",
+										mode: 0o600,
+									});
+									await fsPromises.rename(tempBackupPath, backupPath);
+								} catch (error) {
+									try {
+										await fsPromises.unlink(tempBackupPath);
+									} catch {
+										// best-effort cleanup
+									}
+									throw error;
+								}
 								return {
 									backupPath,
 									restore: async () => {

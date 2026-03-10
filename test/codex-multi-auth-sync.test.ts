@@ -1046,18 +1046,12 @@ describe("codex-multi-auth sync", () => {
 				activeIndexByFamily: {},
 				accounts: [
 					{
-						accountId: "org-shared-a",
-						organizationId: "org-shared-a",
-						accountIdSource: "org",
 						email: "shared@example.com",
 						refreshToken: "rt-shared-a",
 						addedAt: 1,
 						lastUsed: 1,
 					},
 					{
-						accountId: "org-shared-b",
-						organizationId: "org-shared-b",
-						accountIdSource: "org",
 						email: "shared@example.com",
 						refreshToken: "rt-shared-b",
 						addedAt: 2,
@@ -1083,9 +1077,6 @@ describe("codex-multi-auth sync", () => {
 			activeIndexByFamily: {},
 			accounts: [
 				{
-					accountId: "org-existing",
-					organizationId: "org-existing",
-					accountIdSource: "org",
 					email: "shared@example.com",
 					refreshToken: "rt-existing",
 					addedAt: 10,
@@ -1099,25 +1090,21 @@ describe("codex-multi-auth sync", () => {
 			const raw = await fs.promises.readFile(filePath, "utf8");
 			const parsed = JSON.parse(raw) as { accounts: Array<{ email?: string }> };
 			expect(parsed.accounts.map((account) => account.email)).toEqual([
-				"shared@example.com",
-				"shared@example.com",
 				"new@example.com",
 			]);
-			return { imported: 3, skipped: 0, total: 3 };
+			return { imported: 1, skipped: 0, total: 1 };
 		});
 		vi.mocked(storageModule.importAccounts).mockImplementationOnce(async (filePath, _options, prepare) => {
 			const raw = await fs.promises.readFile(filePath, "utf8");
 			const parsed = JSON.parse(raw) as AccountStorageV3;
 			const prepared = prepare ? prepare(parsed, currentStorage) : parsed;
 			expect(prepared.accounts.map((account) => account.email)).toEqual([
-				"shared@example.com",
-				"shared@example.com",
 				"new@example.com",
 			]);
 			return {
-				imported: 3,
+				imported: 1,
 				skipped: 0,
-				total: 3,
+				total: 1,
 				backupStatus: "created",
 				backupPath: "/tmp/filtered-sync-backup.json",
 			};
@@ -1127,14 +1114,14 @@ describe("codex-multi-auth sync", () => {
 
 		await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
 			accountsPath: globalPath,
-			imported: 3,
-			total: 3,
+			imported: 1,
+			total: 1,
 			skipped: 0,
 		});
 		await expect(syncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
 			accountsPath: globalPath,
-			imported: 3,
-			total: 3,
+			imported: 1,
+			total: 1,
 			skipped: 0,
 		});
 	});
@@ -1701,9 +1688,6 @@ describe("codex-multi-auth sync", () => {
 							lastUsed: 5,
 						},
 						{
-							accountId: "org-sync",
-							organizationId: "org-sync",
-							accountIdSource: "org",
 							accountTags: ["codex-multi-auth-sync"],
 							email: "shared@example.com",
 							refreshToken: "rt-sync",
@@ -1719,11 +1703,16 @@ describe("codex-multi-auth sync", () => {
 		const { cleanupCodexMultiAuthSyncedOverlaps } = await import("../lib/codex-multi-auth-sync.js");
 		await expect(cleanupCodexMultiAuthSyncedOverlaps()).resolves.toEqual({
 			before: 2,
-			after: 2,
-			removed: 0,
+			after: 1,
+			removed: 1,
 			updated: 0,
 		});
-		expect(persist).not.toHaveBeenCalled();
+		const saved = persist.mock.calls[0]?.[0];
+		if (!saved) {
+			throw new Error("Expected persisted overlap cleanup result");
+		}
+		expect(saved.accounts).toHaveLength(1);
+		expect(saved.accounts[0]?.accountId).toBe("org-local");
 	});
 
 	it("remaps active indices when synced overlap cleanup reorders accounts", async () => {
