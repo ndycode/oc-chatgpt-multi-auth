@@ -1106,6 +1106,11 @@ export async function loadFlaggedAccounts(): Promise<FlaggedAccountStorageV1> {
 	return withStorageLock(async () => loadFlaggedAccountsUnlocked());
 }
 
+/**
+ * Runs `handler` while the storage lock is held.
+ * Do not call lock-acquiring storage helpers from inside `handler`;
+ * use only `persist` for writes while the transaction is active.
+ */
 export async function withFlaggedAccountsTransaction<T>(
 	handler: (
 		current: FlaggedAccountStorageV1,
