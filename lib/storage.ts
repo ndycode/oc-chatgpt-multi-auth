@@ -1034,13 +1034,15 @@ async function saveFlaggedAccountsUnlocked(storage: FlaggedAccountStorageV1): Pr
 	}
 }
 
-async function loadFlaggedAccountsUnlocked(): Promise<FlaggedAccountStorageV1> {
+async function loadFlaggedAccountsUnlocked(
+	accountsSnapshot?: AccountStorageV3 | null,
+): Promise<FlaggedAccountStorageV1> {
 	const path = getFlaggedAccountsPath();
 	const empty: FlaggedAccountStorageV1 = { version: 1, accounts: [] };
 	const removeOrphanedFlaggedAccounts = async (
 		storage: FlaggedAccountStorageV1,
 	): Promise<FlaggedAccountStorageV1> => {
-		const accounts = await loadAccountsInternal(saveAccountsUnlocked);
+		const accounts = accountsSnapshot ?? (await loadAccountsInternal(saveAccountsUnlocked));
 		if (!accounts) {
 			return storage;
 		}
@@ -1127,10 +1129,13 @@ export async function loadAccountAndFlaggedStorageSnapshot(): Promise<{
 	accounts: AccountStorageV3 | null;
 	flagged: FlaggedAccountStorageV1;
 }> {
-	return withStorageLock(async () => ({
-		accounts: await loadAccountsInternal(saveAccountsUnlocked),
-		flagged: await loadFlaggedAccountsUnlocked(),
-	}));
+	return withStorageLock(async () => {
+		const accounts = await loadAccountsInternal(saveAccountsUnlocked);
+		return {
+			accounts,
+			flagged: await loadFlaggedAccountsUnlocked(accounts),
+		};
+	});
 }
 
 export async function saveFlaggedAccounts(storage: FlaggedAccountStorageV1): Promise<void> {
