@@ -555,6 +555,8 @@ const withInteractiveTerminal = async (run: (context: {
 		}
 		if (stdoutRows) {
 			Object.defineProperty(process.stdout, "rows", stdoutRows);
+		} else {
+			delete (process.stdout as NodeJS.WriteStream & { rows?: number }).rows;
 		}
 		(process.stdin as NodeJS.ReadStream & { setRawMode?: (value: boolean) => void }).setRawMode = originalSetRawMode;
 	}
