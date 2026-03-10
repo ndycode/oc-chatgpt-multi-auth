@@ -115,7 +115,6 @@ import {
 	withAccountStorageTransaction,
 	clearAccounts,
 	setStoragePath,
-	backupRawAccountsFile,
 	exportAccounts,
 	importAccounts,
 	previewImportAccounts,
@@ -3361,6 +3360,14 @@ while (attempted.size < Math.max(1, accountCount)) {
 								organizationId?: string;
 								accountId?: string;
 							};
+							type SyncRemovalSuggestion = SyncRemovalTarget & {
+								index: number;
+								email?: string;
+								accountLabel?: string;
+								isCurrentAccount: boolean;
+								score: number;
+								reason: string;
+							};
 
 							const getSyncRemovalTargetKey = (target: SyncRemovalTarget): string => {
 								return `${target.organizationId ?? ""}|${target.accountId ?? ""}|${target.refreshToken}`;
@@ -3391,12 +3398,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 									const message = error instanceof Error ? error.message : String(error);
 									console.log(`\nFailed to update sync setting: ${message}\n`);
 								}
-							};
-
-							const createMaintenanceAccountsBackup = async (prefix: string): Promise<string> => {
-								const backupPath = createTimestampedBackupPath(prefix);
-								await backupRawAccountsFile(backupPath, true);
-								return backupPath;
 							};
 
 							const createSyncPruneBackup = async (): Promise<{
@@ -3534,14 +3535,27 @@ while (attempted.size < Math.max(1, accountCount)) {
 								});
 
 								if (removedTargets.length > 0) {
-									const removedRefreshTokens = new Set(
-										removedTargets.map((entry) => entry.account.refreshToken),
+									const removedFlaggedKeys = new Set(
+										removedTargets.map((entry) =>
+											getSyncRemovalTargetKey({
+												refreshToken: entry.account.refreshToken,
+												organizationId: entry.account.organizationId,
+												accountId: entry.account.accountId,
+											}),
+										),
 									);
 									await withFlaggedAccountsTransaction(async (currentFlaggedStorage, persist) => {
 										await persist({
 											version: 1,
 											accounts: currentFlaggedStorage.accounts.filter(
-												(flagged) => !removedRefreshTokens.has(flagged.refreshToken),
+												(flagged) =>
+													!removedFlaggedKeys.has(
+														getSyncRemovalTargetKey({
+															refreshToken: flagged.refreshToken,
+															organizationId: flagged.organizationId,
+															accountId: flagged.accountId,
+														}),
+													),
 											),
 										});
 									});
@@ -3549,35 +3563,31 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 							};
 
-							const buildSyncRemovalPlan = async (indexes: number[]): Promise<{
+							const buildSyncRemovalPlan = (
+								indexes: number[],
+								suggestions: SyncRemovalSuggestion[],
+							): {
 								previewLines: string[];
 								targets: SyncRemovalTarget[];
-							}> => {
-								const currentStorage =
-									(await loadAccounts()) ??
-									({
-										version: 3,
-										accounts: [],
-										activeIndex: 0,
-										activeIndexByFamily: {},
-									} satisfies AccountStorageV3);
+							} => {
+								const byIndex = new Map(suggestions.map((suggestion) => [suggestion.index, suggestion]));
 								const candidates = [...indexes]
 									.sort((left, right) => left - right)
 									.map((index) => {
-										const account = currentStorage.accounts[index];
-										if (!account) {
+										const suggestion = byIndex.get(index);
+										if (!suggestion) {
 											throw new Error(
 												`Selected account ${index + 1} changed before confirmation. Re-run sync and confirm again.`,
 											);
 										}
-										const label = account.email ?? account.accountLabel ?? `Account ${index + 1}`;
-										const currentSuffix = index === currentStorage.activeIndex ? " | current" : "";
+										const label = suggestion.email ?? suggestion.accountLabel ?? `Account ${index + 1}`;
+										const currentSuffix = suggestion.isCurrentAccount ? " | current" : "";
 										return {
 											previewLine: `${index + 1}. ${label}${currentSuffix}`,
 											target: {
-												refreshToken: account.refreshToken,
-												organizationId: account.organizationId,
-												accountId: account.accountId,
+												refreshToken: suggestion.refreshToken,
+												organizationId: suggestion.organizationId,
+												accountId: suggestion.accountId,
 											} satisfies SyncRemovalTarget,
 										};
 									});
@@ -3666,7 +3676,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 												console.log("Sync cancelled.\n");
 												return;
 											}
-											const removalPlan = await buildSyncRemovalPlan(indexesToRemove);
+											const removalPlan = buildSyncRemovalPlan(
+												indexesToRemove,
+												details.suggestedRemovals as SyncRemovalSuggestion[],
+											);
 											console.log("Dry run removal:");
 											for (const line of removalPlan.previewLines) {
 												console.log(`  ${line}`);
@@ -3701,6 +3714,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							};
 
 							const runCodexMultiAuthOverlapCleanup = async (): Promise<void> => {
+								let backupPath: string | undefined;
 								try {
 									const preview = await previewCodexMultiAuthSyncedOverlapCleanup();
 									if (preview.removed <= 0 && preview.updated <= 0) {
@@ -3717,8 +3731,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 										console.log("\nCleanup cancelled.\n");
 										return;
 									}
-									const backupPath = await createMaintenanceAccountsBackup("codex-maintenance-overlap-backup");
-									const result = await cleanupCodexMultiAuthSyncedOverlaps();
+									backupPath = createTimestampedBackupPath("codex-maintenance-overlap-backup");
+									const result = await cleanupCodexMultiAuthSyncedOverlaps(backupPath);
 									invalidateAccountManagerCache();
 									console.log("");
 									console.log("Cleanup complete.");
@@ -3730,7 +3744,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 									console.log("");
 								} catch (error) {
 									const message = error instanceof Error ? error.message : String(error);
-									console.log(`\nCleanup failed: ${message}\n`);
+									const backupHint = backupPath ? `\nBackup: ${backupPath}` : "";
+									console.log(`\nCleanup failed: ${message}${backupHint}\n`);
 								}
 							};
 

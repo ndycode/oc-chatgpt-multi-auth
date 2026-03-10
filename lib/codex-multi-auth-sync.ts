@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, promises as fs } from "node:fs";
 import { homedir } from "node:os";
-import { join, win32 } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { ACCOUNT_LIMITS } from "./constants.js";
 import { logWarn } from "./logger.js";
 import {
@@ -68,6 +68,9 @@ export interface CodexMultiAuthSyncCapacityDetails extends CodexMultiAuthResolve
 		index: number;
 		email?: string;
 		accountLabel?: string;
+		refreshToken: string;
+		organizationId?: string;
+		accountId?: string;
 		isCurrentAccount: boolean;
 		score: number;
 		reason: string;
@@ -437,10 +440,6 @@ function filterSourceAccountsAgainstExistingEmails(
 	return {
 		...sourceStorage,
 		accounts: deduplicateSourceAccountsByEmail(sourceStorage.accounts).filter((account) => {
-			const normalizedEmail = normalizeIdentity(account.email);
-			if (normalizedEmail && existingState.emails.has(normalizedEmail)) {
-				return false;
-			}
 			const organizationId = normalizeIdentity(account.organizationId);
 			if (organizationId) {
 				return !existingState.organizationIds.has(organizationId);
@@ -452,6 +451,10 @@ function filterSourceAccountsAgainstExistingEmails(
 			const refreshToken = normalizeTrimmedIdentity(account.refreshToken);
 			if (refreshToken && existingState.refreshTokens.has(refreshToken)) {
 				return false;
+			}
+			const normalizedEmail = normalizeIdentity(account.email);
+			if (normalizedEmail) {
+				return !existingState.emails.has(normalizedEmail);
 			}
 			return true;
 		}),
@@ -516,6 +519,9 @@ function computeSyncCapacityDetails(
 				index,
 				email: account.email,
 				accountLabel: account.accountLabel,
+				refreshToken: account.refreshToken,
+				organizationId: account.organizationId,
+				accountId: account.accountId,
 				isCurrentAccount,
 				enabled: account.enabled !== false,
 				matchesSource,
@@ -535,10 +541,13 @@ function computeSyncCapacityDetails(
 			return left.index - right.index;
 		})
 		.slice(0, Math.max(5, dedupedTotal - maxAccounts))
-		.map(({ index, email, accountLabel, isCurrentAccount, score, reason }) => ({
+		.map(({ index, email, accountLabel, refreshToken, organizationId, accountId, isCurrentAccount, score, reason }) => ({
 			index,
 			email,
 			accountLabel,
+			refreshToken,
+			organizationId,
+			accountId,
 			isCurrentAccount,
 			score,
 			reason,
@@ -1123,13 +1132,13 @@ function buildCodexMultiAuthOverlapCleanupPlan(existing: AccountStorageV3): {
 	const removed = Math.max(0, before - after);
 	const originalAccountsByKey = new Map<string, AccountStorageV3["accounts"][number]>();
 	for (const account of existing.accounts) {
-		const key = account.organizationId ?? account.accountId ?? account.refreshToken;
+		const key = toCleanupIdentityKeys(account)[0];
 		if (key) {
 			originalAccountsByKey.set(key, account);
 		}
 	}
 	const updated = normalized.accounts.reduce((count, account) => {
-		const key = account.organizationId ?? account.accountId ?? account.refreshToken;
+		const key = toCleanupIdentityKeys(account)[0];
 		if (!key) return count;
 		const original = originalAccountsByKey.get(key);
 		if (!original) return count;
@@ -1200,7 +1209,9 @@ export async function previewCodexMultiAuthSyncedOverlapCleanup(): Promise<Codex
 	});
 }
 
-export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiAuthCleanupResult> {
+export async function cleanupCodexMultiAuthSyncedOverlaps(
+	backupPath?: string,
+): Promise<CodexMultiAuthCleanupResult> {
 	return withAccountStorageTransaction(async (current, persist) => {
 		const fallback = current ?? {
 			version: 3 as const,
@@ -1208,6 +1219,14 @@ export async function cleanupCodexMultiAuthSyncedOverlaps(): Promise<CodexMultiA
 			activeIndex: 0,
 			activeIndexByFamily: {},
 		};
+		if (backupPath) {
+			await fs.mkdir(dirname(backupPath), { recursive: true });
+			await fs.writeFile(backupPath, `${JSON.stringify(fallback, null, 2)}\n`, {
+				encoding: "utf-8",
+				mode: 0o600,
+				flag: "wx",
+			});
+		}
 		const plan = buildCodexMultiAuthOverlapCleanupPlan(fallback);
 		if (plan.nextStorage) {
 			await persist(plan.nextStorage);

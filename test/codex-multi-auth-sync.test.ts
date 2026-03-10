@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { join } from "node:path";
+import { join, win32 as pathWin32 } from "node:path";
 import { findProjectRoot, getProjectStorageKey } from "../lib/storage/paths.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
@@ -197,8 +197,8 @@ describe("codex-multi-auth sync", () => {
 	it("prefers a project-scoped codex-multi-auth accounts file when present", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
-		const projectRoot = findProjectRoot(process.cwd()) ?? process.cwd();
-		const projectKey = getProjectStorageKey(projectRoot);
+		const projectKey = "fixed-test-project-key";
+		vi.spyOn(await import("../lib/storage/paths.js"), "getProjectStorageKey").mockReturnValue(projectKey);
 		const projectPath = join(rootDir, "projects", projectKey, "openai-codex-accounts.json");
 		const globalPath = join(rootDir, "openai-codex-accounts.json");
 		const repoPackageJson = join(process.cwd(), "package.json");
@@ -240,7 +240,7 @@ describe("codex-multi-auth sync", () => {
 	it("probes the DevTools fallback root when no env override is set", async () => {
 		process.env.USERPROFILE = "C:\\Users\\tester";
 		process.env.HOME = "C:\\Users\\tester";
-		const devToolsGlobalPath = join(
+		const devToolsGlobalPath = pathWin32.join(
 			"C:\\Users\\tester",
 			"DevTools",
 			"config",
@@ -252,14 +252,14 @@ describe("codex-multi-auth sync", () => {
 
 		const { getCodexMultiAuthSourceRootDir } = await import("../lib/codex-multi-auth-sync.js");
 		expect(getCodexMultiAuthSourceRootDir()).toBe(
-			join("C:\\Users\\tester", "DevTools", "config", "codex", "multi-auth"),
+			pathWin32.join("C:\\Users\\tester", "DevTools", "config", "codex", "multi-auth"),
 		);
 	});
 
 	it("prefers the DevTools root over ~/.codex when CODEX_HOME is not set", async () => {
 		process.env.USERPROFILE = "C:\\Users\\tester";
 		process.env.HOME = "C:\\Users\\tester";
-		const devToolsGlobalPath = join(
+		const devToolsGlobalPath = pathWin32.join(
 			"C:\\Users\\tester",
 			"DevTools",
 			"config",
@@ -267,7 +267,7 @@ describe("codex-multi-auth sync", () => {
 			"multi-auth",
 			"openai-codex-accounts.json",
 		);
-		const dotCodexGlobalPath = join(
+		const dotCodexGlobalPath = pathWin32.join(
 			"C:\\Users\\tester",
 			".codex",
 			"multi-auth",
@@ -280,7 +280,7 @@ describe("codex-multi-auth sync", () => {
 
 		const { getCodexMultiAuthSourceRootDir } = await import("../lib/codex-multi-auth-sync.js");
 		expect(getCodexMultiAuthSourceRootDir()).toBe(
-			join("C:\\Users\\tester", "DevTools", "config", "codex", "multi-auth"),
+			pathWin32.join("C:\\Users\\tester", "DevTools", "config", "codex", "multi-auth"),
 		);
 	});
 
@@ -288,13 +288,13 @@ describe("codex-multi-auth sync", () => {
 		process.env.USERPROFILE = "C:\\Users\\tester";
 		process.env.HOME = "C:\\Users\\tester";
 		process.env.CODEX_HOME = "C:\\Users\\tester\\.codex";
-		const walOnlyPath = join(
+		const walOnlyPath = pathWin32.join(
 			"C:\\Users\\tester",
 			".codex",
 			"multi-auth",
 			"openai-codex-accounts.json.wal",
 		);
-		const laterRealJson = join(
+		const laterRealJson = pathWin32.join(
 			"C:\\Users\\tester",
 			"DevTools",
 			"config",
@@ -309,7 +309,7 @@ describe("codex-multi-auth sync", () => {
 
 		const { getCodexMultiAuthSourceRootDir } = await import("../lib/codex-multi-auth-sync.js");
 		expect(getCodexMultiAuthSourceRootDir()).toBe(
-			join("C:\\Users\\tester", "DevTools", "config", "codex", "multi-auth"),
+			pathWin32.join("C:\\Users\\tester", "DevTools", "config", "codex", "multi-auth"),
 		);
 	});
 
@@ -588,6 +588,9 @@ describe("codex-multi-auth sync", () => {
 
 	it("uses the locked transaction snapshot for overlap preview", async () => {
 		const storageModule = await import("../lib/storage.js");
+		vi.mocked(storageModule.deduplicateAccounts).mockImplementationOnce((accounts) =>
+			accounts.length > 1 ? [accounts[0] ?? accounts[1]].filter(Boolean) : accounts,
+		);
 		vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
 			handler(
 				{
@@ -622,8 +625,8 @@ describe("codex-multi-auth sync", () => {
 		const { previewCodexMultiAuthSyncedOverlapCleanup } = await import("../lib/codex-multi-auth-sync.js");
 		await expect(previewCodexMultiAuthSyncedOverlapCleanup()).resolves.toEqual({
 			before: 2,
-			after: 1,
-			removed: 1,
+			after: 2,
+			removed: 0,
 			updated: 0,
 		});
 		expect(storageModule.withAccountStorageTransaction).toHaveBeenCalledTimes(1);
@@ -1096,21 +1099,25 @@ describe("codex-multi-auth sync", () => {
 			const raw = await fs.promises.readFile(filePath, "utf8");
 			const parsed = JSON.parse(raw) as { accounts: Array<{ email?: string }> };
 			expect(parsed.accounts.map((account) => account.email)).toEqual([
+				"shared@example.com",
+				"shared@example.com",
 				"new@example.com",
 			]);
-			return { imported: 1, skipped: 0, total: 1 };
+			return { imported: 3, skipped: 0, total: 3 };
 		});
 		vi.mocked(storageModule.importAccounts).mockImplementationOnce(async (filePath, _options, prepare) => {
 			const raw = await fs.promises.readFile(filePath, "utf8");
 			const parsed = JSON.parse(raw) as AccountStorageV3;
 			const prepared = prepare ? prepare(parsed, currentStorage) : parsed;
 			expect(prepared.accounts.map((account) => account.email)).toEqual([
+				"shared@example.com",
+				"shared@example.com",
 				"new@example.com",
 			]);
 			return {
-				imported: 1,
+				imported: 3,
 				skipped: 0,
-				total: 1,
+				total: 3,
 				backupStatus: "created",
 				backupPath: "/tmp/filtered-sync-backup.json",
 			};
@@ -1120,14 +1127,14 @@ describe("codex-multi-auth sync", () => {
 
 		await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
 			accountsPath: globalPath,
-			imported: 1,
-			total: 1,
+			imported: 3,
+			total: 3,
 			skipped: 0,
 		});
 		await expect(syncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
 			accountsPath: globalPath,
-			imported: 1,
-			total: 1,
+			imported: 3,
+			total: 3,
 			skipped: 0,
 		});
 	});
@@ -1712,16 +1719,11 @@ describe("codex-multi-auth sync", () => {
 		const { cleanupCodexMultiAuthSyncedOverlaps } = await import("../lib/codex-multi-auth-sync.js");
 		await expect(cleanupCodexMultiAuthSyncedOverlaps()).resolves.toEqual({
 			before: 2,
-			after: 1,
-			removed: 1,
+			after: 2,
+			removed: 0,
 			updated: 0,
 		});
-		const saved = persist.mock.calls[0]?.[0];
-		if (!saved) {
-			throw new Error("Expected persisted overlap cleanup result");
-		}
-		expect(saved.accounts).toHaveLength(1);
-		expect(saved.accounts[0]?.accountId).toBe("org-local");
+		expect(persist).not.toHaveBeenCalled();
 	});
 
 	it("remaps active indices when synced overlap cleanup reorders accounts", async () => {
