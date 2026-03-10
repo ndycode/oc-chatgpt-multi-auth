@@ -310,29 +310,38 @@ const mockFlaggedStorage = {
 	}>,
 };
 
+const cloneAccount = (account: (typeof mockStorage.accounts)[number]) => structuredClone(account);
+
+const cloneMockStorage = () => ({
+	...mockStorage,
+	accounts: mockStorage.accounts.map(cloneAccount),
+	activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+});
+
 vi.mock("../lib/storage.js", () => ({
 	getStoragePath: () => "/mock/path/accounts.json",
-	loadAccounts: vi.fn(async () => mockStorage),
-	saveAccounts: vi.fn(async () => {}),
+	loadAccounts: vi.fn(async () => cloneMockStorage()),
+	saveAccounts: vi.fn(async (nextStorage: typeof mockStorage) => {
+		mockStorage.version = nextStorage.version;
+		mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+		mockStorage.activeIndex = nextStorage.activeIndex;
+		mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+	}),
 	withAccountStorageTransaction: vi.fn(
-		async (
+		async <T>(
 			callback: (
 				loadedStorage: typeof mockStorage,
 				persist: (nextStorage: typeof mockStorage) => Promise<void>,
-			) => Promise<void>,
+			) => Promise<T>,
 		) => {
-			const loadedStorage = {
-				...mockStorage,
-				accounts: mockStorage.accounts.map((account) => ({ ...account })),
-				activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
-			};
+			const loadedStorage = cloneMockStorage();
 			const persist = async (nextStorage: typeof mockStorage) => {
 				mockStorage.version = nextStorage.version;
-				mockStorage.accounts = nextStorage.accounts.map((account) => ({ ...account }));
+				mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
 				mockStorage.activeIndex = nextStorage.activeIndex;
 				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 			};
-			await callback(loadedStorage, persist);
+			return await callback(loadedStorage, persist);
 		},
 	),
 	loadAccountAndFlaggedStorageSnapshot: vi.fn(async () => ({
@@ -536,6 +545,7 @@ type PluginType = {
 		"codex-list": OptionalToolExecute<{ tag?: string }>;
 		"codex-switch": OptionalToolExecute<{ index?: number }>;
 		"codex-status": ToolExecute;
+		"codex-limits": ToolExecute;
 		"codex-metrics": ToolExecute;
 		"codex-help": ToolExecute<{ topic?: string }>;
 		"codex-setup": OptionalToolExecute<{ wizard?: boolean }>;
@@ -645,6 +655,7 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(plugin.tool["codex-list"]).toBeDefined();
 			expect(plugin.tool["codex-switch"]).toBeDefined();
 			expect(plugin.tool["codex-status"]).toBeDefined();
+			expect(plugin.tool["codex-limits"]).toBeDefined();
 			expect(plugin.tool["codex-metrics"]).toBeDefined();
 			expect(plugin.tool["codex-help"]).toBeDefined();
 			expect(plugin.tool["codex-setup"]).toBeDefined();
@@ -879,6 +890,699 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-status"].execute();
 			expect(result).toContain("Account Status");
 			expect(result).toContain("Active index by model family");
+		});
+	});
+
+	describe("codex-limits tool", () => {
+		let originalFetch: typeof globalThis.fetch;
+
+		beforeEach(() => {
+			originalFetch = globalThis.fetch;
+			mockStorage.activeIndex = 0;
+			mockStorage.activeIndexByFamily = {};
+		});
+
+		afterEach(() => {
+			globalThis.fetch = originalFetch;
+		});
+
+		it("returns error when no accounts", async () => {
+			mockStorage.accounts = [];
+			const result = await plugin.tool["codex-limits"].execute();
+			expect(result).toContain("No Codex accounts configured");
+		});
+
+		it("shows live usage windows from wham usage", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						plan_type: "team",
+						rate_limit: {
+							primary_window: {
+								used_percent: 13,
+								limit_window_seconds: 18000,
+								reset_at: Math.floor(Date.now() / 1000) + 3600,
+							},
+							secondary_window: {
+								used_percent: 36,
+								limit_window_seconds: 604800,
+								reset_at: Math.floor(Date.now() / 1000) + 86400,
+							},
+						},
+						code_review_rate_limit: {
+							primary_window: {
+								used_percent: 0,
+								limit_window_seconds: 604800,
+								reset_at: Math.floor(Date.now() / 1000) + 7200,
+							},
+						},
+						credits: { unlimited: true, has_credits: true },
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Codex limits");
+			expect(result).toContain("5h limit: 87% left");
+			expect(result).toContain("Weekly limit: 64% left");
+			expect(result).toContain("Code review: 100% left");
+			expect(result).toContain("Plan: team");
+			expect(result).toContain("Credits: unlimited");
+			expect(globalThis.fetch).toHaveBeenCalledWith(
+				"https://chatgpt.com/backend-api/wham/usage",
+				expect.objectContaining({ method: "GET" }),
+			);
+		});
+
+		it("refreshes missing tokens before fetching usage", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "r1", accountId: "acc-1", email: "user@example.com" },
+			];
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: { used_percent: 0, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 1800 },
+							secondary_window: { used_percent: 0, limit_window_seconds: 604800, reset_at: Math.floor(Date.now() / 1000) + 3600 },
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("100% left");
+			expect(mockStorage.accounts[0]?.accessToken).toBe("refreshed-access");
+		});
+
+		it("deduplicates accounts with same refreshToken and keeps the active marker", async () => {
+			const { createCodexHeaders } = await import("../lib/request/fetch-helpers.js");
+			mockStorage.accounts = [
+				{
+					refreshToken: "rt_same",
+					accountId: "acc-1",
+					organizationId: "org-1",
+					email: "a@test.com",
+					accessToken: "shared-access",
+					expiresAt: Date.now() + 3600_000,
+				},
+				{
+					refreshToken: "rt_same",
+					accountId: "acc-2",
+					organizationId: "org-2",
+					email: "a@test.com",
+					accessToken: "shared-access",
+					expiresAt: Date.now() + 3600_000,
+				},
+				{
+					refreshToken: "rt_other",
+					accountId: "acc-3",
+					email: "b@test.com",
+					accessToken: "access-3",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			mockStorage.activeIndex = 1;
+			mockStorage.activeIndexByFamily = { codex: 1 };
+			globalThis.fetch = vi.fn().mockImplementation(async () =>
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: { used_percent: 50, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 1800 },
+							secondary_window: { used_percent: 50, limit_window_seconds: 604800, reset_at: Math.floor(Date.now() / 1000) + 86400 },
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+			vi.mocked(createCodexHeaders).mockClear();
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("2 account");
+			expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+			expect(result).toContain("Account 2 (a@test.com, id:acc-2) [active]:");
+			expect(result.match(/Account 2 \(a@test\.com, id:acc-2\)/g)).toHaveLength(1);
+			expect(result).not.toContain("Account 1 (a@test.com, id:acc-1):");
+			expect(result).toContain("Account 3 (b@test.com, id:acc-3):");
+			expect(result).not.toContain("Account 2 (a@test.com, id:acc-2):");
+			expect(vi.mocked(createCodexHeaders)).toHaveBeenCalledWith(
+				undefined,
+				"acc-2",
+				"shared-access",
+				expect.objectContaining({ organizationId: "org-2" }),
+			);
+		});
+
+		it("does not deduplicate accounts that are missing refreshToken", async () => {
+			mockStorage.activeIndex = 0;
+			mockStorage.activeIndexByFamily = {};
+			mockStorage.accounts = [
+				{
+					refreshToken: "",
+					accountId: "acc-1",
+					email: "missing-1@test.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+				{
+					refreshToken: "",
+					accountId: "acc-2",
+					email: "missing-2@test.com",
+					accessToken: "access-2",
+					expiresAt: Date.now() + 3600_000,
+				},
+				{
+					refreshToken: "rt_other",
+					accountId: "acc-3",
+					email: "other@test.com",
+					accessToken: "access-3",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockImplementation(async () =>
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: { used_percent: 25, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 1800 },
+							secondary_window: { used_percent: 25, limit_window_seconds: 604800, reset_at: Math.floor(Date.now() / 1000) + 86400 },
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("3 account");
+			expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+			expect(result).toContain("Account 1 (missing-1@test.com, id:acc-1) [active]:");
+			expect(result).toContain("Account 2 (missing-2@test.com, id:acc-2):");
+			expect(result).toContain("Account 3 (other@test.com, id:acc-3):");
+		});
+
+		it("propagates refreshed credentials to duplicate stored accounts", async () => {
+			const { loadAccounts } = await import("../lib/storage.js");
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			const rotatedExpires = Date.now() + 7200_000;
+			vi.mocked(queuedRefresh).mockResolvedValueOnce({
+				type: "success",
+				access: "rotated-access",
+				refresh: "rotated-refresh",
+				expires: rotatedExpires,
+			});
+			mockStorage.accounts = [
+				{
+					refreshToken: "stale-refresh",
+					accountId: "acc-1",
+					email: "a@test.com",
+					accessToken: "expired-access-1",
+					expiresAt: Date.now() - 1000,
+				},
+				{
+					refreshToken: "stale-refresh",
+					accountId: "acc-2",
+					email: "a@test.com",
+					accessToken: "expired-access-2",
+					expiresAt: Date.now() - 1000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockImplementation(async () =>
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: { used_percent: 10, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 1800 },
+							secondary_window: { used_percent: 10, limit_window_seconds: 604800, reset_at: Math.floor(Date.now() / 1000) + 86400 },
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			await plugin.tool["codex-limits"].execute();
+
+			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledTimes(1);
+			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledWith("stale-refresh");
+			const reloadedStorage = await vi.mocked(loadAccounts)();
+			expect(reloadedStorage?.accounts.map((account) => account.refreshToken)).toEqual([
+				"rotated-refresh",
+				"rotated-refresh",
+			]);
+			expect(reloadedStorage?.accounts.map((account) => account.accessToken)).toEqual([
+				"rotated-access",
+				"rotated-access",
+			]);
+			expect(reloadedStorage?.accounts.map((account) => account.expiresAt)).toEqual([
+				rotatedExpires,
+				rotatedExpires,
+			]);
+		});
+
+		it("updates the current account when transactional refresh fallback matches by identity", async () => {
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			const { loadAccounts, withAccountStorageTransaction } = await import("../lib/storage.js");
+			const refreshedExpires = Date.now() + 7200_000;
+			vi.mocked(queuedRefresh).mockResolvedValueOnce({
+				type: "success",
+				access: "single-access",
+				refresh: "single-refresh",
+				expires: refreshedExpires,
+			});
+			mockStorage.accounts = [
+				{
+					refreshToken: "stale-refresh",
+					accountId: "acc-1",
+					email: "solo@test.com",
+					accessToken: "",
+					expiresAt: Date.now() - 1000,
+				},
+			];
+			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
+				async (
+					handler: (
+						current: typeof mockStorage | null,
+						persist: (storage: typeof mockStorage) => Promise<void>,
+					) => Promise<boolean>,
+				) =>
+					await handler(
+						{
+							version: 3,
+							accounts: [
+								{
+									refreshToken: "different-refresh",
+									accountId: "acc-1",
+									email: "solo@test.com",
+								},
+							],
+							activeIndex: 0,
+							activeIndexByFamily: {},
+						},
+						async (nextStorage) => {
+							mockStorage.version = nextStorage.version;
+							mockStorage.accounts = nextStorage.accounts.map((account) => structuredClone(account));
+							mockStorage.activeIndex = nextStorage.activeIndex;
+							mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+						},
+					),
+			);
+			globalThis.fetch = vi.fn().mockImplementation(async () =>
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: { used_percent: 5, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 1800 },
+							secondary_window: { used_percent: 5, limit_window_seconds: 604800, reset_at: Math.floor(Date.now() / 1000) + 86400 },
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			await plugin.tool["codex-limits"].execute();
+
+			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledWith("stale-refresh");
+			const reloadedStorage = await vi.mocked(loadAccounts)();
+			expect(reloadedStorage?.accounts[0]?.refreshToken).toBe("single-refresh");
+			expect(reloadedStorage?.accounts[0]?.accessToken).toBe("single-access");
+			expect(reloadedStorage?.accounts[0]?.expiresAt).toBe(refreshedExpires);
+		});
+
+		it("updates only the single matching stored account during refresh propagation", async () => {
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			const { loadAccounts } = await import("../lib/storage.js");
+			const refreshedExpires = Date.now() + 7200_000;
+			vi.mocked(queuedRefresh).mockResolvedValueOnce({
+				type: "success",
+				access: "matched-access",
+				refresh: "matched-refresh",
+				expires: refreshedExpires,
+			});
+			mockStorage.accounts = [
+				{
+					refreshToken: "single-match",
+					accountId: "acc-1",
+					email: "match@test.com",
+					accessToken: "",
+					expiresAt: Date.now() - 1000,
+				},
+				{
+					refreshToken: "other-refresh",
+					accountId: "acc-2",
+					email: "other@test.com",
+					accessToken: "still-valid",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockImplementation(async () =>
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: { used_percent: 15, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 1800 },
+							secondary_window: { used_percent: 15, limit_window_seconds: 604800, reset_at: Math.floor(Date.now() / 1000) + 86400 },
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			await plugin.tool["codex-limits"].execute();
+
+			expect(vi.mocked(queuedRefresh)).toHaveBeenCalledWith("single-match");
+			const reloadedStorage = await vi.mocked(loadAccounts)();
+			expect(reloadedStorage?.accounts[0]?.refreshToken).toBe("matched-refresh");
+			expect(reloadedStorage?.accounts[0]?.accessToken).toBe("matched-access");
+			expect(reloadedStorage?.accounts[0]?.expiresAt).toBe(refreshedExpires);
+			expect(reloadedStorage?.accounts[1]?.refreshToken).toBe("other-refresh");
+			expect(reloadedStorage?.accounts[1]?.accessToken).toBe("still-valid");
+		});
+
+		it("warns when refreshed credentials would otherwise fall back to a different account with the same email", async () => {
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			const { loadAccounts, withAccountStorageTransaction } = await import("../lib/storage.js");
+			const loggerModule = await import("../lib/logger.js");
+			const transactionStorage = {
+				version: 3 as const,
+				accounts: [
+					{
+						refreshToken: "different-refresh",
+						accountId: "acc-other",
+						organizationId: "org-a",
+						email: "user@example.com",
+						accessToken: "other-access",
+						expiresAt: Date.now() + 3600_000,
+					},
+					{
+						refreshToken: "different-refresh-2",
+						accountId: "acc-other-2",
+						organizationId: "org-b",
+						email: "user@example.com",
+						accessToken: "other-access-2",
+						expiresAt: Date.now() + 3600_000,
+					},
+				],
+				activeIndex: 0,
+				activeIndexByFamily: {},
+			};
+			vi.mocked(queuedRefresh).mockResolvedValueOnce({
+				type: "success",
+				access: "orphaned-access",
+				refresh: "orphaned-refresh",
+				expires: Date.now() + 7200_000,
+			});
+			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
+				async (
+					handler: (
+						current: typeof mockStorage | null,
+						persist: (storage: typeof mockStorage) => Promise<void>,
+					) => Promise<boolean>,
+				) =>
+					await handler(
+						transactionStorage,
+						async (nextStorage) => {
+							mockStorage.version = nextStorage.version;
+							mockStorage.accounts = nextStorage.accounts.map((account) => structuredClone(account));
+							mockStorage.activeIndex = nextStorage.activeIndex;
+							mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+						},
+					),
+			);
+			mockStorage.accounts = [
+				{
+					refreshToken: "stale-refresh",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "",
+					expiresAt: Date.now() - 1000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockImplementation(async () =>
+				new Response(
+					JSON.stringify({
+						rate_limit: {
+							primary_window: { used_percent: 0, limit_window_seconds: 18000, reset_at: Math.floor(Date.now() / 1000) + 1800 },
+							secondary_window: { used_percent: 0, limit_window_seconds: 604800, reset_at: Math.floor(Date.now() / 1000) + 86400 },
+						},
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+
+			await plugin.tool["codex-limits"].execute();
+
+			const warningCall = vi
+				.mocked(loggerModule.logWarn)
+				.mock.calls.find(([message]) =>
+					typeof message === "string" &&
+					message.includes("persistRefreshedCredentials could not find a matching stored account"),
+				);
+			expect(warningCall).toBeDefined();
+			expect(warningCall?.[1]).toEqual(
+				expect.objectContaining({
+					accountId: "acc-1",
+				}),
+			);
+			expect(warningCall?.[1]).not.toHaveProperty("email");
+			expect(transactionStorage.accounts[0]).toMatchObject({
+				accountId: "acc-other",
+				refreshToken: "different-refresh",
+				accessToken: "other-access",
+			});
+			expect(transactionStorage.accounts[1]).toMatchObject({
+				accountId: "acc-other-2",
+				refreshToken: "different-refresh-2",
+				accessToken: "other-access-2",
+			});
+			const reloadedStorage = await vi.mocked(loadAccounts)();
+			expect(reloadedStorage?.accounts[0]).toMatchObject({
+				accountId: "acc-1",
+				refreshToken: "stale-refresh",
+				accessToken: "",
+			});
+		});
+
+		it("reports missing refresh tokens instead of attempting a blank-token refresh", async () => {
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			mockStorage.accounts = [
+				{
+					refreshToken: "",
+					accountId: "acc-1",
+					email: "missing-refresh@test.com",
+					accessToken: "",
+					expiresAt: Date.now() - 1000,
+				},
+			];
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Error: Cannot refresh: account has no refresh token");
+			expect(vi.mocked(queuedRefresh)).not.toHaveBeenCalled();
+		});
+
+		it("redacts upstream auth material from usage fetch errors", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(
+					"upstream said Authorization: Bearer secret-token and jwt eyJabc.eyJdef.sig and sk-abcdefghijklmnopqrstuvwx and sk-live_abcd.efgh:ijklmnopqrst and deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+					{ status: 401, headers: { "content-type": "text/plain" } },
+				),
+			);
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Error: HTTP 401:");
+			expect(result).toContain("Bearer [redacted]");
+			expect(result).toContain("[redacted-token]");
+			expect(result).not.toContain("secret-token");
+			expect(result).not.toContain("eyJabc.eyJdef.sig");
+			expect(result).not.toContain("sk-abcdefghijklmnopqrstuvwx");
+			expect(result).not.toContain("sk-live_abcd.efgh:ijklmnopqrst");
+			expect(result).not.toContain("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+		});
+
+		it("surfaces usage fetch timeouts without leaking raw abort errors", async () => {
+			vi.useFakeTimers();
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			try {
+				globalThis.fetch = vi.fn().mockImplementation(async (_input, init) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					return {
+						ok: false,
+						status: 504,
+						headers: new Headers({ "content-type": "text/plain" }),
+						text: async () =>
+							await new Promise<string>((_resolve, reject) => {
+								signal?.addEventListener(
+									"abort",
+									() => reject(new DOMException("The operation was aborted.", "AbortError")),
+									{ once: true },
+								);
+							}),
+					} as Response;
+				});
+
+				const resultPromise = plugin.tool["codex-limits"].execute();
+				await vi.runAllTimersAsync();
+				const result = await resultPromise;
+
+				expect(result).toContain("Error: Usage request timed out");
+				expect(result).not.toContain("AbortError");
+				expect(result).not.toContain("DOMException");
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("surfaces usage fetch timeouts before response headers arrive", async () => {
+			vi.useFakeTimers();
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			try {
+				globalThis.fetch = vi.fn().mockImplementation(async (_input, init) =>
+					await new Promise<Response>((_resolve, reject) => {
+						const signal = init?.signal as AbortSignal | undefined;
+						signal?.addEventListener(
+							"abort",
+							() => reject(new DOMException("The operation was aborted.", "AbortError")),
+							{ once: true },
+						);
+					}),
+				);
+
+				const resultPromise = plugin.tool["codex-limits"].execute();
+				await vi.runAllTimersAsync();
+				const result = await resultPromise;
+
+				expect(result).toContain("Error: Usage request timed out");
+				expect(result).not.toContain("AbortError");
+				expect(result).not.toContain("DOMException");
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("surfaces usage fetch timeouts during successful response body reads", async () => {
+			vi.useFakeTimers();
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			try {
+				globalThis.fetch = vi.fn().mockImplementation(async (_input, init) => {
+					const signal = init?.signal as AbortSignal | undefined;
+					return {
+						ok: true,
+						status: 200,
+						headers: new Headers({ "content-type": "application/json" }),
+						json: async () =>
+							await new Promise<unknown>((_resolve, reject) => {
+								signal?.addEventListener(
+									"abort",
+									() => reject(new DOMException("The operation was aborted.", "AbortError")),
+									{ once: true },
+								);
+							}),
+					} as Response;
+				});
+
+				const resultPromise = plugin.tool["codex-limits"].execute();
+				await vi.runAllTimersAsync();
+				const result = await resultPromise;
+
+				expect(result).toContain("Error: Usage request timed out");
+				expect(result).not.toContain("AbortError");
+				expect(result).not.toContain("DOMException");
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("preserves non-abort text read failures from unsuccessful responses", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockImplementation(async () => ({
+				ok: false,
+				status: 502,
+				headers: new Headers({ "content-type": "text/plain" }),
+				text: async () => {
+					throw new Error("body read failed");
+				},
+			} as Response));
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Error: body read failed");
+			expect(result).not.toContain("Usage request timed out");
+		});
+
+		it("preserves non-abort json read failures from successful responses", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					accountId: "acc-1",
+					email: "user@example.com",
+					accessToken: "access-1",
+					expiresAt: Date.now() + 3600_000,
+				},
+			];
+			globalThis.fetch = vi.fn().mockImplementation(async () => ({
+				ok: true,
+				status: 200,
+				headers: new Headers({ "content-type": "application/json" }),
+				json: async () => {
+					throw new Error("body read failed");
+				},
+			} as Response));
+
+			const result = await plugin.tool["codex-limits"].execute();
+
+			expect(result).toContain("Error: body read failed");
+			expect(result).not.toContain("Usage request timed out");
 		});
 	});
 
