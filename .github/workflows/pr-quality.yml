@@ -35,12 +35,14 @@ jobs:
           blocked-terms: |
             OBSIDIAN1455
           # anti-slop documents exact file and folder entries here, so this
-          # list intentionally guards the canonical root-level metadata files.
+          # list guards the canonical metadata files and PR screening surfaces.
           blocked-paths: |
             SECURITY.md
             LICENSE
             CODE_OF_CONDUCT.md
             CODEOWNERS
+            .github/workflows/pr-quality.yml
+            .github/pull_request_template.md
           exempt-label: exempt
           exempt-draft-prs: true
           close-pr: false
