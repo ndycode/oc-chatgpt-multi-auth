@@ -211,13 +211,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPreflightShown = false;
 	let beginnerSafeModeEnabled = false;
 	const MIN_BACKOFF_MS = 100;
-	const PERSISTED_ACCOUNT_TOAST_TITLE = "Current account";
-	const PERSISTED_ACCOUNT_TOAST_DURATION_MS = 86_400_000;
 
 	type PersistedAccountDetails = {
 		accountId?: string;
 		accountLabel?: string;
 		email?: string;
+	};
+
+	type PersistedAccountIndicator = {
+		label: string;
+		visible: boolean;
+	};
+
+	type SessionModelRef = {
+		providerID: string;
+		modelID: string;
 	};
 
 	type PersistAccountFooterStyle =
@@ -336,7 +344,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			: (maskPersistedEmail(sanitizedEmail) ?? sanitizedEmail);
 	};
 
-	const formatPersistedAccountToastMessage = (
+	const formatPersistedAccountIndicator = (
 		account: PersistedAccountDetails,
 		index: number,
 		accountCount: number,
@@ -1150,42 +1158,95 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 }
         };
 
-		let persistedAccountToastVisible = false;
+		const persistedAccountIndicators = new Map<string, PersistedAccountIndicator>();
+		const requestedModelsBySession = new Map<string, SessionModelRef>();
+		let lastSeenSessionID: string | null = null;
 
-		const emitPersistedAccountToast = async (
+		const setPersistedAccountIndicator = (
+			sessionID: string | null | undefined,
 			account: PersistedAccountDetails,
 			index: number,
 			accountCount: number,
 			style: PersistAccountFooterStyle,
-		): Promise<void> => {
-			await showToast(
-				formatPersistedAccountToastMessage(account, index, accountCount, style),
-				"info",
-				{
-					title: PERSISTED_ACCOUNT_TOAST_TITLE,
-					duration: PERSISTED_ACCOUNT_TOAST_DURATION_MS,
+			visible: boolean,
+		): boolean => {
+			if (!sessionID) return false;
+			persistedAccountIndicators.set(sessionID, {
+				label: formatPersistedAccountIndicator(account, index, accountCount, style),
+				visible,
+			});
+			return true;
+		};
+
+		const refreshVisiblePersistedAccountIndicators = (
+			account: PersistedAccountDetails,
+			index: number,
+			accountCount: number,
+			style: PersistAccountFooterStyle,
+		): boolean => {
+			const visibleSessionIDs = Array.from(persistedAccountIndicators.entries())
+				.filter(([, state]) => state.visible)
+				.map(([sessionID]) => sessionID);
+			for (const sessionID of visibleSessionIDs) {
+				setPersistedAccountIndicator(sessionID, account, index, accountCount, style, true);
+			}
+			return visibleSessionIDs.length > 0;
+		};
+
+		const applyPersistedAccountIndicator = (
+			messageInfo: Record<string, unknown>,
+			indicatorLabel: string,
+		): void => {
+			const existingModel =
+				typeof messageInfo.model === "object" && messageInfo.model !== null
+					? (messageInfo.model as Record<string, unknown>)
+					: {};
+			const providerID =
+				typeof existingModel.providerID === "string"
+					? existingModel.providerID
+					: PROVIDER_ID;
+			messageInfo.model = {
+				...existingModel,
+				providerID,
+				modelID: indicatorLabel,
+			};
+		};
+
+		const restoreSessionModelForRequest = (
+			requestInit: RequestInit | undefined,
+			requestBody: Record<string, unknown>,
+			sessionID: string | undefined,
+		): { requestInit: RequestInit; requestBody: Record<string, unknown> } => {
+			if (!sessionID || typeof requestBody.model !== "string") {
+				return { requestInit: requestInit ?? {}, requestBody };
+			}
+
+			const indicator = persistedAccountIndicators.get(sessionID);
+			const requestedModel = requestedModelsBySession.get(sessionID);
+			if (!indicator?.visible || !requestedModel) {
+				return { requestInit: requestInit ?? {}, requestBody };
+			}
+
+			const currentModel = requestBody.model.trim();
+			const displayCandidates = new Set([
+				indicator.label,
+				`${requestedModel.providerID}/${indicator.label}`,
+			]);
+			if (!displayCandidates.has(currentModel)) {
+				return { requestInit: requestInit ?? {}, requestBody };
+			}
+
+			const nextBody: Record<string, unknown> = {
+				...requestBody,
+				model: requestedModel.modelID,
+			};
+			return {
+				requestInit: {
+					...(requestInit ?? {}),
+					body: JSON.stringify(nextBody),
 				},
-			);
-		};
-
-		const revealPersistedAccountToast = async (
-			account: PersistedAccountDetails,
-			index: number,
-			accountCount: number,
-			style: PersistAccountFooterStyle,
-		): Promise<void> => {
-			persistedAccountToastVisible = true;
-			await emitPersistedAccountToast(account, index, accountCount, style);
-		};
-
-		const refreshPersistedAccountToast = async (
-			account: PersistedAccountDetails,
-			index: number,
-			accountCount: number,
-			style: PersistAccountFooterStyle,
-		): Promise<void> => {
-			if (!persistedAccountToastVisible) return;
-			await emitPersistedAccountToast(account, index, accountCount, style);
+				requestBody: nextBody,
+			};
 		};
 
 		const resolveActiveIndex = (
@@ -1782,15 +1843,12 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 								const pluginConfig = loadPluginConfig();
 								if (getPersistAccountFooter(pluginConfig)) {
-									await refreshPersistedAccountToast(
+									refreshVisiblePersistedAccountIndicators(
 										account,
 										index,
 										storage.accounts.length,
 										getPersistAccountFooterStyle(pluginConfig),
 									);
-									if (!persistedAccountToastVisible) {
-										await showToast(`Switched to account ${index + 1}`, "info");
-									}
 								} else {
 									await showToast(`Switched to account ${index + 1}`, "info");
 								}
@@ -1806,6 +1864,66 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 	return {
 		event: eventHandler,
+		"chat.message": (
+			input: {
+				sessionID: string;
+				model?: SessionModelRef;
+			},
+			output: { message: unknown; parts: unknown[] },
+		): Promise<void> => {
+			lastSeenSessionID = input.sessionID;
+			if (input.model) {
+				requestedModelsBySession.set(input.sessionID, input.model);
+			}
+
+			const indicator = persistedAccountIndicators.get(input.sessionID);
+			if (indicator?.visible) {
+				const message =
+					typeof output.message === "object" && output.message !== null
+						? (output.message as Record<string, unknown>)
+						: null;
+				if (message) {
+					applyPersistedAccountIndicator(message, indicator.label);
+				}
+			}
+			return Promise.resolve();
+		},
+		"experimental.chat.messages.transform": (
+			_input: Record<string, never>,
+			output: {
+				messages: Array<{
+					info: Record<string, unknown>;
+					parts: unknown[];
+				}>;
+			},
+		): Promise<void> => {
+			let lastUserMessage:
+				| {
+					info: Record<string, unknown>;
+					parts: unknown[];
+				}
+				| undefined;
+			for (let i = output.messages.length - 1; i >= 0; i -= 1) {
+				const message = output.messages[i];
+				if (message?.info.role === "user") {
+					lastUserMessage = message;
+					break;
+				}
+			}
+			if (!lastUserMessage) return Promise.resolve();
+
+			const sessionID =
+				typeof lastUserMessage.info.sessionID === "string"
+					? lastUserMessage.info.sessionID
+					: lastSeenSessionID;
+			if (!sessionID) return Promise.resolve();
+
+			const indicator = persistedAccountIndicators.get(sessionID);
+			if (!indicator?.visible) return Promise.resolve();
+
+			applyPersistedAccountIndicator(lastUserMessage.info, indicator.label);
+			return Promise.resolve();
+		},
 		"experimental.text.complete": (
 			_input: { sessionID: string },
 			_output: { text: string },
@@ -2089,11 +2207,26 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 								const baseInit = await normalizeRequestInit(input, init);
 								const originalBody = await parseRequestBodyFromInit(baseInit?.body);
 								const isStreaming = originalBody.stream === true;
+								const requestPromptCacheKey =
+									typeof originalBody.prompt_cache_key === "string"
+										? originalBody.prompt_cache_key
+										: undefined;
+								const requestSessionID =
+									(process.env.CODEX_THREAD_ID ?? requestPromptCacheKey ?? lastSeenSessionID ?? "")
+										.toString()
+										.trim() || undefined;
+								const restoredRequest = restoreSessionModelForRequest(
+									baseInit,
+									originalBody,
+									requestSessionID,
+								);
 								const parsedBody =
-									Object.keys(originalBody).length > 0 ? originalBody : undefined;
+									Object.keys(restoredRequest.requestBody).length > 0
+										? (restoredRequest.requestBody as RequestBody)
+										: undefined;
 
 								const transformation = await transformRequestForCodex(
-									baseInit,
+									restoredRequest.requestInit,
 									url,
 									effectiveUserConfig,
 									codexMode,
@@ -2104,8 +2237,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 									fastSessionMaxInputItems,
 									requestTransformMode,
 								},
-							);
-										let requestInit = transformation?.updatedInit ?? baseInit;
+								);
+										let requestInit = transformation?.updatedInit ?? restoredRequest.requestInit;
 										let transformedBody: RequestBody | undefined = transformation?.body;
 										const promptCacheKey = transformedBody?.prompt_cache_key;
 										let model = transformedBody?.model;
@@ -2741,11 +2874,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					accountManager.recordSuccess(account, modelFamily, model);
 					if (persistAccountFooter) {
-						await revealPersistedAccountToast(
+						setPersistedAccountIndicator(
+							threadIdCandidate ?? lastSeenSessionID,
 							account,
 							account.index,
 							accountManager.getAccountCount(),
 							persistAccountFooterStyle,
+							true,
 						);
 					}
 					runtimeMetrics.successfulRequests++;

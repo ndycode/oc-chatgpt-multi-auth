@@ -392,6 +392,26 @@ type ToolExecute<T = void> = { execute: (args: T) => Promise<string> };
 type OptionalToolExecute<T> = { execute: (args?: T) => Promise<string> };
 type PluginType = {
 	event: (input: { event: { type: string; properties?: unknown } }) => Promise<void>;
+	"chat.message": (
+		input: {
+			sessionID: string;
+			model?: { providerID: string; modelID: string };
+		},
+		output: { message: unknown; parts: unknown[] },
+	) => Promise<void>;
+	"experimental.chat.messages.transform": (
+		input: Record<string, never>,
+		output: {
+			messages: Array<{
+				info: {
+					role: string;
+					sessionID: string;
+					model?: { providerID: string; modelID: string };
+				};
+				parts: unknown[];
+			}>;
+		},
+	) => Promise<void>;
 	"experimental.text.complete": (
 		input: { sessionID: string },
 		output: { text: string },
@@ -2025,10 +2045,13 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		return { plugin, sdk, mockClient };
 	};
 
-	const createPersistedAccountRequestBody = (promptCacheKey?: string) =>
+	const createPersistedAccountRequestBody = (
+		promptCacheKey?: string,
+		model = "gpt-5.1",
+	) =>
 		promptCacheKey
-			? { model: "gpt-5.1", prompt_cache_key: promptCacheKey }
-			: { model: "gpt-5.1" };
+			? { model, prompt_cache_key: promptCacheKey }
+			: { model };
 
 	const enablePersistedFooter = async (style: "label-masked-email" | "full-email" | "label-only") => {
 		const configModule = await import("../lib/config.js");
@@ -2039,9 +2062,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	const sendPersistedAccountRequest = async (
 		sdk: Awaited<ReturnType<typeof setupPlugin>>["sdk"],
 		promptCacheKey?: string,
+		model = "gpt-5.1",
 	) => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
-		const requestBody = createPersistedAccountRequestBody(promptCacheKey);
+		const requestBody = createPersistedAccountRequestBody(promptCacheKey, model);
 		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
 			updatedInit: {
 				method: "POST",
@@ -2064,14 +2088,28 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	const expectedFullToastMessage = "user@example.com [0/1]";
 	const expectedLabelOnlyToastMessage = "Account 1 [id:ount-1] [0/1]";
 
-	const buildPersistedAccountToast = (message: string) => ({
-		body: {
-			title: "Current account",
-			message,
-			variant: "info",
-			duration: 86_400_000,
-		},
+	const buildMessageTransformOutput = (sessionID: string, modelID = "gpt-5.1") => ({
+		messages: [
+			{
+				info: {
+					role: "user",
+					sessionID,
+					model: { providerID: "openai", modelID },
+				},
+				parts: [],
+			},
+		],
 	});
+
+	const readPersistedAccountIndicator = async (
+		plugin: PluginType,
+		sessionID: string,
+		modelID = "gpt-5.1",
+	) => {
+		const output = buildMessageTransformOutput(sessionID, modelID);
+		await plugin["experimental.chat.messages.transform"]({}, output);
+		return output.messages[0]?.info.model?.modelID;
+	};
 
 	it("returns success response for successful fetch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
@@ -2087,51 +2125,142 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(response.status).toBe(200);
 	});
 
-	it("shows a masked-email account toast after the first successful response", async () => {
+	it("decorates the last user message with a masked-email indicator after the first successful response", async () => {
 		await enablePersistedFooter("label-masked-email");
-		const { sdk, mockClient } = await setupPlugin();
-		mockClient.tui.showToast.mockClear();
+		const { plugin, sdk } = await setupPlugin();
 
 		await sendPersistedAccountRequest(sdk, "session-masked");
 
-		expect(mockClient.tui.showToast).toHaveBeenLastCalledWith(
-			buildPersistedAccountToast(expectedMaskedToastMessage),
+		expect(await readPersistedAccountIndicator(plugin, "session-masked")).toBe(
+			expectedMaskedToastMessage,
 		);
 	});
 
-	it("shows a full-email account toast when configured", async () => {
+	it("decorates the last user message with a full-email indicator when configured", async () => {
 		await enablePersistedFooter("full-email");
-		const { sdk, mockClient } = await setupPlugin();
-		mockClient.tui.showToast.mockClear();
+		const { plugin, sdk } = await setupPlugin();
 
 		await sendPersistedAccountRequest(sdk, "session-full");
 
-		expect(mockClient.tui.showToast).toHaveBeenLastCalledWith(
-			buildPersistedAccountToast(expectedFullToastMessage),
+		expect(await readPersistedAccountIndicator(plugin, "session-full")).toBe(
+			expectedFullToastMessage,
 		);
 	});
 
-	it("shows a label-only account toast when configured", async () => {
+	it("decorates the last user message with a label-only indicator when configured", async () => {
 		await enablePersistedFooter("label-only");
-		const { sdk, mockClient } = await setupPlugin();
-		mockClient.tui.showToast.mockClear();
+		const { plugin, sdk } = await setupPlugin();
 
 		await sendPersistedAccountRequest(sdk, "session-label");
 
-		expect(mockClient.tui.showToast).toHaveBeenLastCalledWith(
-			buildPersistedAccountToast(expectedLabelOnlyToastMessage),
+		expect(await readPersistedAccountIndicator(plugin, "session-label")).toBe(
+			expectedLabelOnlyToastMessage,
 		);
 	});
 
-	it("shows the account toast even when the request has no prompt_cache_key", async () => {
+	it("falls back to the current chat session when the request has no prompt_cache_key", async () => {
 		await enablePersistedFooter("label-masked-email");
-		const { sdk, mockClient } = await setupPlugin();
-		mockClient.tui.showToast.mockClear();
+		const { plugin, sdk } = await setupPlugin();
+		await plugin["chat.message"](
+			{
+				sessionID: "session-no-key",
+				model: { providerID: "openai", modelID: "gpt-5.1" },
+			},
+			{ message: {}, parts: [] },
+		);
 
 		await sendPersistedAccountRequest(sdk);
 
-		expect(mockClient.tui.showToast).toHaveBeenLastCalledWith(
-			buildPersistedAccountToast(expectedMaskedToastMessage),
+		expect(await readPersistedAccountIndicator(plugin, "session-no-key")).toBe(
+			expectedMaskedToastMessage,
+		);
+	});
+
+	it("decorates chat.message output with the visible account indicator", async () => {
+		await enablePersistedFooter("full-email");
+		const { plugin, sdk } = await setupPlugin();
+		await sendPersistedAccountRequest(sdk, "session-chat-message", "gpt-5.4");
+
+		const output = { message: {}, parts: [] };
+		await plugin["chat.message"](
+			{
+				sessionID: "session-chat-message",
+				model: { providerID: "openai", modelID: "gpt-5.4" },
+			},
+			output,
+		);
+
+		expect((output.message as { model?: { modelID?: string } }).model?.modelID).toBe(
+			expectedFullToastMessage,
+		);
+	});
+
+	it("restores the real model before request transformation when the session label is decorated", async () => {
+		await enablePersistedFooter("full-email");
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const { plugin, sdk } = await setupPlugin();
+		await sendPersistedAccountRequest(sdk, "session-restore", "gpt-5.4");
+
+		const output = { message: {}, parts: [] };
+		await plugin["chat.message"](
+			{
+				sessionID: "session-restore",
+				model: { providerID: "openai", modelID: "gpt-5.4" },
+			},
+			output,
+		);
+		const decoratedModel =
+			(output.message as { model?: { modelID?: string } }).model?.modelID;
+		expect(decoratedModel).toBe(expectedFullToastMessage);
+
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementationOnce(
+			async (init, _url, _config, _codexMode, body) => ({
+				updatedInit: init as RequestInit,
+				body: body as never,
+			}),
+		);
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({
+				model: decoratedModel,
+				prompt_cache_key: "session-restore",
+			}),
+		});
+
+		expect(vi.mocked(fetchHelpers.transformRequestForCodex)).toHaveBeenLastCalledWith(
+			expect.anything(),
+			"https://api.openai.com/v1/chat",
+			expect.anything(),
+			true,
+			expect.objectContaining({ model: "gpt-5.4" }),
+			expect.anything(),
+		);
+	});
+
+	it("refreshes the visible account indicator after switching accounts", async () => {
+		await enablePersistedFooter("full-email");
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+
+		const { plugin, sdk } = await setupPlugin();
+		await sendPersistedAccountRequest(sdk, "session-switch");
+
+		expect(await readPersistedAccountIndicator(plugin, "session-switch")).toBe(
+			"user@example.com [0/1]",
+		);
+
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+
+		expect(await readPersistedAccountIndicator(plugin, "session-switch")).toBe(
+			"user2@example.com [1/2]",
 		);
 	});
 
@@ -3537,65 +3666,6 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 				properties: { provider: "openai", index: 0 },
 			},
 		});
-	});
-
-	it("refreshes the visible account toast after switching accounts", async () => {
-		const configModule = await import("../lib/config.js");
-		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
-		vi.mocked(configModule.getPersistAccountFooter).mockReturnValue(true);
-		vi.mocked(configModule.getPersistAccountFooterStyle).mockReturnValue("full-email");
-		mockStorage.accounts = [
-			{ accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
-			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
-		];
-
-		const mockClient = createMockClient();
-		const { OpenAIOAuthPlugin } = await import("../index.js");
-		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
-		const getAuth = async () => ({
-			type: "oauth" as const,
-			access: "access-token",
-			refresh: "refresh-token",
-			expires: Date.now() + 60_000,
-			multiAccount: true,
-		});
-		const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
-		mockClient.tui.showToast.mockClear();
-		const originalFetch = globalThis.fetch;
-
-		const requestBody = { model: "gpt-5.1", prompt_cache_key: "session-switch" };
-		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
-			updatedInit: {
-				method: "POST",
-				body: JSON.stringify(requestBody),
-			},
-			body: requestBody,
-		});
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
-		);
-
-		await sdk.fetch!("https://api.openai.com/v1/chat", {
-			method: "POST",
-			body: JSON.stringify(requestBody),
-		});
-		globalThis.fetch = originalFetch;
-		mockClient.tui.showToast.mockClear();
-
-		await plugin.event({
-			event: { type: "account.select", properties: { index: 1 } },
-		});
-
-		expect(mockClient.tui.showToast).toHaveBeenLastCalledWith(
-			{
-				body: {
-					title: "Current account",
-					message: "user2@example.com [1/2]",
-					variant: "info",
-					duration: 86_400_000,
-				},
-			},
-		);
 	});
 
 	it("ignores account.select when cachedAccountManager is null", async () => {
