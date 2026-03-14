@@ -81,7 +81,7 @@ The repository uses split required and advisory PR lanes:
 - Required policy checks: `required-pr` and `pr-governance`
 - Advisory lanes: `coverage`, `compat-matrix`, and `dependency-audit`
 
-`required-pr` is the aggregate gate that evaluates the required code, docs, and workflow jobs. `pr-governance` separately enforces the PR template and live-verification requirements for auth, request-routing, and storage changes.
+`required-pr` is the aggregate gate that evaluates the required code, docs, and workflow jobs. `pr-governance` separately enforces the PR template and live-verification requirements for auth, request-routing, and storage changes. Maintainers can record an independent live check by applying the `maintainer-live-verified` label.
 
 For maintainers, GitHub branch protection should require only:
 

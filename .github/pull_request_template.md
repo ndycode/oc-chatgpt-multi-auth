@@ -26,7 +26,7 @@
 - [ ] I updated tests and documentation when the change affected users, maintainers, or repository behavior.
 - [ ] No auth, request-routing, or storage paths changed.
 - [ ] I manually tested with a real ChatGPT Plus/Pro account.
-- [ ] Maintainer live verification completed.
+- Maintainers can apply the `maintainer-live-verified` label after independent live verification.
 
 ## Notes
 

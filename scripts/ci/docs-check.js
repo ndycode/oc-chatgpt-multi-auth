@@ -26,13 +26,18 @@ function normalizeLinkTarget(rawTarget) {
 	let target = rawTarget.trim();
 	if (!target) return null;
 
-	if (target.startsWith("<") && target.endsWith(">")) {
-		target = target.slice(1, -1).trim();
-	}
+	const angleTargetWithOptionalTitle = target.match(/^<([^>]+)>(?:\s+["'(].*)?$/);
+	if (angleTargetWithOptionalTitle?.[1]) {
+		target = angleTargetWithOptionalTitle[1].trim();
+	} else {
+		const spacedTarget = target.match(/^(\S+)\s+["'(].*$/);
+		if (spacedTarget?.[1]) {
+			target = spacedTarget[1];
+		}
 
-	const spacedTarget = target.match(/^(\S+)\s+["'(].*$/);
-	if (spacedTarget?.[1]) {
-		target = spacedTarget[1];
+		if (target.startsWith("<") && target.endsWith(">")) {
+			target = target.slice(1, -1).trim();
+		}
 	}
 
 	return target || null;

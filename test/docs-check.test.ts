@@ -89,4 +89,14 @@ describe("docs-check script", () => {
 		expect(referenceTarget).toBe("./targets/missing.md");
 		await expect(validateLink(docsFile, referenceTarget)).resolves.toBe("Missing local target: ./targets/missing.md");
 	});
+
+	it("accepts angle-bracket targets that include an optional title", async () => {
+		const { extractMarkdownLinks, validateLink } = await import("../scripts/ci/docs-check.js");
+		const { docsFile } = await createDocsFixture('[Config Guide](<./targets/exists.md> "Config target")\n');
+		const markdown = await readFile(docsFile, "utf8");
+		const [linkTarget] = extractMarkdownLinks(markdown);
+
+		expect(linkTarget).toBe("./targets/exists.md");
+		await expect(validateLink(docsFile, linkTarget)).resolves.toBeNull();
+	});
 });

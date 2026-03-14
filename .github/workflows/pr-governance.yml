@@ -5,8 +5,10 @@ on:
     types:
       - opened
       - edited
+      - labeled
       - reopened
       - synchronize
+      - unlabeled
       - ready_for_review
 
 permissions:
@@ -34,6 +36,11 @@ jobs:
             const repo = context.repo.repo;
             const issueNumber = context.payload.pull_request.number;
             const body = context.payload.pull_request.body || "";
+            const currentLabels = new Set(
+              (context.payload.pull_request.labels ?? [])
+                .map((label) => label?.name)
+                .filter((name) => typeof name === "string"),
+            );
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner,
               repo,
@@ -50,7 +57,13 @@ jobs:
               /^lib\/recovery\/storage\.ts$/,
             ];
 
-            const riskyPaths = changedFiles.filter((file) => riskyMatchers.some((matcher) => matcher.test(file)));
+            const riskyPaths = files
+              .filter((file) =>
+                [file.filename, file.previous_filename].some(
+                  (candidatePath) => candidatePath && riskyMatchers.some((matcher) => matcher.test(candidatePath))
+                )
+              )
+              .map((file) => file.filename);
             const liveVerificationRequired = riskyPaths.length > 0;
 
             const requiredHeadings = [
@@ -63,34 +76,46 @@ jobs:
 
             const missingSections = requiredHeadings.filter((pattern) => !pattern.test(body));
             const complianceChecked = /- \[x\] This change stays within the repository scope and OpenAI Terms of Service expectations\./i.test(body);
+            const officialAuthChecked = /- \[x\] This change uses official authentication flows only and does not add bypass, scraping, or credential-sharing behavior\./i.test(body);
+            const testsDocsChecked = /- \[x\] I updated tests and documentation when the change affected users, maintainers, or repository behavior\./i.test(body);
             const noLiveRequiredChecked = /- \[x\] No auth, request-routing, or storage paths changed\./i.test(body);
             const manualLiveChecked = /- \[x\] I manually tested with a real ChatGPT Plus\/Pro account\./i.test(body);
-            const maintainerLiveChecked = /- \[x\] Maintainer live verification completed\./i.test(body);
+            const liveVerificationLabelName = "needs-live-verification";
+            const maintainerVerifiedLabelName = "maintainer-live-verified";
+            const maintainerLiveVerified = currentLabels.has(maintainerVerifiedLabelName);
 
-            const labelName = "needs-live-verification";
-
-            async function ensureLabel() {
+            async function ensureLabel(name, color, description) {
               try {
-                await github.rest.issues.getLabel({ owner, repo, name: labelName });
+                await github.rest.issues.getLabel({ owner, repo, name });
               } catch (error) {
                 if (error.status !== 404) throw error;
                 await github.rest.issues.createLabel({
                   owner,
                   repo,
-                  name: labelName,
-                  color: "b60205",
-                  description: "Manual ChatGPT Plus/Pro verification required before merge",
+                  name,
+                  color,
+                  description,
                 });
               }
             }
 
+            await ensureLabel(
+              maintainerVerifiedLabelName,
+              "0e8a16",
+              "Maintainer completed independent live ChatGPT Plus/Pro verification",
+            );
+
             if (liveVerificationRequired) {
-              await ensureLabel();
+              await ensureLabel(
+                liveVerificationLabelName,
+                "b60205",
+                "Manual ChatGPT Plus/Pro verification required before merge",
+              );
               await github.rest.issues.addLabels({
                 owner,
                 repo,
                 issue_number: issueNumber,
-                labels: [labelName],
+                labels: [liveVerificationLabelName],
               });
             } else {
               try {
@@ -98,7 +123,7 @@ jobs:
                   owner,
                   repo,
                   issue_number: issueNumber,
-                  name: labelName,
+                  name: liveVerificationLabelName,
                 });
               } catch (error) {
                 if (error.status !== 404) throw error;
@@ -115,12 +140,20 @@ jobs:
               failures.push("The compliance checkbox must be checked.");
             }
 
+            if (!officialAuthChecked) {
+              failures.push("The official-authentication checkbox must be checked.");
+            }
+
+            if (!testsDocsChecked) {
+              failures.push("The tests/documentation checkbox must be checked.");
+            }
+
             if (liveVerificationRequired) {
-              if (!manualLiveChecked && !maintainerLiveChecked) {
-                failures.push("This PR touches auth/request/storage paths and needs a completed live verification checkbox.");
+              if (!manualLiveChecked && !maintainerLiveVerified) {
+                failures.push("This PR touches auth/request/storage paths and needs either the manual live-test checkbox or the maintainer-live-verified label.");
               }
-            } else if (!noLiveRequiredChecked && !manualLiveChecked && !maintainerLiveChecked) {
-              failures.push("Choose the matching live-validation state in the PR template.");
+            } else if (!noLiveRequiredChecked && !manualLiveChecked && !maintainerLiveVerified) {
+              failures.push("Choose the matching live-validation state or apply the maintainer-live-verified label.");
             }
 
             const summaryLines = [
@@ -128,6 +161,7 @@ jobs:
               "",
               `- Changed files: ${changedFiles.length}`,
               `- Live verification required: ${liveVerificationRequired ? "yes" : "no"}`,
+              `- Maintainer verification label present: ${maintainerLiveVerified ? "yes" : "no"}`,
             ];
 
             if (riskyPaths.length > 0) {
