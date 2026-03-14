@@ -3531,8 +3531,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 													);
 													continue;
 												}
-												target.enabled = shouldEnable ? true : false;
-												target.disabledReason = shouldEnable ? undefined : "user";
+												if (shouldEnable) {
+													delete target.enabled;
+													delete target.disabledReason;
+												} else {
+													target.enabled = false;
+													target.disabledReason = "user";
+												}
 												await saveAccounts(workingStorage);
 												invalidateAccountManagerCache();
 												console.log(

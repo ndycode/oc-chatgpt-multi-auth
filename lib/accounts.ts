@@ -315,6 +315,7 @@ export class AccountManager {
 						email: matchesFallback
 							? fallbackAccountEmail ?? sanitizeEmail(account.email)
 							: sanitizeEmail(account.email),
+						// Storage only persists `enabled: false`; in memory we normalize to a concrete boolean.
 						refreshToken,
 						enabled: account.enabled !== false,
 						disabledReason:
@@ -984,6 +985,7 @@ export class AccountManager {
 				refreshToken: account.refreshToken,
 				accessToken: account.access,
 				expiresAt: account.expires,
+				// Persist enabled accounts by omitting the flag to preserve the storage convention.
 				enabled: account.enabled === false ? false : undefined,
 				disabledReason:
 					account.enabled === false ? account.disabledReason ?? "user" : undefined,
@@ -1051,7 +1053,7 @@ export class AccountManager {
 				log.warn("flushPendingSave exceeded max iterations; possible save loop", {
 					iterations: flushIterations - 1,
 				});
-				return;
+				throw new Error("flushPendingSave: exceeded max flush iterations; save state may be incomplete");
 			}
 			const hadDebouncedSave = !!this.saveDebounceTimer;
 			if (this.saveDebounceTimer) {

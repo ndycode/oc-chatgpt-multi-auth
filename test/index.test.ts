@@ -3945,14 +3945,14 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		});
 		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).toMatchObject({
 			accountId: "workspace-managed",
-			enabled: true,
-			disabledReason: undefined,
 		});
+		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).not.toHaveProperty("enabled");
+		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).not.toHaveProperty("disabledReason");
 		expect(mockStorage.accounts[0]).toMatchObject({
 			accountId: "workspace-managed",
-			enabled: true,
-			disabledReason: undefined,
 		});
+		expect(mockStorage.accounts[0]).not.toHaveProperty("enabled");
+		expect(mockStorage.accounts[0]).not.toHaveProperty("disabledReason");
 	});
 
 	it("keeps auth-failure disables blocked in the auth manage menu until a fresh login", async () => {

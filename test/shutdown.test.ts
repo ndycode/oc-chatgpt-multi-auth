@@ -65,6 +65,21 @@ describe("Graceful shutdown", () => {
 		expect(getCleanupCount()).toBe(0);
 	});
 
+	it("drains cleanup functions registered while cleanup is already running", async () => {
+		const order: number[] = [];
+		registerCleanup(async () => {
+			order.push(1);
+			registerCleanup(() => {
+				order.push(2);
+			});
+		});
+
+		await runCleanup();
+
+		expect(order).toEqual([1, 2]);
+		expect(getCleanupCount()).toBe(0);
+	});
+
 	it("unregister is no-op for non-registered function", () => {
 		const fn = vi.fn();
 		unregisterCleanup(fn);
@@ -286,6 +301,41 @@ describe("Graceful shutdown", () => {
 
 			processOnSpy.mockRestore();
 			processOffSpy.mockRestore();
+		});
+
+		it("reinstalls signal handlers when cleanup is registered during teardown", async () => {
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
+
+			vi.resetModules();
+			const {
+				registerCleanup: freshRegister,
+				runCleanup: freshRunCleanup,
+				getCleanupCount: freshGetCleanupCount,
+			} = await import("../lib/shutdown.js");
+			await freshRunCleanup();
+
+			let registeredDuringTeardown = false;
+			const processOffSpy = vi.spyOn(process, "off").mockImplementation((event: string | symbol) => {
+				if (!registeredDuringTeardown && String(event) === "beforeExit") {
+					registeredDuringTeardown = true;
+					freshRegister(() => {});
+				}
+				return process;
+			});
+
+			try {
+				freshRegister(() => {});
+				expect(processOnSpy).toHaveBeenCalledTimes(3);
+
+				await freshRunCleanup();
+
+				expect(freshGetCleanupCount()).toBe(1);
+				expect(processOffSpy).toHaveBeenCalledTimes(3);
+				expect(processOnSpy).toHaveBeenCalledTimes(6);
+			} finally {
+				processOnSpy.mockRestore();
+				processOffSpy.mockRestore();
+			}
 		});
 	});
 });

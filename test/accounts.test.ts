@@ -2380,7 +2380,7 @@ describe("AccountManager", () => {
       }
     });
 
-    it("warns and exits if flushPendingSave keeps discovering new saves", async () => {
+    it("warns and rejects if flushPendingSave keeps discovering new saves", async () => {
       vi.useFakeTimers();
       try {
         const { saveAccounts } = await import("../lib/storage.js");
@@ -2410,7 +2410,9 @@ describe("AccountManager", () => {
         });
 
         manager.saveToDiskDebounced(0);
-        await manager.flushPendingSave();
+        await expect(manager.flushPendingSave()).rejects.toThrow(
+          "flushPendingSave: exceeded max flush iterations; save state may be incomplete",
+        );
 
         expect(accountLoggerWarn).toHaveBeenCalledWith(
           "flushPendingSave exceeded max iterations; possible save loop",

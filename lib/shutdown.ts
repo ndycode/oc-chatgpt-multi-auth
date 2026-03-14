@@ -26,15 +26,17 @@ export function runCleanup(): Promise<void> {
 	}
 
 	cleanupInFlight = (async () => {
-		const fns = [...cleanupFunctions];
-		cleanupFunctions.length = 0;
-
 		try {
-			for (const fn of fns) {
-				try {
-					await fn();
-				} catch {
-					// Ignore cleanup errors during shutdown
+			while (cleanupFunctions.length > 0) {
+				const fns = [...cleanupFunctions];
+				cleanupFunctions.length = 0;
+
+				for (const fn of fns) {
+					try {
+						await fn();
+					} catch {
+						// Ignore cleanup errors during shutdown
+					}
 				}
 			}
 		} finally {
@@ -44,6 +46,9 @@ export function runCleanup(): Promise<void> {
 	})().finally(() => {
 		cleanupInFlight = null;
 		signalExitPending = false;
+		if (cleanupFunctions.length > 0) {
+			ensureShutdownHandler();
+		}
 	});
 
 	return cleanupInFlight;
