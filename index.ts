@@ -1281,14 +1281,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				typeof existingModel.modelID === "string"
 					? existingModel.modelID
 					: fallbackModel?.modelID;
-			if (!providerID || !modelID) {
-				return;
-			}
 			messageInfo.model = {
 				...existingModel,
-				providerID,
-				modelID,
 				variant: indicatorLabel,
+				...(providerID ? { providerID } : {}),
+				...(modelID ? { modelID } : {}),
 			};
 		};
 

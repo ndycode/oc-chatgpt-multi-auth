@@ -2410,6 +2410,31 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		).toBe(expectedFullIndicator);
 	});
 
+	it("fills model.variant in the transform hook even when the stored message has no model info", async () => {
+		await enablePersistedFooter("full-email");
+		process.env.CODEX_THREAD_ID = "env-model-less";
+		const { plugin, sdk } = await setupPlugin();
+
+		await sendPersistedAccountRequest(sdk);
+
+		const output: Parameters<PluginType["experimental.chat.messages.transform"]>[1] = {
+			messages: [
+				{
+					info: {
+						role: "user",
+					},
+					parts: [],
+				},
+			],
+		};
+		await plugin["experimental.chat.messages.transform"]({}, output);
+
+		expect(output.messages[0]?.info.variant).toBe(expectedFullIndicator);
+		expect(
+			(output.messages[0]?.info.model as { variant?: string } | undefined)?.variant,
+		).toBe(expectedFullIndicator);
+	});
+
 	it("suppresses account-switch info toasts when the footer is enabled and refreshes the visible indicator", async () => {
 		await enablePersistedFooter("full-email");
 		mockStorage.accounts = [
@@ -2486,6 +2511,28 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(
 			(await readPersistedAccountIndicator(plugin, "session-switch-sync")).variant,
 		).toBe("user2@example.com [2/2]");
+	});
+
+	it("uses the loader-synced footer setting before the first fetch completes", async () => {
+		await enablePersistedFooter("full-email");
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+
+		const { plugin, mockClient } = await setupPlugin();
+		mockClient.tui.showToast.mockClear();
+
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+
+		expect(mockClient.tui.showToast).not.toHaveBeenCalledWith({
+			body: {
+				message: "Switched to account 2",
+				variant: "info",
+			},
+		});
 	});
 
 	it("shows the account-switch info toast when the footer is disabled", async () => {
