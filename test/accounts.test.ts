@@ -879,7 +879,50 @@ describe("AccountManager", () => {
 
       const updated = manager.getAccountsSnapshot();
       expect(updated.slice(0, 3).every((account) => account.enabled === false)).toBe(true);
+      expect(updated.slice(0, 3).every((account) => account.disabledReason === "auth-failure")).toBe(true);
       expect(updated[3]?.enabled).not.toBe(false);
+    });
+
+    it("preserves a manual disable reason when auth-failure disabling sibling variants", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", accountId: "workspace-a", addedAt: now, lastUsed: now },
+          {
+            refreshToken: "token-1",
+            accountId: "workspace-user-disabled",
+            enabled: false,
+            disabledReason: "user" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+          { refreshToken: "token-1", accountId: "workspace-b", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const accounts = manager.getAccountsSnapshot();
+      const disabledCount = manager.disableAccountsWithSameRefreshToken(accounts[0]);
+
+      expect(disabledCount).toBe(2);
+      const updated = manager.getAccountsSnapshot();
+      expect(updated[0]).toMatchObject({
+        accountId: "workspace-a",
+        enabled: false,
+        disabledReason: "auth-failure",
+      });
+      expect(updated[1]).toMatchObject({
+        accountId: "workspace-user-disabled",
+        enabled: false,
+        disabledReason: "user",
+      });
+      expect(updated[2]).toMatchObject({
+        accountId: "workspace-b",
+        enabled: false,
+        disabledReason: "auth-failure",
+      });
     });
 
     it("clears auth failure counter when removing accounts with same refreshToken", () => {
@@ -940,6 +983,9 @@ describe("AccountManager", () => {
       const disabledCount = manager.disableAccountsWithSameRefreshToken(accounts[0]);
       expect(disabledCount).toBe(2);
       expect(manager.getAccountsSnapshot().every((account) => account.enabled === false)).toBe(true);
+      expect(
+        manager.getAccountsSnapshot().every((account) => account.disabledReason === "auth-failure"),
+      ).toBe(true);
 
       const failuresByRefreshToken = Reflect.get(
         manager,

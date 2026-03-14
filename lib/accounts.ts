@@ -6,6 +6,7 @@ import { createLogger } from "./logger.js";
 import {
 	loadAccounts,
 	saveAccounts,
+	type AccountDisabledReason,
 	type AccountStorageV3,
 	type CooldownReason,
 	type RateLimitStateV3,
@@ -181,6 +182,7 @@ export interface ManagedAccount {
 	email?: string;
 	refreshToken: string;
 	enabled?: boolean;
+	disabledReason?: AccountDisabledReason;
 	access?: string;
 	expires?: number;
 	addedAt: number;
@@ -309,6 +311,7 @@ export class AccountManager {
 							: sanitizeEmail(account.email),
 						refreshToken,
 						enabled: account.enabled !== false,
+						disabledReason: account.enabled === false ? account.disabledReason : undefined,
 						access: matchesFallback && authFallback ? authFallback.access : account.accessToken,
 						expires: matchesFallback && authFallback ? authFallback.expires : account.expiresAt,
 						addedAt: clampNonNegativeInt(account.addedAt, baseNow),
@@ -885,6 +888,7 @@ export class AccountManager {
 			if (accountToDisable.refreshToken !== refreshToken) continue;
 			if (accountToDisable.enabled === false) continue;
 			accountToDisable.enabled = false;
+			accountToDisable.disabledReason = "auth-failure";
 			disabledCount++;
 		}
 
@@ -923,6 +927,9 @@ export class AccountManager {
 		const account = this.accounts[index];
 		if (!account) return null;
 		account.enabled = enabled;
+		if (enabled) {
+			delete account.disabledReason;
+		}
 		return account;
 	}
 
@@ -949,6 +956,7 @@ export class AccountManager {
 				accessToken: account.access,
 				expiresAt: account.expires,
 				enabled: account.enabled === false ? false : undefined,
+				disabledReason: account.enabled === false ? account.disabledReason : undefined,
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,
 				lastSwitchReason: account.lastSwitchReason,

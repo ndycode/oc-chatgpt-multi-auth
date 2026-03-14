@@ -204,6 +204,7 @@ const mockStorage = {
 		accessToken?: string;
 		expiresAt?: number;
 		enabled?: boolean;
+		disabledReason?: string;
 		addedAt?: number;
 		lastUsed?: number;
 		coolingDownUntil?: number;
@@ -3170,11 +3171,78 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const mergedOrg = mergedOrgEntries[0];
 		expect(mergedOrg?.accountId).toBe("org-shared");
 		expect(mergedOrg?.enabled).toBe(false);
+		expect(mergedOrg?.disabledReason).toBeUndefined();
 		expect(mergedOrg?.coolingDownUntil).toBe(12_000);
 		expect(mergedOrg?.cooldownReason).toBe("auth-failure");
 	});
 
-	it("re-enables disabled same-refresh-token variants on explicit login", async () => {
+	it("preserves manual disable reason over auth-failure when collapsing same-organization duplicates", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const authModule = await import("../lib/auth/auth.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "org-shared",
+				organizationId: "org-keep",
+				email: "manual@example.com",
+				refreshToken: "shared-refresh",
+				enabled: false,
+				disabledReason: "user",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+			{
+				accountId: "org-shared",
+				organizationId: "org-keep",
+				email: "auth-failure@example.com",
+				refreshToken: "shared-refresh",
+				enabled: false,
+				disabledReason: "auth-failure",
+				coolingDownUntil: 12_000,
+				cooldownReason: "auth-failure",
+				addedAt: 20,
+				lastUsed: 20,
+			},
+		];
+
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-unrelated-user-disabled",
+			refresh: "refresh-unrelated-user-disabled",
+			expires: Date.now() + 300_000,
+			idToken: "id-unrelated-user-disabled",
+		});
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([]);
+		vi.mocked(accountsModule.extractAccountId).mockImplementation((accessToken) =>
+			accessToken === "access-unrelated-user-disabled" ? "unrelated-user-disabled" : "account-1",
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
+
+		const mergedOrgEntries = mockStorage.accounts.filter(
+			(account) => account.organizationId === "org-keep",
+		);
+		expect(mergedOrgEntries).toHaveLength(1);
+		const mergedOrg = mergedOrgEntries[0];
+		expect(mergedOrg).toMatchObject({
+			accountId: "org-shared",
+			enabled: false,
+			disabledReason: "user",
+			coolingDownUntil: 12_000,
+			cooldownReason: "auth-failure",
+		});
+	});
+
+	it("preserves user-disabled and legacy-disabled variants while reviving auth-failure disables on explicit login", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const authModule = await import("../lib/auth/auth.js");
 
@@ -3185,6 +3253,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				email: "org@example.com",
 				refreshToken: "shared-refresh",
 				enabled: false,
+				disabledReason: "auth-failure",
 				coolingDownUntil: 12_000,
 				cooldownReason: "auth-failure",
 				addedAt: 10,
@@ -3196,10 +3265,20 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				email: "sibling@example.com",
 				refreshToken: "shared-refresh",
 				enabled: false,
-				coolingDownUntil: 15_000,
-				cooldownReason: "auth-failure",
+				disabledReason: "user",
 				addedAt: 11,
 				lastUsed: 11,
+			},
+			{
+				accountId: "org-legacy",
+				organizationId: "org-legacy",
+				email: "legacy@example.com",
+				refreshToken: "shared-refresh",
+				enabled: false,
+				coolingDownUntil: 18_000,
+				cooldownReason: "auth-failure",
+				addedAt: 12,
+				lastUsed: 12,
 			},
 		];
 
@@ -3229,10 +3308,34 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const revivedEntries = mockStorage.accounts.filter(
 			(account) => account.refreshToken === "shared-refresh",
 		);
-		expect(revivedEntries).toHaveLength(2);
-		expect(revivedEntries.every((account) => account.enabled !== false)).toBe(true);
-		expect(revivedEntries.every((account) => account.coolingDownUntil === undefined)).toBe(true);
-		expect(revivedEntries.every((account) => account.cooldownReason === undefined)).toBe(true);
+		expect(revivedEntries).toHaveLength(3);
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-shared"),
+		).toMatchObject({
+			accountId: "org-shared",
+			enabled: undefined,
+			disabledReason: undefined,
+			coolingDownUntil: undefined,
+			cooldownReason: undefined,
+		});
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-sibling"),
+		).toMatchObject({
+			accountId: "org-sibling",
+			enabled: false,
+			disabledReason: "user",
+		});
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-legacy"),
+		).toMatchObject({
+			accountId: "org-legacy",
+			enabled: false,
+			coolingDownUntil: 18_000,
+			cooldownReason: "auth-failure",
+		});
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-legacy"),
+		).not.toHaveProperty("disabledReason");
 		expect(
 			revivedEntries.find((account) => account.accountId === "org-shared")?.accessToken,
 		).toBe("access-shared-refresh");
@@ -3423,6 +3526,56 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith({
 			version: 1,
 			accounts: [],
+		});
+	});
+
+	it("writes user disable metadata from the auth manage menu and clears it on manual re-enable", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-managed",
+				email: "managed@example.com",
+				refreshToken: "refresh-managed",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		const saveAccountsMock = vi.mocked(storageModule.saveAccounts);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+		expect(saveAccountsMock.mock.calls[0]?.[0].accounts[0]).toMatchObject({
+			accountId: "workspace-managed",
+			enabled: false,
+			disabledReason: "user",
+		});
+		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).toMatchObject({
+			accountId: "workspace-managed",
+			enabled: true,
+			disabledReason: undefined,
+		});
+		expect(mockStorage.accounts[0]).toMatchObject({
+			accountId: "workspace-managed",
+			enabled: true,
+			disabledReason: undefined,
 		});
 	});
 });

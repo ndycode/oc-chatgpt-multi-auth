@@ -118,6 +118,7 @@ import {
 	loadFlaggedAccounts,
 	saveFlaggedAccounts,
 	clearFlaggedAccounts,
+	type AccountDisabledReason,
 	StorageError,
 	formatStorageErrorHint,
 	type AccountStorageV3,
@@ -560,6 +561,19 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					target.enabled === false || source.enabled === false
 						? false
 						: target.enabled ?? source.enabled;
+				const mergedDisabledReason = (() => {
+					if (mergedEnabled !== false) {
+						return undefined;
+					}
+					const reasons = [target.disabledReason, source.disabledReason];
+					if (reasons.includes("user")) {
+						return "user" satisfies AccountDisabledReason;
+					}
+					if (reasons.includes("auth-failure")) {
+						return "auth-failure" satisfies AccountDisabledReason;
+					}
+					return undefined;
+				})();
 				const targetCoolingDownUntil =
 					typeof target.coolingDownUntil === "number" && Number.isFinite(target.coolingDownUntil)
 						? target.coolingDownUntil
@@ -597,6 +611,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					accessToken: newer.accessToken || older.accessToken,
 					expiresAt: newer.expiresAt ?? older.expiresAt,
 					enabled: mergedEnabled,
+					disabledReason: mergedDisabledReason,
 					addedAt: Math.max(target.addedAt ?? 0, source.addedAt ?? 0),
 					lastUsed: Math.max(target.lastUsed ?? 0, source.lastUsed ?? 0),
 					lastSwitchReason: target.lastSwitchReason ?? source.lastSwitchReason,
@@ -1020,13 +1035,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (refreshTokensToRevive && refreshTokensToRevive.size > 0) {
 				accounts = accounts.map((account) => {
 					const refreshToken = account.refreshToken?.trim();
-					if (!refreshToken || !refreshTokensToRevive.has(refreshToken)) {
+					if (
+						!refreshToken ||
+						!refreshTokensToRevive.has(refreshToken) ||
+						account.disabledReason !== "auth-failure"
+					) {
 						return account;
 					}
 
 					return {
 						...account,
 						enabled: undefined,
+						disabledReason: undefined,
 						coolingDownUntil: undefined,
 						cooldownReason: undefined,
 					};
@@ -3465,7 +3485,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (typeof menuResult.toggleAccountIndex === "number") {
 											const target = workingStorage.accounts[menuResult.toggleAccountIndex];
 											if (target) {
-												target.enabled = target.enabled === false ? true : false;
+												const shouldEnable = target.enabled === false;
+												target.enabled = shouldEnable ? true : false;
+												target.disabledReason = shouldEnable ? undefined : "user";
 												await saveAccounts(workingStorage);
 												invalidateAccountManagerCache();
 												console.log(
