@@ -17,7 +17,10 @@ afterEach(async () => {
 });
 
 async function createDocsFixture(markdown = "# Guide\n") {
-	const root = await mkdtemp(path.join(tmpdir(), "docs-check-"));
+	const repoTempDir = path.join(process.cwd(), "tmp");
+	await mkdir(repoTempDir, { recursive: true });
+
+	const root = await mkdtemp(path.join(repoTempDir, "docs-check-"));
 	tempRoots.push(root);
 
 	const docsDir = path.join(root, "docs");
@@ -68,6 +71,9 @@ describe("docs-check script", () => {
 
 		await expect(validateLink(docsFile, "./targets/exists.md")).resolves.toBeNull();
 		await expect(validateLink(docsFile, "./targets/missing.md")).resolves.toBe("Missing local target: ./targets/missing.md");
+		await expect(validateLink(docsFile, "../../../../outside.md")).resolves.toBe(
+			"Local target escapes repository root: ../../../../outside.md",
+		);
 	});
 
 	it("normalizes direct-run paths consistently for the current platform", async () => {

@@ -89,13 +89,19 @@ jobs:
                 await github.rest.issues.getLabel({ owner, repo, name });
               } catch (error) {
                 if (error.status !== 404) throw error;
-                await github.rest.issues.createLabel({
-                  owner,
-                  repo,
-                  name,
-                  color,
-                  description,
-                });
+                try {
+                  await github.rest.issues.createLabel({
+                    owner,
+                    repo,
+                    name,
+                    color,
+                    description,
+                  });
+                } catch (createError) {
+                  if (createError.status === 422) return;
+                  if (String(createError.message ?? "").includes("already_exists")) return;
+                  throw createError;
+                }
               }
             }
 

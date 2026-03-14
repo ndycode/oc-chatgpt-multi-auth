@@ -242,6 +242,11 @@ export async function validateLink(filePath, linkTarget) {
 	if (!rawPath) return null;
 
 	const resolvedPath = path.resolve(path.dirname(filePath), rawPath);
+	const relativeToRoot = path.relative(ROOT, resolvedPath);
+	if (relativeToRoot.startsWith("..") || path.isAbsolute(relativeToRoot)) {
+		return `Local target escapes repository root: ${rawPath}`;
+	}
+
 	if (await exists(resolvedPath)) return null;
 
 	return `Missing local target: ${rawPath}`;
