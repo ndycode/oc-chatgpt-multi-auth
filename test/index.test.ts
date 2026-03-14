@@ -85,6 +85,8 @@ vi.mock("../lib/config.js", () => ({
 	getFastSession: () => false,
 	getFastSessionStrategy: () => "hybrid",
 	getFastSessionMaxInputItems: () => 30,
+	getPersistAccountFooter: vi.fn(() => false),
+	getPersistAccountFooterStyle: vi.fn(() => "label-masked-email"),
 	getRetryProfile: () => "balanced",
 	getRetryBudgetOverrides: () => ({}),
 	getRateLimitToastDebounceMs: () => 5000,
@@ -109,7 +111,7 @@ vi.mock("../lib/config.js", () => ({
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
 	getBeginnerSafeMode: () => false,
-	loadPluginConfig: () => ({}),
+	loadPluginConfig: vi.fn(() => ({})),
 }));
 
 vi.mock("../lib/request/request-transformer.js", () => ({
@@ -390,6 +392,10 @@ type ToolExecute<T = void> = { execute: (args: T) => Promise<string> };
 type OptionalToolExecute<T> = { execute: (args?: T) => Promise<string> };
 type PluginType = {
 	event: (input: { event: { type: string; properties?: unknown } }) => Promise<void>;
+	"experimental.text.complete": (
+		input: { sessionID: string },
+		output: { text: string },
+	) => Promise<void>;
 	auth: {
 		provider: string;
 		methods: Array<{ label: string; type: string }>;
@@ -1974,6 +1980,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 
 describe("OpenAIOAuthPlugin fetch handler", () => {
 	let originalFetch: typeof globalThis.fetch;
+	let originalThreadId: string | undefined;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -1986,11 +1993,18 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		];
 		mockStorage.activeIndex = 0;
 		mockStorage.activeIndexByFamily = {};
+		originalThreadId = process.env.CODEX_THREAD_ID;
+		delete process.env.CODEX_THREAD_ID;
 		originalFetch = globalThis.fetch;
 	});
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch;
+		if (originalThreadId === undefined) {
+			delete process.env.CODEX_THREAD_ID;
+		} else {
+			process.env.CODEX_THREAD_ID = originalThreadId;
+		}
 		vi.restoreAllMocks();
 	});
 
@@ -2011,6 +2025,60 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		return { plugin, sdk, mockClient };
 	};
 
+	const queueFooterForSession = async (
+		plugin: PluginType,
+		sdk: Awaited<ReturnType<typeof setupPlugin>>["sdk"],
+		sessionID: string,
+		promptCacheKey = sessionID,
+	) => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		vi.mocked(fetchHelpers.transformRequestForCodex).mockResolvedValueOnce({
+			updatedInit: {
+				method: "POST",
+				body: JSON.stringify(
+					promptCacheKey
+						? { model: "gpt-5.1", prompt_cache_key: promptCacheKey }
+						: { model: "gpt-5.1" },
+				),
+			},
+			body: promptCacheKey
+				? { model: "gpt-5.1", prompt_cache_key: promptCacheKey }
+				: { model: "gpt-5.1" },
+		});
+
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+		);
+
+		await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify(
+				promptCacheKey
+					? { model: "gpt-5.1", prompt_cache_key: promptCacheKey }
+					: { model: "gpt-5.1" },
+			),
+		});
+
+		return plugin;
+	};
+
+	const appendFooterForSession = async (
+		plugin: PluginType,
+		sessionID: string,
+		text: string,
+	) => {
+		const output = { text };
+		await plugin["experimental.text.complete"]({ sessionID }, output);
+		return output.text;
+	};
+
+	const expectedMaskedFooter =
+		"_Account: us***@***.com [0/1]_";
+	const expectedFullFooter =
+		"_Account: user@example.com [0/1]_";
+	const expectedLabelOnlyFooter =
+		"_Account: Account 1 [id:ount-1] [0/1]_";
+
 	it("returns success response for successful fetch", async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ content: "test" }), { status: 200 }),
@@ -2023,6 +2091,145 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 
 		expect(response.status).toBe(200);
+	});
+
+	it("appends a masked-email footer to completed text when enabled", async () => {
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.getPersistAccountFooter).mockReturnValue(true);
+		vi.mocked(configModule.getPersistAccountFooterStyle).mockReturnValue(
+			"label-masked-email",
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		await queueFooterForSession(plugin, sdk, "session-masked");
+
+		const completedText = await appendFooterForSession(
+			plugin,
+			"session-masked",
+			"Completed answer",
+		);
+
+		expect(completedText).toBe(
+			`Completed answer\n\n${expectedMaskedFooter}`,
+		);
+	});
+
+	it("appends a full-email footer to completed text when configured", async () => {
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.getPersistAccountFooter).mockReturnValue(true);
+		vi.mocked(configModule.getPersistAccountFooterStyle).mockReturnValue(
+			"full-email",
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		await queueFooterForSession(plugin, sdk, "session-full");
+
+		const completedText = await appendFooterForSession(
+			plugin,
+			"session-full",
+			"Completed answer",
+		);
+
+		expect(completedText).toBe(
+			`Completed answer\n\n${expectedFullFooter}`,
+		);
+	});
+
+	it("appends a label-only footer to completed text when configured", async () => {
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.getPersistAccountFooter).mockReturnValue(true);
+		vi.mocked(configModule.getPersistAccountFooterStyle).mockReturnValue(
+			"label-only",
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		await queueFooterForSession(plugin, sdk, "session-label");
+
+		const completedText = await appendFooterForSession(
+			plugin,
+			"session-label",
+			"Completed answer",
+		);
+
+		expect(completedText).toBe(
+			`Completed answer\n\n${expectedLabelOnlyFooter}`,
+		);
+	});
+
+	it("does not append a duplicate footer marker", async () => {
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.getPersistAccountFooter).mockReturnValue(true);
+		vi.mocked(configModule.getPersistAccountFooterStyle).mockReturnValue(
+			"label-masked-email",
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		await queueFooterForSession(plugin, sdk, "session-duplicate");
+
+		const output = {
+			text: "Completed answer\n\n_Account: Existing footer_",
+		};
+		await plugin["experimental.text.complete"]({ sessionID: "session-duplicate" }, output);
+
+		expect(output.text).toBe("Completed answer\n\n_Account: Existing footer_");
+
+		const secondPass = await appendFooterForSession(
+			plugin,
+			"session-duplicate",
+			"Completed answer",
+		);
+		expect(secondPass).toBe("Completed answer");
+	});
+
+	it("keeps queued footers isolated by session id", async () => {
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.getPersistAccountFooter).mockReturnValue(true);
+		vi.mocked(configModule.getPersistAccountFooterStyle).mockReturnValue(
+			"label-only",
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		await queueFooterForSession(plugin, sdk, "session-a");
+		await queueFooterForSession(plugin, sdk, "session-b");
+
+		const unmatched = await appendFooterForSession(
+			plugin,
+			"session-missing",
+			"Unchanged",
+		);
+		expect(unmatched).toBe("Unchanged");
+
+		const sessionA = await appendFooterForSession(plugin, "session-a", "First");
+		expect(sessionA).toBe(`First\n\n${expectedLabelOnlyFooter}`);
+
+		const sessionASecondPass = await appendFooterForSession(
+			plugin,
+			"session-a",
+			"First again",
+		);
+		expect(sessionASecondPass).toBe("First again");
+
+		const sessionB = await appendFooterForSession(plugin, "session-b", "Second");
+		expect(sessionB).toBe(`Second\n\n${expectedLabelOnlyFooter}`);
+	});
+
+	it("does not queue a footer when the request has no prompt_cache_key", async () => {
+		const configModule = await import("../lib/config.js");
+		vi.mocked(configModule.getPersistAccountFooter).mockReturnValue(true);
+		vi.mocked(configModule.getPersistAccountFooterStyle).mockReturnValue(
+			"label-masked-email",
+		);
+
+		const { plugin, sdk } = await setupPlugin();
+		await queueFooterForSession(plugin, sdk, "session-without-key", "");
+
+		const completedText = await appendFooterForSession(
+			plugin,
+			"session-without-key",
+			"Completed answer",
+		);
+
+		expect(completedText).toBe("Completed answer");
 	});
 
 	it("handles network errors and rotates to next account", async () => {

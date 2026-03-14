@@ -55,6 +55,8 @@ import {
 	getSessionRecovery,
 	getAutoResume,
 	getToastDurationMs,
+	getPersistAccountFooter,
+	getPersistAccountFooterStyle,
 	getPerProjectAccounts,
 	getEmptyResponseMaxRetries,
 	getEmptyResponseRetryDelayMs,
@@ -209,6 +211,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPreflightShown = false;
 	let beginnerSafeModeEnabled = false;
 	const MIN_BACKOFF_MS = 100;
+	const ACCOUNT_FOOTER_MARKER = "_Account:";
+	const MAX_PENDING_ACCOUNT_FOOTERS_PER_SESSION = 8;
+	const pendingAccountFooters = new Map<string, string[]>();
+
+	type PersistAccountFooterStyle =
+		| "label-masked-email"
+		| "full-email"
+		| "label-only";
 
 	type SelectionSnapshot = {
 		timestamp: number;
@@ -278,6 +288,106 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		lastSelectedAccountIndex: null,
 		lastQuotaKey: null,
 		lastSelectionSnapshot: null,
+	};
+
+	const maskPersistedEmail = (email: string | undefined): string | null => {
+		if (!email) return null;
+		const atIndex = email.indexOf("@");
+		if (atIndex < 0) return "***@***";
+		const local = email.slice(0, atIndex);
+		const domain = email.slice(atIndex + 1);
+		const parts = domain.split(".");
+		const tld = parts.pop() || "";
+		const prefix = local.slice(0, Math.min(2, local.length));
+		return `${prefix}***@***.${tld}`;
+	};
+
+	const formatPersistedAccountDescriptor = (
+		account: {
+			accountId?: string;
+			accountLabel?: string;
+			email?: string;
+		},
+		index: number,
+		accountCount: number,
+		style: PersistAccountFooterStyle,
+	): string => {
+		const accountLabel = account.accountLabel?.trim();
+		const sanitizedEmail = sanitizeEmail(account.email);
+		const accountId = account.accountId?.trim();
+		const idSuffix = accountId
+			? accountId.length > 6
+				? accountId.slice(-6)
+				: accountId
+			: null;
+		const baseLabel =
+			accountLabel ||
+			(idSuffix ? `Account ${index + 1} [id:${idSuffix}]` : `Account ${index + 1}`);
+		const accountPosition = `[${index}/${Math.max(1, accountCount)}]`;
+
+		if (style === "label-only") {
+			return `${baseLabel} ${accountPosition}`;
+		}
+
+		if (!sanitizedEmail) {
+			return `${baseLabel} ${accountPosition}`;
+		}
+
+		const displayEmail =
+			style === "full-email"
+				? sanitizedEmail
+				: (maskPersistedEmail(sanitizedEmail) ?? sanitizedEmail);
+		return `${displayEmail} ${accountPosition}`;
+	};
+
+	const formatPersistedAccountFooter = (
+		account: {
+			accountId?: string;
+			accountLabel?: string;
+			email?: string;
+		},
+		index: number,
+		accountCount: number,
+		style: PersistAccountFooterStyle,
+	): string => {
+		const descriptor = formatPersistedAccountDescriptor(
+			account,
+			index,
+			accountCount,
+			style,
+		);
+		return `${ACCOUNT_FOOTER_MARKER} ${descriptor}_`;
+	};
+
+	const queuePersistedAccountFooter = (
+		sessionID: string | undefined,
+		footer: string,
+	): void => {
+		const normalizedSessionID = sessionID?.trim();
+		if (!normalizedSessionID) return;
+
+		const queue = pendingAccountFooters.get(normalizedSessionID) ?? [];
+		queue.push(footer);
+		if (queue.length > MAX_PENDING_ACCOUNT_FOOTERS_PER_SESSION) {
+			queue.splice(0, queue.length - MAX_PENDING_ACCOUNT_FOOTERS_PER_SESSION);
+		}
+		pendingAccountFooters.set(normalizedSessionID, queue);
+	};
+
+	const consumePersistedAccountFooter = (
+		sessionID: string | undefined,
+	): string | null => {
+		const normalizedSessionID = sessionID?.trim();
+		if (!normalizedSessionID) return null;
+
+		const queue = pendingAccountFooters.get(normalizedSessionID);
+		if (!queue || queue.length === 0) return null;
+
+		const footer = queue.shift() ?? null;
+		if (queue.length === 0) {
+			pendingAccountFooters.delete(normalizedSessionID);
+		}
+		return footer;
 	};
 
 		type TokenSuccess = Extract<TokenResult, { type: "success" }>;
@@ -1690,6 +1800,29 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
         return {
                 event: eventHandler,
+                "experimental.text.complete": (
+			input: { sessionID: string },
+			output: { text: string },
+		) => {
+			const pluginConfig = loadPluginConfig();
+			if (!getPersistAccountFooter(pluginConfig)) {
+				return Promise.resolve();
+			}
+
+			const footer = consumePersistedAccountFooter(input.sessionID);
+			if (!footer) {
+				return Promise.resolve();
+			}
+
+			const existingText = output.text ?? "";
+			if (existingText.includes(ACCOUNT_FOOTER_MARKER)) {
+				return Promise.resolve();
+			}
+
+			const trimmedText = existingText.trimEnd();
+			output.text = trimmedText ? `${trimmedText}\n\n${footer}` : footer;
+			return Promise.resolve();
+		},
                 auth: {
 			provider: PROVIDER_ID,
 			/**
@@ -1806,6 +1939,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const unsupportedCodexFallbackChain =
 					getUnsupportedCodexFallbackChain(pluginConfig);
 				const toastDurationMs = getToastDurationMs(pluginConfig);
+				const persistAccountFooter = getPersistAccountFooter(pluginConfig);
+				const persistAccountFooterStyle =
+					getPersistAccountFooterStyle(pluginConfig);
 				const fetchTimeoutMs = getFetchTimeoutMs(pluginConfig);
 				const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
 
@@ -2617,6 +2753,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 
 					accountManager.recordSuccess(account, modelFamily, model);
+					if (persistAccountFooter) {
+						queuePersistedAccountFooter(
+							threadIdCandidate,
+							formatPersistedAccountFooter(
+								account,
+								account.index,
+								accountManager.getAccountCount(),
+								persistAccountFooterStyle,
+							),
+						);
+					}
 					runtimeMetrics.successfulRequests++;
 					runtimeMetrics.lastError = null;
 					runtimeMetrics.lastErrorCategory = null;

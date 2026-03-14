@@ -48,6 +48,8 @@ describe("PluginConfigSchema", () => {
 			tokenRefreshSkewMs: 60000,
 			rateLimitToastDebounceMs: 30000,
 			toastDurationMs: 5000,
+			persistAccountFooter: true,
+			persistAccountFooterStyle: "label-masked-email",
 			perProjectAccounts: true,
 			sessionRecovery: true,
 			autoResume: false,
@@ -87,6 +89,13 @@ describe("PluginConfigSchema", () => {
 
 	it("rejects invalid retryProfile", () => {
 		const result = PluginConfigSchema.safeParse({ retryProfile: "wild" });
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects invalid persistAccountFooterStyle", () => {
+		const result = PluginConfigSchema.safeParse({
+			persistAccountFooterStyle: "masked-only",
+		});
 		expect(result.success).toBe(false);
 	});
 
