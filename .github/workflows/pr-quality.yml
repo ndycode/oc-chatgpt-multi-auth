@@ -6,6 +6,8 @@ permissions:
   pull-requests: write
 
 on:
+  # Use pull_request_target so the action can comment on fork PRs without
+  # checking out or executing contributor code from the PR branch.
   pull_request_target:
     types:
       - opened
@@ -30,6 +32,7 @@ jobs:
             LICENSE
             CODE_OF_CONDUCT.md
             CODEOWNERS
+          exempt-label: exempt
           exempt-draft-prs: true
           close-pr: false
           lock-pr: false
