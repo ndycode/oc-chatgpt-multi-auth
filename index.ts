@@ -2075,9 +2075,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const unsupportedCodexFallbackChain =
 					getUnsupportedCodexFallbackChain(pluginConfig);
 				const toastDurationMs = getToastDurationMs(pluginConfig);
-				const persistAccountFooter = getPersistAccountFooter(pluginConfig);
-				const persistAccountFooterStyle =
-					getPersistAccountFooterStyle(pluginConfig);
 				const fetchTimeoutMs = getFetchTimeoutMs(pluginConfig);
 				const streamStallTimeoutMs = getStreamStallTimeoutMs(pluginConfig);
 
@@ -2176,6 +2173,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						init?: RequestInit,
 					): Promise<Response> {
 						try {
+							// Keep request-time toast behavior and later account.switch refreshes
+							// aligned with the latest config/env snapshot.
+							syncRuntimePluginConfig(loadPluginConfig());
 							if (cachedAccountManager && cachedAccountManager !== accountManager) {
 								accountManager = cachedAccountManager;
 							}
@@ -2506,7 +2506,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 												extractAccountEmail(accountAuth.access) ?? account.email;
 
 								if (
-									!persistAccountFooter &&
+									!runtimePersistAccountFooter &&
 									accountCount > 1 &&
 									accountManager.shouldShowAccountToast(
 										account.index,
@@ -2886,7 +2886,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 					}
 
 					accountManager.recordSuccess(account, modelFamily, model);
-					if (persistAccountFooter) {
+					if (runtimePersistAccountFooter) {
 						const liveAccountCount = accountManager.getAccountCount();
 						const persistedAccountCount =
 							liveAccountCount > 0
@@ -2899,7 +2899,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							account,
 							account.index,
 							persistedAccountCount,
-							persistAccountFooterStyle,
+							runtimePersistAccountFooterStyle,
 							indicatorRevision,
 						);
 					}
