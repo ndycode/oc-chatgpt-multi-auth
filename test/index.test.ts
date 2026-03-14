@@ -2457,6 +2457,36 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		);
 	});
 
+	it("does not set the chat.message indicator on assistant messages", async () => {
+		await enablePersistedFooter("full-email");
+		const { plugin, sdk } = await setupPlugin();
+
+		await sendPersistedAccountRequest(sdk, "session-chat-message-assistant");
+
+		const output = {
+			message: {
+				role: "assistant",
+				model: { providerID: "openai", modelID: "gpt-5.4" },
+			},
+			parts: [],
+		};
+
+		await expect(
+			plugin["chat.message"](
+				{
+					sessionID: "session-chat-message-assistant",
+					model: { providerID: "openai", modelID: "gpt-5.4" },
+				},
+				output,
+			),
+		).resolves.toBeUndefined();
+
+		expect((output.message as { variant?: string }).variant).toBeUndefined();
+		expect(
+			(output.message as { model?: { variant?: string } }).model?.variant,
+		).toBeUndefined();
+	});
+
 	it("fills model.variant in the transform hook even when the stored message has no model info", async () => {
 		await enablePersistedFooter("full-email");
 		process.env.CODEX_THREAD_ID = "env-model-less";
