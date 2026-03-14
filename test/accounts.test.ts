@@ -2309,6 +2309,38 @@ describe("AccountManager", () => {
         vi.useRealTimers();
       }
     });
+
+    it("rejects when saveToDisk throws during flush", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+        mockSaveAccounts.mockRejectedValueOnce(new Error("EBUSY: file in use"));
+        mockSaveAccounts.mockResolvedValueOnce();
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        manager.saveToDiskDebounced(0);
+
+        await expect(manager.flushPendingSave()).rejects.toThrow("EBUSY");
+
+        manager.saveToDiskDebounced(0);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("health and token tracking methods", () => {
