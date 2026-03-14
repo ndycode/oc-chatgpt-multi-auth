@@ -2108,7 +2108,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	) => {
 		const output = buildMessageTransformOutput(sessionID, modelID);
 		await plugin["experimental.chat.messages.transform"]({}, output);
-		return output.messages[0]?.info.model?.modelID;
+		return output.messages[0]?.info.variant;
 	};
 
 	it("returns success response for successful fetch", async () => {
@@ -2158,7 +2158,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		);
 	});
 
-	it("falls back to the current chat session when the request has no prompt_cache_key", async () => {
+	it("skips persisted indicators when the request has no session key", async () => {
 		await enablePersistedFooter("label-masked-email");
 		const { plugin, sdk } = await setupPlugin();
 		await plugin["chat.message"](
@@ -2171,17 +2171,20 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 
 		await sendPersistedAccountRequest(sdk);
 
-		expect(await readPersistedAccountIndicator(plugin, "session-no-key")).toBe(
-			expectedMaskedToastMessage,
-		);
+		expect(await readPersistedAccountIndicator(plugin, "session-no-key")).toBeUndefined();
 	});
 
-	it("decorates chat.message output with the visible account indicator", async () => {
+	it("decorates chat.message output with the visible account indicator variant", async () => {
 		await enablePersistedFooter("full-email");
 		const { plugin, sdk } = await setupPlugin();
 		await sendPersistedAccountRequest(sdk, "session-chat-message", "gpt-5.4");
 
-		const output = { message: {}, parts: [] };
+		const output = {
+			message: {
+				model: { providerID: "openai", modelID: "gpt-5.4" },
+			},
+			parts: [],
+		};
 		await plugin["chat.message"](
 			{
 				sessionID: "session-chat-message",
@@ -2190,55 +2193,30 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			output,
 		);
 
-		expect((output.message as { model?: { modelID?: string } }).model?.modelID).toBe(
+		expect((output.message as { variant?: string }).variant).toBe(
 			expectedFullToastMessage,
 		);
+		expect((output.message as { model?: { modelID?: string } }).model?.modelID).toBe("gpt-5.4");
 	});
 
-	it("restores the real model before request transformation when the session label is decorated", async () => {
+	it("shows an account-switch toast when no visible indicator can be refreshed", async () => {
 		await enablePersistedFooter("full-email");
-		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
-		const { plugin, sdk } = await setupPlugin();
-		await sendPersistedAccountRequest(sdk, "session-restore", "gpt-5.4");
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
 
-		const output = { message: {}, parts: [] };
-		await plugin["chat.message"](
-			{
-				sessionID: "session-restore",
-				model: { providerID: "openai", modelID: "gpt-5.4" },
-			},
-			output,
-		);
-		const decoratedModel =
-			(output.message as { model?: { modelID?: string } }).model?.modelID;
-		expect(decoratedModel).toBe(expectedFullToastMessage);
-
-		vi.mocked(fetchHelpers.transformRequestForCodex).mockImplementationOnce(
-			async (init, _url, _config, _codexMode, body) => ({
-				updatedInit: init as RequestInit,
-				body: body as never,
-			}),
-		);
-		globalThis.fetch = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
-		);
-
-		await sdk.fetch!("https://api.openai.com/v1/chat", {
-			method: "POST",
-			body: JSON.stringify({
-				model: decoratedModel,
-				prompt_cache_key: "session-restore",
-			}),
+		const { plugin, mockClient } = await setupPlugin();
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
 		});
 
-		expect(vi.mocked(fetchHelpers.transformRequestForCodex)).toHaveBeenLastCalledWith(
-			expect.anything(),
-			"https://api.openai.com/v1/chat",
-			expect.anything(),
-			true,
-			expect.objectContaining({ model: "gpt-5.4" }),
-			expect.anything(),
-		);
+		expect(mockClient.tui.showToast).toHaveBeenCalledWith({
+			body: {
+				message: "Switched to account 2",
+				variant: "info",
+			},
+		});
 	});
 
 	it("refreshes the visible account indicator after switching accounts", async () => {
@@ -2252,7 +2230,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		await sendPersistedAccountRequest(sdk, "session-switch");
 
 		expect(await readPersistedAccountIndicator(plugin, "session-switch")).toBe(
-			"user@example.com [0/1]",
+			"user@example.com [0/2]",
 		);
 
 		await plugin.event({
