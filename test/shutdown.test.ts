@@ -130,6 +130,45 @@ describe("Graceful shutdown", () => {
 			processExitSpy.mockRestore();
 		});
 
+		it("keeps shutdown handlers installed until async cleanup completes", async () => {
+			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
+
+			const processOnceSpy = vi.spyOn(process, "once").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
+				capturedHandlers.set(String(event), handler);
+				return process;
+			});
+			const processOffSpy = vi.spyOn(process, "off").mockImplementation(() => process);
+			const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+			vi.resetModules();
+			const { registerCleanup: freshRegister, runCleanup: freshRunCleanup } = await import("../lib/shutdown.js");
+			await freshRunCleanup();
+
+			let resolveCleanup!: () => void;
+			const cleanupPromise = new Promise<void>((resolve) => {
+				resolveCleanup = resolve;
+			});
+			freshRegister(async () => {
+				await cleanupPromise;
+			});
+
+			const sigtermHandler = capturedHandlers.get("SIGTERM");
+			expect(sigtermHandler).toBeDefined();
+
+			sigtermHandler!();
+			await Promise.resolve();
+			expect(processOffSpy).not.toHaveBeenCalled();
+
+			resolveCleanup();
+			await new Promise((r) => setTimeout(r, 10));
+			expect(processOffSpy).toHaveBeenCalledTimes(3);
+			expect(processExitSpy).toHaveBeenCalledWith(0);
+
+			processOnceSpy.mockRestore();
+			processOffSpy.mockRestore();
+			processExitSpy.mockRestore();
+		});
+
 		it("beforeExit handler runs cleanup without calling exit", async () => {
 			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
 			

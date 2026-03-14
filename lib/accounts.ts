@@ -940,6 +940,8 @@ export class AccountManager {
 			delete account.disabledReason;
 		} else if (reason) {
 			account.disabledReason = reason;
+		} else {
+			delete account.disabledReason;
 		}
 		return account;
 	}
@@ -1007,13 +1009,16 @@ export class AccountManager {
 	}
 
 	async flushPendingSave(): Promise<void> {
+		const hadDebouncedSave = !!this.saveDebounceTimer;
 		if (this.saveDebounceTimer) {
 			clearTimeout(this.saveDebounceTimer);
 			this.saveDebounceTimer = null;
-			await this.saveToDisk();
 		}
 		if (this.pendingSave) {
 			await this.pendingSave;
+		}
+		if (hadDebouncedSave) {
+			await this.saveToDisk();
 		}
 	}
 }

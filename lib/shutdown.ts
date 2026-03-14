@@ -21,15 +21,18 @@ export function unregisterCleanup(fn: CleanupFn): void {
 export async function runCleanup(): Promise<void> {
 	const fns = [...cleanupFunctions];
 	cleanupFunctions.length = 0;
-	removeShutdownHandlers();
-	shutdownRegistered = false;
 
-	for (const fn of fns) {
-		try {
-			await fn();
-		} catch {
-			// Ignore cleanup errors during shutdown
+	try {
+		for (const fn of fns) {
+			try {
+				await fn();
+			} catch {
+				// Ignore cleanup errors during shutdown
+			}
 		}
+	} finally {
+		removeShutdownHandlers();
+		shutdownRegistered = false;
 	}
 }
 

@@ -1031,6 +1031,31 @@ describe("AccountManager", () => {
       });
       expect(reenabled?.disabledReason).toBeUndefined();
     });
+
+    it("clears stale disabledReason when disabling without an explicit reason", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: false,
+            disabledReason: "auth-failure" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const disabled = manager.setAccountEnabled(0, false);
+      expect(disabled).toMatchObject({
+        enabled: false,
+      });
+      expect(disabled?.disabledReason).toBeUndefined();
+    });
   });
 
   describe("getMinWaitTimeForFamily", () => {
@@ -1928,6 +1953,50 @@ describe("AccountManager", () => {
       
       await manager.flushPendingSave();
       await savePromise;
+    });
+
+    it("waits for in-flight save before flushing a pending debounce", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        let resolveFirst!: () => void;
+        const firstSave = new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+        mockSaveAccounts.mockImplementationOnce(() => firstSave);
+        mockSaveAccounts.mockResolvedValue();
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+
+        manager.saveToDiskDebounced(50);
+        await vi.advanceTimersByTimeAsync(60);
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+        manager.saveToDiskDebounced(50);
+        const flushPromise = manager.flushPendingSave();
+        await Promise.resolve();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+        resolveFirst();
+        await flushPromise;
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
