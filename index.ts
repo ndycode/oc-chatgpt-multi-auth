@@ -2323,10 +2323,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						// When the host provides a runtime thread id, prefer it over
 						// prompt_cache_key so the fetch path stores indicators under the
 						// same session key that the chat hooks resolve later.
-						const threadIdCandidate = resolvePersistedAccountSessionID(
-							process.env.CODEX_THREAD_ID,
-							promptCacheKey,
-						);
+						const runtimeThreadId = process.env.CODEX_THREAD_ID?.toString().trim();
+						const threadIdCandidate =
+							runtimeThreadId || resolvePersistedAccountSessionID(promptCacheKey);
 						const indicatorRevision = persistAccountFooter
 							? nextPersistedAccountIndicatorRevision()
 							: 0;

@@ -2339,13 +2339,14 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect((await readPersistedAccountIndicator(plugin, "session-no-key")).variant).toBeUndefined();
 	});
 
-	it("decorates chat.message output with the visible account indicator variant without leaking to thinking", async () => {
+	it("decorates live user chat.message output with the visible account indicator without leaking to thinking", async () => {
 		await enablePersistedFooter("full-email");
 		const { plugin, sdk } = await setupPlugin();
 		await sendPersistedAccountRequest(sdk, "session-chat-message", "gpt-5.4");
 
 		const output = {
 			message: {
+				role: "user",
 				model: { providerID: "openai", modelID: "gpt-5.4" },
 			},
 			parts: [],
@@ -2431,14 +2432,14 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		);
 	});
 
-	it("sets the chat.message indicator when model info is absent", async () => {
+	it("uses input.model as the fallback chat.message model when model info is absent", async () => {
 		await enablePersistedFooter("full-email");
 		const { plugin, sdk } = await setupPlugin();
 
 		await sendPersistedAccountRequest(sdk, "session-chat-message-no-model");
 
 		const output = {
-			message: {},
+			message: { role: "user" },
 			parts: [],
 		};
 
@@ -2446,12 +2447,19 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			plugin["chat.message"](
 				{
 					sessionID: "session-chat-message-no-model",
+					model: { providerID: "openai", modelID: "gpt-5.4" },
 				},
 				output,
 			),
 		).resolves.toBeUndefined();
 
 		expect((output.message as { variant?: string }).variant).toBe(expectedFullIndicator);
+		expect(
+			(output.message as { model?: { providerID?: string } }).model?.providerID,
+		).toBe("openai");
+		expect(
+			(output.message as { model?: { modelID?: string } }).model?.modelID,
+		).toBe("gpt-5.4");
 		expect((output.message as { model?: { variant?: string } }).model?.variant).toBe(
 			expectedFullIndicator,
 		);
