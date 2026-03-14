@@ -890,8 +890,8 @@ export class AccountManager {
 
 		for (const accountToDisable of this.accounts) {
 			if (accountToDisable.refreshToken !== refreshToken) continue;
-			this.clearAccountCooldown(accountToDisable);
 			if (accountToDisable.enabled === false) continue;
+			this.clearAccountCooldown(accountToDisable);
 			accountToDisable.enabled = false;
 			accountToDisable.disabledReason = "auth-failure";
 			disabledCount++;

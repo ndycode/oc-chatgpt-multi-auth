@@ -895,6 +895,8 @@ describe("AccountManager", () => {
             accountId: "workspace-user-disabled",
             enabled: false,
             disabledReason: "user" as const,
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "rate-limit" as const,
             addedAt: now,
             lastUsed: now,
           },
@@ -917,6 +919,8 @@ describe("AccountManager", () => {
         accountId: "workspace-user-disabled",
         enabled: false,
         disabledReason: "user",
+        coolingDownUntil: now + 60_000,
+        cooldownReason: "rate-limit",
       });
       expect(updated[2]).toMatchObject({
         accountId: "workspace-b",
