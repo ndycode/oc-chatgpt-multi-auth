@@ -2869,10 +2869,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					accountManager.recordSuccess(account, modelFamily, model);
 					if (persistAccountFooter) {
+						const liveAccountCount = accountManager.getAccountCount();
 						const persistedAccountCount =
-							persistedAccountCountHint > 0
-								? persistedAccountCountHint
-								: accountManager.getAccountCount();
+							liveAccountCount > 0
+								? liveAccountCount
+								: persistedAccountCountHint > 0
+									? persistedAccountCountHint
+									: 1;
 						setPersistedAccountIndicator(
 							threadIdCandidate,
 							account,

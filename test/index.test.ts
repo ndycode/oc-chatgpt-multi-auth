@@ -2201,6 +2201,40 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(storageModule.loadAccounts).not.toHaveBeenCalled();
 	});
 
+	it("uses the live account count when the cached footer hint is stale", async () => {
+		await enablePersistedFooter("full-email");
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+		const accountsModule = await import("../lib/accounts.js");
+		const manager = await accountsModule.AccountManager.loadFromDisk() as unknown as {
+			accounts: Array<{
+				index: number;
+				accountId: string;
+				email: string;
+				refreshToken: string;
+			}>;
+		};
+		manager.accounts = [
+			{ index: 0, accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+			{ index: 1, accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		const { plugin, sdk } = await setupPlugin();
+
+		await sendPersistedAccountRequest(sdk, "session-live-count");
+		manager.accounts = [
+			{ index: 0, accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+		];
+
+		await sendPersistedAccountRequest(sdk, "session-live-count");
+
+		expect((await readPersistedAccountIndicator(plugin, "session-live-count")).variant).toBe(
+			expectedFullIndicator,
+		);
+	});
+
 	it("decorates the last user message with a label-only indicator when configured", async () => {
 		await enablePersistedFooter("label-only");
 		const { plugin, sdk } = await setupPlugin();
@@ -2300,6 +2334,20 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
 			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
 		];
+		const accountsModule = await import("../lib/accounts.js");
+		const manager = await accountsModule.AccountManager.loadFromDisk() as unknown as {
+			accounts: Array<{
+				index: number;
+				accountId: string;
+				email: string;
+				refreshToken: string;
+			}>;
+		};
+		manager.accounts = [
+			{ index: 0, accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+			{ index: 1, accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
 
 		const { plugin, sdk, mockClient } = await setupPlugin();
 		await sendPersistedAccountRequest(sdk, "session-switch");
