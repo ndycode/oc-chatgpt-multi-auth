@@ -2169,7 +2169,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							}
 							// Log account selection for debugging rotation
 							logDebug(
-								`Using account ${account.index + 1}/${accountCount}: ${account.email ?? "unknown"} for ${modelFamily}`,
+								`Using account ${account.index + 1} (enabled ${attempted.size}/${accountCount}): ${account.email ?? "unknown"} for ${modelFamily}`,
 							);
 
 											let accountAuth = accountManager.toAuthDetails(account) as OAuthAuthDetails;
