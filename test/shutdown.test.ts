@@ -235,6 +235,43 @@ describe("Graceful shutdown", () => {
 			}
 		});
 
+		it("keeps later signals ignored after cleanup completes until process exit", async () => {
+			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
+
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
+				capturedHandlers.set(String(event), handler);
+				return process;
+			});
+			const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+			vi.resetModules();
+			const { registerCleanup: freshRegister, runCleanup: freshRunCleanup } = await import("../lib/shutdown.js");
+			await freshRunCleanup();
+
+			const cleanupFn = vi.fn();
+			freshRegister(cleanupFn);
+
+			try {
+				const sigtermHandler = capturedHandlers.get("SIGTERM");
+				expect(sigtermHandler).toBeDefined();
+
+				sigtermHandler!();
+				await vi.waitFor(() => {
+					expect(cleanupFn).toHaveBeenCalledTimes(1);
+					expect(processExitSpy).toHaveBeenCalledTimes(1);
+				});
+
+				sigtermHandler!();
+				await Promise.resolve();
+
+				expect(cleanupFn).toHaveBeenCalledTimes(1);
+				expect(processExitSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				processOnSpy.mockRestore();
+				processExitSpy.mockRestore();
+			}
+		});
+
 		it("beforeExit handler runs cleanup without calling exit", async () => {
 			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
 			

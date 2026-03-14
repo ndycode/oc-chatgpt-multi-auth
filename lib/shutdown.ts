@@ -7,6 +7,7 @@ let sigtermHandler: (() => void) | null = null;
 let beforeExitHandler: (() => void) | null = null;
 let cleanupInFlight: Promise<void> | null = null;
 let signalExitPending = false;
+let shouldResetSignalExitPending = true;
 
 export function registerCleanup(fn: CleanupFn): void {
 	cleanupFunctions.push(fn);
@@ -45,7 +46,10 @@ export function runCleanup(): Promise<void> {
 		}
 	})().finally(() => {
 		cleanupInFlight = null;
-		signalExitPending = false;
+		if (shouldResetSignalExitPending) {
+			signalExitPending = false;
+		}
+		shouldResetSignalExitPending = true;
 		if (cleanupFunctions.length > 0) {
 			ensureShutdownHandler();
 		}
@@ -63,6 +67,7 @@ function ensureShutdownHandler(): void {
 			return;
 		}
 		signalExitPending = true;
+		shouldResetSignalExitPending = false;
 		void runCleanup().finally(() => {
 			process.exit(0);
 		});
