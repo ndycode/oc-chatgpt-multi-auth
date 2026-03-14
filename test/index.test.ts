@@ -2535,6 +2535,80 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect(response.status).toBe(200);
 		});
 
+		it("uses enabled-account positions in selection toasts", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+
+			const account = {
+				index: 2,
+				accountId: "acc-3",
+				email: "user3@example.com",
+				refreshToken: "refresh-3",
+			};
+			const markToastShown = vi.fn();
+			const customManager = {
+				getAccountCount: () => 3,
+				getEnabledAccountCount: () => 2,
+				getCurrentOrNextForFamilyHybrid: (() => {
+					let selected = false;
+					return () => {
+						if (selected) {
+							return null;
+						}
+						selected = true;
+						return account;
+					};
+				})(),
+				getSelectionExplainability: () => [],
+				toAuthDetails: (selectedAccount: { accountId?: string }) => ({
+					type: "oauth" as const,
+					access: `access-${selectedAccount.accountId ?? "unknown"}`,
+					refresh: "refresh-token",
+					expires: Date.now() + 60_000,
+				}),
+				hasRefreshToken: () => true,
+				saveToDiskDebounced: () => {},
+				updateFromAuth: () => {},
+				clearAuthFailures: () => {},
+				incrementAuthFailures: () => 1,
+				markAccountCoolingDown: () => {},
+				markRateLimitedWithReason: () => {},
+				recordRateLimit: () => {},
+				consumeToken: () => true,
+				refundToken: () => {},
+				markSwitched: () => {},
+				removeAccount: () => {},
+				recordFailure: () => {},
+				recordSuccess: () => {},
+				getMinWaitTimeForFamily: () => 0,
+				shouldShowAccountToast: () => true,
+				markToastShown,
+				setActiveIndex: () => account,
+				getAccountsSnapshot: () => [account],
+			};
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
+
+			const { sdk, mockClient } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(mockClient.tui.showToast).toHaveBeenCalledWith(
+				expect.objectContaining({
+					body: expect.objectContaining({
+						message: expect.stringContaining("enabled 1/2"),
+						variant: "info",
+					}),
+				}),
+			);
+			expect(markToastShown).toHaveBeenCalledWith(2);
+		});
+
 		it("handles empty body in request", async () => {
 			globalThis.fetch = vi.fn().mockResolvedValue(
 				new Response(JSON.stringify({ content: "test" }), { status: 200 }),

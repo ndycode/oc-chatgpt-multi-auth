@@ -2289,7 +2289,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											) {
 												const accountLabel = formatAccountLabel(account, account.index);
 												await showToast(
-													`Using ${accountLabel} (${account.index + 1}/${accountCount})`,
+													`Using ${accountLabel} (enabled ${attempted.size}/${accountCount})`,
 													"info",
 												);
 												accountManager.markToastShown(account.index);
