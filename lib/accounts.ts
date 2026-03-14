@@ -311,7 +311,8 @@ export class AccountManager {
 							: sanitizeEmail(account.email),
 						refreshToken,
 						enabled: account.enabled !== false,
-						disabledReason: account.enabled === false ? account.disabledReason : undefined,
+						disabledReason:
+							account.enabled === false ? account.disabledReason ?? "user" : undefined,
 						access: matchesFallback && authFallback ? authFallback.access : account.accessToken,
 						expires: matchesFallback && authFallback ? authFallback.expires : account.expiresAt,
 						addedAt: clampNonNegativeInt(account.addedAt, baseNow),
@@ -941,6 +942,9 @@ export class AccountManager {
 		if (index < 0 || index >= this.accounts.length) return null;
 		const account = this.accounts[index];
 		if (!account) return null;
+		if (enabled && account.disabledReason === "auth-failure") {
+			return null;
+		}
 		account.enabled = enabled;
 		if (enabled) {
 			delete account.disabledReason;
@@ -975,7 +979,8 @@ export class AccountManager {
 				accessToken: account.access,
 				expiresAt: account.expires,
 				enabled: account.enabled === false ? false : undefined,
-				disabledReason: account.enabled === false ? account.disabledReason : undefined,
+				disabledReason:
+					account.enabled === false ? account.disabledReason ?? "user" : undefined,
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,
 				lastSwitchReason: account.lastSwitchReason,

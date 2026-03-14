@@ -948,6 +948,47 @@ describe("AccountManager", () => {
       });
     });
 
+    it("defaults legacy disabled accounts to a user disable reason", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+      mockSaveAccounts.mockResolvedValueOnce();
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: false,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      expect(manager.getAccountsSnapshot()[0]).toMatchObject({
+        enabled: false,
+        disabledReason: "user",
+      });
+
+      await manager.saveToDisk();
+
+      expect(mockSaveAccounts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accounts: [
+            expect.objectContaining({
+              enabled: false,
+              disabledReason: "user",
+            }),
+          ],
+        }),
+      );
+    });
+
     it("clears auth failure counter when removing accounts with same refreshToken", () => {
       const now = Date.now();
       const stored = {
@@ -1074,6 +1115,32 @@ describe("AccountManager", () => {
         enabled: false,
       });
       expect(disabled?.disabledReason).toBeUndefined();
+    });
+
+    it("blocks re-enabling auth-failure disabled accounts through setAccountEnabled", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: false,
+            disabledReason: "auth-failure" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const reenabled = manager.setAccountEnabled(0, true);
+      expect(reenabled).toBeNull();
+      expect(manager.getAccountsSnapshot()[0]).toMatchObject({
+        enabled: false,
+        disabledReason: "auth-failure",
+      });
     });
   });
 
@@ -1461,6 +1528,7 @@ describe("AccountManager", () => {
     it("saves accounts with all fields", async () => {
       const { saveAccounts } = await import("../lib/storage.js");
       const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
       mockSaveAccounts.mockResolvedValueOnce();
 
       const now = Date.now();
