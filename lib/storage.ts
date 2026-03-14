@@ -985,9 +985,10 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		const cooldownReason = isCooldownReason(rawAccount.cooldownReason)
 			? rawAccount.cooldownReason
 			: undefined;
-		const disabledReason = isDisabledReason(rawAccount.disabledReason)
-			? rawAccount.disabledReason
-			: undefined;
+		const disabledReason =
+			rawAccount.enabled === false && isDisabledReason(rawAccount.disabledReason)
+				? rawAccount.disabledReason
+				: undefined;
 		const accountTags = normalizeTags(rawAccount.accountTags);
 		const accountNote =
 			typeof rawAccount.accountNote === "string" && rawAccount.accountNote.trim()

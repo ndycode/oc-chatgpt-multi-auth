@@ -5,6 +5,8 @@ let shutdownRegistered = false;
 let sigintHandler: (() => void) | null = null;
 let sigtermHandler: (() => void) | null = null;
 let beforeExitHandler: (() => void) | null = null;
+let cleanupInFlight: Promise<void> | null = null;
+let signalExitPending = false;
 
 export function registerCleanup(fn: CleanupFn): void {
 	cleanupFunctions.push(fn);
@@ -18,22 +20,33 @@ export function unregisterCleanup(fn: CleanupFn): void {
 	}
 }
 
-export async function runCleanup(): Promise<void> {
-	const fns = [...cleanupFunctions];
-	cleanupFunctions.length = 0;
-
-	try {
-		for (const fn of fns) {
-			try {
-				await fn();
-			} catch {
-				// Ignore cleanup errors during shutdown
-			}
-		}
-	} finally {
-		removeShutdownHandlers();
-		shutdownRegistered = false;
+export function runCleanup(): Promise<void> {
+	if (cleanupInFlight) {
+		return cleanupInFlight;
 	}
+
+	cleanupInFlight = (async () => {
+		const fns = [...cleanupFunctions];
+		cleanupFunctions.length = 0;
+
+		try {
+			for (const fn of fns) {
+				try {
+					await fn();
+				} catch {
+					// Ignore cleanup errors during shutdown
+				}
+			}
+		} finally {
+			removeShutdownHandlers();
+			shutdownRegistered = false;
+		}
+	})().finally(() => {
+		cleanupInFlight = null;
+		signalExitPending = false;
+	});
+
+	return cleanupInFlight;
 }
 
 function ensureShutdownHandler(): void {
@@ -41,6 +54,10 @@ function ensureShutdownHandler(): void {
 	shutdownRegistered = true;
 
 	const handleSignal = () => {
+		if (signalExitPending) {
+			return;
+		}
+		signalExitPending = true;
 		void runCleanup().finally(() => {
 			process.exit(0);
 		});
@@ -48,12 +65,14 @@ function ensureShutdownHandler(): void {
 	sigintHandler = handleSignal;
 	sigtermHandler = handleSignal;
 	beforeExitHandler = () => {
-		void runCleanup();
+		if (!cleanupInFlight) {
+			void runCleanup();
+		}
 	};
 
-	process.once("SIGINT", sigintHandler);
-	process.once("SIGTERM", sigtermHandler);
-	process.once("beforeExit", beforeExitHandler);
+	process.on("SIGINT", sigintHandler);
+	process.on("SIGTERM", sigtermHandler);
+	process.on("beforeExit", beforeExitHandler);
 }
 
 function removeShutdownHandlers(): void {

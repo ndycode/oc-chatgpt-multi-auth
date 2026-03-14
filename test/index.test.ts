@@ -213,7 +213,7 @@ const mockStorage = {
 		accessToken?: string;
 		expiresAt?: number;
 		enabled?: boolean;
-		disabledReason?: string;
+		disabledReason?: "user" | "auth-failure";
 		addedAt?: number;
 		lastUsed?: number;
 		coolingDownUntil?: number;
@@ -2066,6 +2066,54 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(await response.text()).toContain("server errors or auth issues");
 	});
 
+	it("reports disabled pools separately from missing pools", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+
+		const customManager = {
+			getAccountCount: () => 2,
+			getEnabledAccountCount: () => 0,
+			getCurrentOrNextForFamilyHybrid: () => null,
+			getSelectionExplainability: () => [],
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-disabled",
+				refresh: "refresh-disabled",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			markAccountCoolingDown: () => {},
+			markRateLimitedWithReason: () => {},
+			recordRateLimit: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+			getAccountsSnapshot: () => [],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+		globalThis.fetch = vi.fn();
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(response.status).toBe(503);
+		expect(await response.text()).toContain("All stored Codex accounts are disabled");
+	});
+
 	it("disables grouped accounts when auth failures hit the threshold", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		const { AccountManager } = await import("../lib/accounts.js");
@@ -3631,7 +3679,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			}
 			return null;
 		});
-		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValue([]);
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([]);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");

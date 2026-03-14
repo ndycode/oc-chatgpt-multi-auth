@@ -2714,11 +2714,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 										}
 
 										const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
-										const count = accountManager.getEnabledAccountCount();
+										const enabledCount = accountManager.getEnabledAccountCount();
+										const totalCount = accountManager.getAccountCount();
 
 								if (
 									retryAllAccountsRateLimited &&
-									count > 0 &&
+									enabledCount > 0 &&
 									waitMs > 0 &&
 									(retryAllAccountsMaxWaitMs === 0 ||
 										waitMs <= retryAllAccountsMaxWaitMs) &&
@@ -2728,7 +2729,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										`All accounts rate-limited wait ${waitMs}ms`,
 									)
 								) {
-									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
+									const countdownMessage = `All ${enabledCount} enabled account(s) rate-limited. Waiting`;
 									await sleepWithCountdown(addJitter(waitMs, 0.2), countdownMessage);
 									allRateLimitedRetries++;
 									continue;
@@ -2736,11 +2737,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 								const waitLabel = waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
 								const message =
-									count === 0
+									totalCount === 0
 										? "No Codex accounts configured. Run `opencode auth login`."
+										: enabledCount === 0
+											? "All stored Codex accounts are disabled. Re-enable them from account management or run `opencode auth login` to restore auth-failure disables."
 										: waitMs > 0
-											? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`
-											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
+											? `All ${enabledCount} enabled account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`
+											: `All ${enabledCount} enabled account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
 								runtimeMetrics.lastErrorCategory = waitMs > 0 ? "rate-limit" : "account-failure";

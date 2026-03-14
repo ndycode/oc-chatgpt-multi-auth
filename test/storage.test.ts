@@ -1494,6 +1494,31 @@ describe("storage", () => {
       expect(loaded.accounts[0]?.accountIdSource).toBe("id_token");
     });
 
+    it("strips stale disabledReason from enabled flagged records during load", async () => {
+      const flaggedPath = join(dirname(testStoragePath), "openai-codex-flagged-accounts.json");
+      await fs.writeFile(
+        flaggedPath,
+        JSON.stringify({
+          version: 1,
+          accounts: [
+            {
+              refreshToken: "flagged-enabled",
+              flaggedAt: 123,
+              addedAt: 123,
+              lastUsed: 123,
+              enabled: true,
+              disabledReason: "auth-failure",
+            },
+          ],
+        }),
+      );
+
+      const loaded = await loadFlaggedAccounts();
+      expect(loaded.accounts).toHaveLength(1);
+      expect(loaded.accounts[0]?.enabled).toBe(true);
+      expect(loaded.accounts[0]?.disabledReason).toBeUndefined();
+    });
+
     it("retries flagged storage rename on EBUSY and succeeds", async () => {
       const originalRename = fs.rename.bind(fs);
       let attemptCount = 0;

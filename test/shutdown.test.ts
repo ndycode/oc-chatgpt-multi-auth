@@ -75,7 +75,7 @@ describe("Graceful shutdown", () => {
 		it("SIGINT handler runs cleanup and exits with code 0", async () => {
 			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
 			
-			const processOnceSpy = vi.spyOn(process, "once").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
 				capturedHandlers.set(String(event), handler);
 				return process;
 			});
@@ -97,14 +97,14 @@ describe("Graceful shutdown", () => {
 			expect(cleanupFn).toHaveBeenCalled();
 			expect(processExitSpy).toHaveBeenCalledWith(0);
 
-			processOnceSpy.mockRestore();
+			processOnSpy.mockRestore();
 			processExitSpy.mockRestore();
 		});
 
 		it("SIGTERM handler runs cleanup and exits with code 0", async () => {
 			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
 			
-			const processOnceSpy = vi.spyOn(process, "once").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
 				capturedHandlers.set(String(event), handler);
 				return process;
 			});
@@ -126,14 +126,14 @@ describe("Graceful shutdown", () => {
 			expect(cleanupFn).toHaveBeenCalled();
 			expect(processExitSpy).toHaveBeenCalledWith(0);
 
-			processOnceSpy.mockRestore();
+			processOnSpy.mockRestore();
 			processExitSpy.mockRestore();
 		});
 
 		it("keeps shutdown handlers installed until async cleanup completes", async () => {
 			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
 
-			const processOnceSpy = vi.spyOn(process, "once").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
 				capturedHandlers.set(String(event), handler);
 				return process;
 			});
@@ -166,8 +166,52 @@ describe("Graceful shutdown", () => {
 					expect(processExitSpy).toHaveBeenCalledWith(0);
 				});
 			} finally {
-				processOnceSpy.mockRestore();
+				processOnSpy.mockRestore();
 				processOffSpy.mockRestore();
+				processExitSpy.mockRestore();
+			}
+		});
+
+		it("ignores repeated signals while async cleanup is already running", async () => {
+			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
+
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
+				capturedHandlers.set(String(event), handler);
+				return process;
+			});
+			const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+			vi.resetModules();
+			const { registerCleanup: freshRegister, runCleanup: freshRunCleanup } = await import("../lib/shutdown.js");
+			await freshRunCleanup();
+
+			let resolveCleanup!: () => void;
+			const cleanupPromise = new Promise<void>((resolve) => {
+				resolveCleanup = resolve;
+			});
+			const cleanupFn = vi.fn(async () => {
+				await cleanupPromise;
+			});
+			freshRegister(cleanupFn);
+
+			try {
+				const sigtermHandler = capturedHandlers.get("SIGTERM");
+				expect(sigtermHandler).toBeDefined();
+
+				sigtermHandler!();
+				sigtermHandler!();
+				await Promise.resolve();
+
+				expect(cleanupFn).toHaveBeenCalledTimes(1);
+				expect(processExitSpy).not.toHaveBeenCalled();
+
+				resolveCleanup();
+				await vi.waitFor(() => {
+					expect(processExitSpy).toHaveBeenCalledTimes(1);
+					expect(processExitSpy).toHaveBeenCalledWith(0);
+				});
+			} finally {
+				processOnSpy.mockRestore();
 				processExitSpy.mockRestore();
 			}
 		});
@@ -175,7 +219,7 @@ describe("Graceful shutdown", () => {
 		it("beforeExit handler runs cleanup without calling exit", async () => {
 			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
 			
-			const processOnceSpy = vi.spyOn(process, "once").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
 				capturedHandlers.set(String(event), handler);
 				return process;
 			});
@@ -198,28 +242,28 @@ describe("Graceful shutdown", () => {
 				});
 				expect(processExitSpy).not.toHaveBeenCalled();
 			} finally {
-				processOnceSpy.mockRestore();
+				processOnSpy.mockRestore();
 				processExitSpy.mockRestore();
 			}
 		});
 
 		it("signal handlers are only registered once", async () => {
-			const processOnceSpy = vi.spyOn(process, "once").mockImplementation(() => process);
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
 
 			vi.resetModules();
 			const { registerCleanup: freshRegister } = await import("../lib/shutdown.js");
 
 			freshRegister(() => {});
-			const firstCallCount = processOnceSpy.mock.calls.length;
+			const firstCallCount = processOnSpy.mock.calls.length;
 
 			freshRegister(() => {});
-			expect(processOnceSpy.mock.calls.length).toBe(firstCallCount);
+			expect(processOnSpy.mock.calls.length).toBe(firstCallCount);
 
-			processOnceSpy.mockRestore();
+			processOnSpy.mockRestore();
 		});
 
 		it("re-registers signal handlers after cleanup resets shutdown state", async () => {
-			const processOnceSpy = vi.spyOn(process, "once").mockImplementation(() => process);
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
 			const processOffSpy = vi.spyOn(process, "off").mockImplementation(() => process);
 
 			vi.resetModules();
@@ -229,14 +273,14 @@ describe("Graceful shutdown", () => {
 			} = await import("../lib/shutdown.js");
 
 			freshRegister(() => {});
-			expect(processOnceSpy).toHaveBeenCalledTimes(3);
+			expect(processOnSpy).toHaveBeenCalledTimes(3);
 
 			await freshRunCleanup();
 			expect(processOffSpy).toHaveBeenCalledTimes(3);
 			freshRegister(() => {});
-			expect(processOnceSpy).toHaveBeenCalledTimes(6);
+			expect(processOnSpy).toHaveBeenCalledTimes(6);
 
-			processOnceSpy.mockRestore();
+			processOnSpy.mockRestore();
 			processOffSpy.mockRestore();
 		});
 	});
