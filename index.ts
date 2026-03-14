@@ -1198,8 +1198,32 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		const applyPersistedAccountIndicator = (
 			messageInfo: Record<string, unknown>,
 			indicatorLabel: string,
+			fallbackModel?: SessionModelRef,
 		): void => {
 			messageInfo.variant = indicatorLabel;
+			messageInfo.thinking = indicatorLabel;
+
+			const existingModel =
+				typeof messageInfo.model === "object" && messageInfo.model !== null
+					? (messageInfo.model as Record<string, unknown>)
+					: {};
+			const providerID =
+				typeof existingModel.providerID === "string"
+					? existingModel.providerID
+					: fallbackModel?.providerID;
+			const modelID =
+				typeof existingModel.modelID === "string"
+					? existingModel.modelID
+					: fallbackModel?.modelID;
+			if (!providerID || !modelID) {
+				return;
+			}
+			messageInfo.model = {
+				...existingModel,
+				providerID,
+				modelID,
+				variant: indicatorLabel,
+			};
 		};
 
 		const resolveActiveIndex = (
@@ -1834,7 +1858,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						? (output.message as Record<string, unknown>)
 						: null;
 				if (message) {
-					applyPersistedAccountIndicator(message, indicator);
+					applyPersistedAccountIndicator(message, indicator, input.model);
 				}
 			}
 			return Promise.resolve();

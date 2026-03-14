@@ -2108,7 +2108,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	) => {
 		const output = buildMessageTransformOutput(sessionID, modelID);
 		await plugin["experimental.chat.messages.transform"]({}, output);
-		return output.messages[0]?.info.variant;
+		return (
+			output.messages[0]?.info.model?.variant ??
+			output.messages[0]?.info.variant
+		);
 	};
 
 	it("returns success response for successful fetch", async () => {
@@ -2197,6 +2200,9 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expectedFullToastMessage,
 		);
 		expect((output.message as { model?: { modelID?: string } }).model?.modelID).toBe("gpt-5.4");
+		expect((output.message as { model?: { variant?: string } }).model?.variant).toBe(
+			expectedFullToastMessage,
+		);
 	});
 
 	it("shows an account-switch toast when no visible indicator can be refreshed", async () => {
