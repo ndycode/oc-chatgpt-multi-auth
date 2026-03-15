@@ -1453,31 +1453,36 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return runtimePluginConfigSnapshot ?? loadPluginConfig();
 		};
 
-		const refreshAuthorizeStoragePath = (): void => {
+		const refreshAuthorizeStoragePath = (
+			initialConfig?: ReturnType<typeof loadPluginConfig>,
+		): void => {
 			// Auth writes should honor the latest per-project setting, but a Windows
 			// config-file lock can make loadPluginConfig() fall back to DEFAULT_CONFIG.
 			// If we already have a runtime snapshot, keep using it instead of silently
 			// routing auth writes to the wrong storage path.
-			let storagePluginConfig = runtimePluginConfigSnapshot ?? DEFAULT_CONFIG;
-			try {
-				const refreshedPluginConfig = loadPluginConfig();
-				if (
-					refreshedPluginConfig === DEFAULT_CONFIG &&
-					runtimePluginConfigSnapshot
-				) {
+			let storagePluginConfig =
+				initialConfig ?? runtimePluginConfigSnapshot ?? DEFAULT_CONFIG;
+			if (!initialConfig) {
+				try {
+					const refreshedPluginConfig = loadPluginConfig();
+					if (
+						refreshedPluginConfig === DEFAULT_CONFIG &&
+						runtimePluginConfigSnapshot
+					) {
+						logWarn(
+							"Falling back to cached authorize storage config after config loader returned defaults.",
+						);
+					} else {
+						storagePluginConfig = refreshedPluginConfig;
+					}
+				} catch (error) {
+					if (!runtimePluginConfigSnapshot) {
+						throw error;
+					}
 					logWarn(
-						"Falling back to cached authorize storage config after config loader returned defaults.",
+						`Falling back to cached authorize storage config after refresh failure: ${(error as Error).message}`,
 					);
-				} else {
-					storagePluginConfig = refreshedPluginConfig;
 				}
-			} catch (error) {
-				if (!runtimePluginConfigSnapshot) {
-					throw error;
-				}
-				logWarn(
-					`Falling back to cached authorize storage config after refresh failure: ${(error as Error).message}`,
-				);
 			}
 			const perProjectAccounts = getPerProjectAccounts(storagePluginConfig);
 			setStoragePath(perProjectAccounts ? process.cwd() : null);
@@ -3058,8 +3063,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 						label: AUTH_LABELS.OAUTH,
 						type: "oauth" as const,
 						authorize: async (inputs?: Record<string, string>) => {
-							syncRuntimePluginConfig(resolveRuntimePluginConfig());
-							refreshAuthorizeStoragePath();
+							const hadRuntimePluginConfig = runtimePluginConfigSnapshot !== undefined;
+							const authorizePluginConfig = resolveRuntimePluginConfig();
+							syncRuntimePluginConfig(authorizePluginConfig);
+							refreshAuthorizeStoragePath(
+								hadRuntimePluginConfig ? undefined : authorizePluginConfig,
+							);
 
 							const accounts: TokenSuccessWithAccount[] = [];
 							const noBrowser =
@@ -4031,8 +4040,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 					authorize: async () => {
                                                         // Initialize storage path for manual OAuth flow
                                                         // Must happen BEFORE persistAccountPool to ensure correct storage location
-							syncRuntimePluginConfig(resolveRuntimePluginConfig());
-							refreshAuthorizeStoragePath();
+							const hadRuntimePluginConfig = runtimePluginConfigSnapshot !== undefined;
+							const authorizePluginConfig = resolveRuntimePluginConfig();
+							syncRuntimePluginConfig(authorizePluginConfig);
+							refreshAuthorizeStoragePath(
+								hadRuntimePluginConfig ? undefined : authorizePluginConfig,
+							);
 
 												const { pkce, state, url } = await createAuthorizationFlow();
 												return buildManualOAuthFlow(pkce, url, state, async (selection) => {

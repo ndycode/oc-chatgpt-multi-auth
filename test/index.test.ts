@@ -2999,6 +2999,30 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(storageModule.setStoragePath).toHaveBeenCalledWith(process.cwd());
 	});
 
+	it("reuses the cold-start authorize config instead of re-reading config twice", async () => {
+		const configModule = await import("../lib/config.js");
+		const storageModule = await import("../lib/storage.js");
+		const coldStartConfig = { source: "cold-start-config" };
+
+		vi.mocked(configModule.loadPluginConfig).mockReturnValue(coldStartConfig);
+		vi.mocked(configModule.getPerProjectAccounts).mockImplementation(
+			(config) => config === coldStartConfig,
+		);
+
+		const { plugin } = await setupPlugin();
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<unknown>;
+		};
+
+		vi.mocked(configModule.loadPluginConfig).mockClear();
+		vi.mocked(storageModule.setStoragePath).mockClear();
+
+		await expect(autoMethod.authorize({ loginMode: "add", accountCount: "1" })).resolves.toBeDefined();
+
+		expect(configModule.loadPluginConfig).toHaveBeenCalledTimes(1);
+		expect(storageModule.setStoragePath).toHaveBeenCalledWith(process.cwd());
+	});
+
 	it("shows the account-switch info toast when the footer is disabled", async () => {
 		await disablePersistedFooter();
 		mockStorage.accounts = [
