@@ -73,6 +73,10 @@ export type CodexCliTokenCacheEntry = {
 	accountId?: string;
 };
 
+type FlushPendingSaveOptions = {
+	deadlineMs?: number;
+};
+
 const CODEX_CLI_ACCOUNTS_PATH = join(homedir(), ".codex", "accounts.json");
 const CODEX_CLI_CACHE_TTL_MS = 5_000;
 let codexCliTokenCache: Map<string, CodexCliTokenCacheEntry> | null = null;
@@ -962,14 +966,21 @@ export class AccountManager {
 			account.enabled = false;
 			return { ok: true, account };
 		}
-		account.enabled = enabled;
 		if (enabled) {
-			delete account.disabledReason;
-			this.clearAccountCooldown(account);
+			const wasDisabled = account.enabled === false;
+			account.enabled = true;
+			if (wasDisabled) {
+				delete account.disabledReason;
+				this.clearAccountCooldown(account);
+			}
 		} else if (reason) {
+			account.enabled = false;
 			account.disabledReason = reason;
 		} else if (account.disabledReason !== "auth-failure") {
+			account.enabled = false;
 			account.disabledReason = "user";
+		} else {
+			account.enabled = false;
 		}
 		return { ok: true, account };
 	}
@@ -1116,11 +1127,21 @@ export class AccountManager {
 		}, delayMs);
 	}
 
-	async flushPendingSave(): Promise<void> {
+	async flushPendingSave(options?: FlushPendingSaveOptions): Promise<void> {
 		const MAX_FLUSH_ITERATIONS = 20;
 		let flushIterations = 0;
+		const deadlineMs =
+			typeof options?.deadlineMs === "number" && Number.isFinite(options.deadlineMs)
+				? options.deadlineMs
+				: undefined;
+		const throwIfDeadlineExceeded = (): void => {
+			if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+				throw new Error("flushPendingSave: shutdown deadline exceeded before save state settled");
+			}
+		};
 
 		while (true) {
+			throwIfDeadlineExceeded();
 			flushIterations += 1;
 			if (flushIterations > MAX_FLUSH_ITERATIONS) {
 				// This is intentionally far above realistic debounce re-arm chains; if we
@@ -1145,6 +1166,7 @@ export class AccountManager {
 				}
 				await this.waitForSaveFinalization(pendingSaveTick);
 				if (this.saveDebounceTimer !== null || this.pendingSave !== null) {
+					throwIfDeadlineExceeded();
 					continue;
 				}
 				if (pendingSaveError) {
@@ -1163,6 +1185,7 @@ export class AccountManager {
 				return;
 			}
 			if (this.saveDebounceTimer !== null || this.pendingSave !== null) {
+				throwIfDeadlineExceeded();
 				continue;
 			}
 			const flushSaveTick = this.saveFinalizationTick;
@@ -1183,6 +1206,7 @@ export class AccountManager {
 								: String(flushSaveError),
 					});
 				}
+				throwIfDeadlineExceeded();
 				continue;
 			}
 			if (flushSaveError) {

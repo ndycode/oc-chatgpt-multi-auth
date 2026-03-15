@@ -149,6 +149,41 @@ describe("Graceful shutdown", () => {
 			}
 		});
 
+		it("passes the shutdown deadline to cleanup functions on signal exit", async () => {
+			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
+
+			const processOnSpy = vi.spyOn(process, "on").mockImplementation((event: string | symbol, handler: (...args: unknown[]) => void) => {
+				capturedHandlers.set(String(event), handler);
+				return process;
+			});
+			const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+
+			vi.resetModules();
+			const { registerCleanup: freshRegister, runCleanup: freshRunCleanup } = await import("../lib/shutdown.js");
+			await freshRunCleanup();
+
+			const cleanupFn = vi.fn(async () => {});
+			freshRegister(cleanupFn);
+
+			try {
+				const sigtermHandler = capturedHandlers.get("SIGTERM");
+				expect(sigtermHandler).toBeDefined();
+
+				sigtermHandler!();
+				await vi.waitFor(() => {
+					expect(cleanupFn).toHaveBeenCalledWith(
+						expect.objectContaining({
+							deadlineMs: expect.any(Number),
+						}),
+					);
+					expect(processExitSpy).toHaveBeenCalledWith(0);
+				});
+			} finally {
+				processOnSpy.mockRestore();
+				processExitSpy.mockRestore();
+			}
+		});
+
 		it("keeps shutdown handlers installed until async cleanup completes", async () => {
 			const capturedHandlers = new Map<string, (...args: unknown[]) => void>();
 

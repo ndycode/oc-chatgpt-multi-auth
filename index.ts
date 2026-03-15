@@ -1716,9 +1716,15 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				.waitForPendingSaveToSettle()
 				.finally(() => {
 					trackedManagerSettledWaits.delete(manager);
-					if (!managerHasPendingSave(manager) && !activeAccountManagersForCleanup.has(manager)) {
-						trackedAccountManagersForCleanup.delete(manager);
+					if (activeAccountManagersForCleanup.has(manager)) {
+						return;
 					}
+					if (managerHasPendingSave(manager)) {
+						trackedAccountManagersForCleanup.add(manager);
+						scheduleTrackedManagerPrune(manager);
+						return;
+					}
+					trackedAccountManagersForCleanup.delete(manager);
 				});
 
 			trackedManagerSettledWaits.set(manager, waitForSettle);
@@ -1757,14 +1763,16 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			accountManagerPromise = null;
 		};
 
-		accountManagerCleanupHook ??= async () => {
+		accountManagerCleanupHook ??= async (context?: { deadlineMs?: number }) => {
 			const managersToFlush = new Set<AccountManager>([
 				...activeAccountManagersForCleanup,
 				...trackedAccountManagersForCleanup,
 			]);
 			for (const manager of managersToFlush) {
 				try {
-					await manager.flushPendingSave();
+					await manager.flushPendingSave(
+						context?.deadlineMs !== undefined ? { deadlineMs: context.deadlineMs } : undefined,
+					);
 				} catch (error) {
 					logWarn("[shutdown] flushPendingSave failed; disabled state may not be persisted", {
 						error: error instanceof Error ? error.message : String(error),
@@ -3609,15 +3617,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 												if (shouldEnable && target.disabledReason === "auth-failure") {
 													const message =
 														"This account was disabled after repeated auth failures. Run 'opencode auth login' to re-enable with fresh credentials.";
+													const logContext = {
+														accountIndex: menuResult.toggleAccountIndex + 1,
+													};
 													logWarn("[account-menu] blocked re-enable for auth-failure disabled account", {
-														accountId: target.accountId ?? null,
+														...logContext,
 													});
 													logInfo("[account-menu] prompted re-auth for auth-failure disabled account", {
-														accountId: target.accountId ?? null,
+														...logContext,
 													});
 													const toastShown = await showToast(message, "warning");
 													if (!toastShown) {
-														console.log("\nRun 'opencode auth login' to re-enable this account.\n");
+														process.stdout.write("\nRun 'opencode auth login' to re-enable this account.\n\n");
 													}
 													continue;
 												}

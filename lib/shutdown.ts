@@ -1,4 +1,8 @@
-type CleanupFn = () => void | Promise<void>;
+export type CleanupContext = {
+	deadlineMs?: number;
+};
+
+type CleanupFn = (context?: CleanupContext) => void | Promise<void>;
 
 // Allow enough time for serialized manager flushes to finish on Windows hosts
 // where AV/file-indexer contention can hold the accounts file for multiple seconds.
@@ -33,7 +37,7 @@ export function unregisterCleanup(fn: CleanupFn): void {
 	}
 }
 
-export function runCleanup(): Promise<void> {
+export function runCleanup(context?: CleanupContext): Promise<void> {
 	if (cleanupInFlight) {
 		return cleanupInFlight;
 	}
@@ -45,7 +49,7 @@ export function runCleanup(): Promise<void> {
 
 			for (const fn of fns) {
 				try {
-					await fn();
+					await fn(context);
 				} catch {
 					// Ignore cleanup errors during shutdown
 				}
@@ -86,6 +90,7 @@ function ensureShutdownHandler(): void {
 			return;
 		}
 		signalExitPending = true;
+		const deadlineMs = Date.now() + SIGNAL_CLEANUP_TIMEOUT_MS;
 		let exitRequested = false;
 		const requestExit = () => {
 			if (exitRequested) {
@@ -100,8 +105,8 @@ function ensureShutdownHandler(): void {
 		};
 		let timeoutHandle: ReturnType<typeof setTimeout> | null = setTimeout(() => {
 			requestExit();
-		}, SIGNAL_CLEANUP_TIMEOUT_MS);
-		void runCleanup().finally(() => {
+		}, Math.max(0, deadlineMs - Date.now()));
+		void runCleanup({ deadlineMs }).finally(() => {
 			try {
 				requestExit();
 			} finally {

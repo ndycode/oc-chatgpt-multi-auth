@@ -1240,6 +1240,36 @@ describe("AccountManager", () => {
       });
     });
 
+    it("preserves cooldown metadata when enabling an already enabled account", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: true,
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "network-error" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const result = manager.trySetAccountEnabled(0, true);
+      expect(result).toMatchObject({
+        ok: true,
+        account: {
+          enabled: true,
+          coolingDownUntil: now + 60_000,
+          cooldownReason: "network-error",
+        },
+      });
+    });
+
     it("ignores explicit disable-reason overrides for auth-failure disabled accounts", () => {
       const now = Date.now();
       const stored = {
@@ -2817,6 +2847,42 @@ describe("AccountManager", () => {
           expect.objectContaining({ iterations: 20 }),
         );
       } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops retrying flushes once the shutdown deadline is exceeded", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date(1_000));
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+
+        mockSaveAccounts.mockImplementation(async () => {
+          vi.setSystemTime(new Date(2_000));
+          manager.saveToDiskDebounced(0);
+        });
+
+        manager.saveToDiskDebounced(0);
+
+        await expect(
+          manager.flushPendingSave({ deadlineMs: 1_500 }),
+        ).rejects.toThrow("flushPendingSave: shutdown deadline exceeded before save state settled");
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.clearAllTimers();
         vi.useRealTimers();
       }
     });

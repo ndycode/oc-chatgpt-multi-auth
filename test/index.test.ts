@@ -4016,6 +4016,35 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(flushPendingSave).toHaveBeenCalledTimes(1);
 	});
 
+	it("forwards the shutdown deadline to pending account save flushers", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const flushPendingSave = vi.fn(async () => {});
+		const manager = await accountsModule.AccountManager.loadFromDisk();
+		manager.flushPendingSave = flushPendingSave;
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(manager);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		await runCleanup({ deadlineMs: 12_345 });
+
+		expect(flushPendingSave).toHaveBeenCalledTimes(1);
+		expect(flushPendingSave).toHaveBeenCalledWith({ deadlineMs: 12_345 });
+	});
+
 	it("logs when shutdown cleanup flush fails", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const loggerModule = await import("../lib/logger.js");
@@ -4326,6 +4355,74 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(managerOneHasPendingSave).toBe(false);
 	});
 
+	it("re-arms tracked manager prune waiters when pending saves continue after a settle notification", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const managerOne = await accountsModule.AccountManager.loadFromDisk();
+		const flushManagerOne = vi.fn(async () => {
+			managerOneHasPendingSave = false;
+		});
+		let managerOneHasPendingSave = true;
+		const settleResolvers: Array<() => void> = [];
+		managerOne.flushPendingSave = flushManagerOne;
+		managerOne.hasPendingSave = vi.fn(() => managerOneHasPendingSave);
+		managerOne.waitForPendingSaveToSettle = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					settleResolvers.push(resolve);
+				}),
+		);
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(managerOne);
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-managed",
+				email: "managed@example.com",
+				refreshToken: "refresh-managed",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-1",
+				refresh: "refresh-token-1",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		flushManagerOne.mockClear();
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+		expect(managerOne.waitForPendingSaveToSettle).toHaveBeenCalledTimes(1);
+
+		settleResolvers[0]?.();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(managerOne.waitForPendingSaveToSettle).toHaveBeenCalledTimes(2);
+
+		await runCleanup();
+
+		expect(flushManagerOne).toHaveBeenCalledTimes(1);
+	});
+
 	it("flushes tracked account managers from multiple plugin instances during shutdown cleanup", async () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const managerOne = await accountsModule.AccountManager.loadFromDisk();
@@ -4447,78 +4544,70 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const cliModule = await import("../lib/cli.js");
 		const loggerModule = await import("../lib/logger.js");
 		const storageModule = await import("../lib/storage.js");
-		const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
 
-		try {
-			mockStorage.accounts = [
-				{
-					accountId: "workspace-auth-failure",
-					email: "blocked@example.com",
-					refreshToken: "refresh-blocked",
-					enabled: false,
-					disabledReason: "auth-failure",
-					coolingDownUntil: 30_000,
-					cooldownReason: "auth-failure",
-					addedAt: 10,
-					lastUsed: 10,
-				},
-			];
-
-			vi.mocked(cliModule.promptLoginMode)
-				.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
-				.mockResolvedValueOnce({ mode: "cancel" });
-
-			const mockClient = createMockClient();
-			const { OpenAIOAuthPlugin } = await import("../index.js");
-			const plugin = (await OpenAIOAuthPlugin({
-				client: mockClient,
-			} as never)) as unknown as PluginType;
-			const autoMethod = plugin.auth.methods[0] as unknown as {
-				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
-			};
-
-			vi.mocked(loggerModule.logWarn).mockClear();
-			const authResult = await autoMethod.authorize();
-			expect(authResult.instructions).toBe("Authentication cancelled");
-
-			expect(vi.mocked(storageModule.saveAccounts)).not.toHaveBeenCalled();
-			expect(mockStorage.accounts[0]).toMatchObject({
+		mockStorage.accounts = [
+			{
 				accountId: "workspace-auth-failure",
+				email: "blocked@example.com",
+				refreshToken: "refresh-blocked",
 				enabled: false,
 				disabledReason: "auth-failure",
 				coolingDownUntil: 30_000,
 				cooldownReason: "auth-failure",
-			});
-			expect(consoleLog).not.toHaveBeenCalled();
-			expect(mockClient.tui.showToast).toHaveBeenCalledWith({
-				body: expect.objectContaining({
-					message:
-						"This account was disabled after repeated auth failures. Run 'opencode auth login' to re-enable with fresh credentials.",
-					variant: "warning",
-				}),
-			});
-			expect(vi.mocked(loggerModule.logInfo)).toHaveBeenCalledWith(
-				"[account-menu] prompted re-auth for auth-failure disabled account",
-				expect.objectContaining({
-					accountId: "workspace-auth-failure",
-				}),
-			);
-			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
-				"[account-menu] blocked re-enable for auth-failure disabled account",
-				expect.objectContaining({
-					accountId: "workspace-auth-failure",
-				}),
-			);
-		} finally {
-			consoleLog.mockRestore();
-		}
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		vi.mocked(loggerModule.logWarn).mockClear();
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		expect(vi.mocked(storageModule.saveAccounts)).not.toHaveBeenCalled();
+		expect(mockStorage.accounts[0]).toMatchObject({
+			accountId: "workspace-auth-failure",
+			enabled: false,
+			disabledReason: "auth-failure",
+			coolingDownUntil: 30_000,
+			cooldownReason: "auth-failure",
+		});
+		expect(mockClient.tui.showToast).toHaveBeenCalledWith({
+			body: expect.objectContaining({
+				message:
+					"This account was disabled after repeated auth failures. Run 'opencode auth login' to re-enable with fresh credentials.",
+				variant: "warning",
+			}),
+		});
+		const infoCall = vi
+			.mocked(loggerModule.logInfo)
+			.mock.calls.find(([message]) => message === "[account-menu] prompted re-auth for auth-failure disabled account");
+		const warnCall = vi
+			.mocked(loggerModule.logWarn)
+			.mock.calls.find(([message]) => message === "[account-menu] blocked re-enable for auth-failure disabled account");
+		expect(infoCall?.[1]).toEqual(expect.objectContaining({ accountIndex: 1 }));
+		expect(warnCall?.[1]).toEqual(expect.objectContaining({ accountIndex: 1 }));
+		expect(infoCall?.[1]).not.toHaveProperty("accountId");
+		expect(warnCall?.[1]).not.toHaveProperty("accountId");
 	});
 
 	it("falls back to a generic console hint when TUI toast is unavailable for auth-failure disables", async () => {
 		const cliModule = await import("../lib/cli.js");
 		const loggerModule = await import("../lib/logger.js");
 		const storageModule = await import("../lib/storage.js");
-		const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+		const stdoutWrite = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
 		try {
 			mockStorage.accounts = [
@@ -4554,23 +4643,21 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			expect(authResult.instructions).toBe("Authentication cancelled");
 
 			expect(vi.mocked(storageModule.saveAccounts)).not.toHaveBeenCalled();
-			expect(consoleLog).toHaveBeenCalledWith(
-				"\nRun 'opencode auth login' to re-enable this account.\n",
+			expect(stdoutWrite).toHaveBeenCalledWith(
+				"\nRun 'opencode auth login' to re-enable this account.\n\n",
 			);
-			expect(vi.mocked(loggerModule.logInfo)).toHaveBeenCalledWith(
-				"[account-menu] prompted re-auth for auth-failure disabled account",
-				expect.objectContaining({
-					accountId: "workspace-auth-failure",
-				}),
-			);
-			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
-				"[account-menu] blocked re-enable for auth-failure disabled account",
-				expect.objectContaining({
-					accountId: "workspace-auth-failure",
-				}),
-			);
+			const infoCall = vi
+				.mocked(loggerModule.logInfo)
+				.mock.calls.find(([message]) => message === "[account-menu] prompted re-auth for auth-failure disabled account");
+			const warnCall = vi
+				.mocked(loggerModule.logWarn)
+				.mock.calls.find(([message]) => message === "[account-menu] blocked re-enable for auth-failure disabled account");
+			expect(infoCall?.[1]).toEqual(expect.objectContaining({ accountIndex: 1 }));
+			expect(warnCall?.[1]).toEqual(expect.objectContaining({ accountIndex: 1 }));
+			expect(infoCall?.[1]).not.toHaveProperty("accountId");
+			expect(warnCall?.[1]).not.toHaveProperty("accountId");
 		} finally {
-			consoleLog.mockRestore();
+			stdoutWrite.mockRestore();
 		}
 	});
 });
