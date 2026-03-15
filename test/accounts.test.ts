@@ -13,12 +13,31 @@ import {
 import { getHealthTracker, getTokenTracker, resetTrackers } from "../lib/rotation.js";
 import type { OAuthAuthDetails } from "../lib/types.js";
 
+const { accountLoggerWarn } = vi.hoisted(() => ({
+  accountLoggerWarn: vi.fn(),
+}));
+
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
   return {
     ...actual,
     saveAccounts: vi.fn().mockResolvedValue(undefined),
   };
+});
+
+vi.mock("../lib/logger.js", () => ({
+  createLogger: vi.fn(() => ({
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: accountLoggerWarn,
+    error: vi.fn(),
+    time: vi.fn(() => vi.fn(() => 0)),
+    timeEnd: vi.fn(),
+  })),
+}));
+
+beforeEach(() => {
+  accountLoggerWarn.mockClear();
 });
 
 describe("parseRateLimitReason", () => {
@@ -856,6 +875,120 @@ describe("AccountManager", () => {
       expect(manager.getAccountsSnapshot()[0].refreshToken).toBe("token-2");
     });
 
+    it("disables all accounts with the same refreshToken", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          { refreshToken: "token-1", organizationId: "org-1", addedAt: now, lastUsed: now },
+          { refreshToken: "token-1", organizationId: "org-2", addedAt: now, lastUsed: now },
+          { refreshToken: "token-2", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const accounts = manager.getAccountsSnapshot();
+      expect(accounts).toHaveLength(4);
+
+      const disabledCount = manager.disableAccountsWithSameRefreshToken(accounts[0]);
+      expect(disabledCount).toBe(3);
+      expect(manager.getAccountCount()).toBe(4);
+
+      const updated = manager.getAccountsSnapshot();
+      expect(updated.slice(0, 3).every((account) => account.enabled === false)).toBe(true);
+      expect(updated.slice(0, 3).every((account) => account.disabledReason === "auth-failure")).toBe(true);
+      expect(updated[3]?.enabled).not.toBe(false);
+    });
+
+    it("preserves a manual disable reason when auth-failure disabling sibling variants", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", accountId: "workspace-a", addedAt: now, lastUsed: now },
+          {
+            refreshToken: "token-1",
+            accountId: "workspace-user-disabled",
+            enabled: false,
+            disabledReason: "user" as const,
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "network-error" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+          { refreshToken: "token-1", accountId: "workspace-b", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const accounts = manager.getAccountsSnapshot();
+      const disabledCount = manager.disableAccountsWithSameRefreshToken(accounts[0]);
+
+      expect(disabledCount).toBe(2);
+      const updated = manager.getAccountsSnapshot();
+      expect(updated[0]).toMatchObject({
+        accountId: "workspace-a",
+        enabled: false,
+        disabledReason: "auth-failure",
+      });
+      expect(updated[1]).toMatchObject({
+        accountId: "workspace-user-disabled",
+        enabled: false,
+        disabledReason: "user",
+        coolingDownUntil: now + 60_000,
+        cooldownReason: "network-error",
+      });
+      expect(updated[2]).toMatchObject({
+        accountId: "workspace-b",
+        enabled: false,
+        disabledReason: "auth-failure",
+      });
+    });
+
+    it("defaults legacy disabled accounts to a user disable reason", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+      mockSaveAccounts.mockResolvedValueOnce();
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: false,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      expect(manager.getAccountsSnapshot()[0]).toMatchObject({
+        enabled: false,
+        disabledReason: "user",
+      });
+
+      await manager.saveToDisk();
+
+      expect(mockSaveAccounts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accounts: [
+            expect.objectContaining({
+              enabled: false,
+              disabledReason: "user",
+            }),
+          ],
+        }),
+      );
+    });
+
     it("clears auth failure counter when removing accounts with same refreshToken", () => {
       const now = Date.now();
       const stored = {
@@ -884,12 +1017,321 @@ describe("AccountManager", () => {
       const removedCount = manager.removeAccountsWithSameRefreshToken(account1);
       expect(removedCount).toBe(2);
       expect(manager.getAccountCount()).toBe(0);
-      const failuresByRefreshToken = Reflect.get(
-        manager,
-        "authFailuresByRefreshToken",
-      ) as Map<string, number>;
-      expect(failuresByRefreshToken.has("token-1")).toBe(false);
       expect(manager.incrementAuthFailures(account1)).toBe(1);
+    });
+
+    it("clears auth failure counter when disabling accounts with same refreshToken", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "auth-failure" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "token-1",
+            organizationId: "org-1",
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "auth-failure" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const accounts = manager.getAccountsSnapshot();
+      expect(accounts).toHaveLength(2);
+
+      expect(manager.incrementAuthFailures(accounts[0])).toBe(1);
+      expect(manager.incrementAuthFailures(accounts[1])).toBe(2);
+      expect(manager.incrementAuthFailures(accounts[0])).toBe(3);
+
+      const disabledCount = manager.disableAccountsWithSameRefreshToken(accounts[0]);
+      expect(disabledCount).toBe(2);
+      expect(manager.getAccountsSnapshot().every((account) => account.enabled === false)).toBe(true);
+      expect(
+        manager.getAccountsSnapshot().every((account) => account.disabledReason === "auth-failure"),
+      ).toBe(true);
+      expect(
+        manager.getAccountsSnapshot().every((account) => account.coolingDownUntil === undefined),
+      ).toBe(true);
+      expect(
+        manager.getAccountsSnapshot().every((account) => account.cooldownReason === undefined),
+      ).toBe(true);
+      expect(manager.incrementAuthFailures(accounts[0])).toBe(1);
+    });
+
+    it("clears auth failure counter even when matching accounts were already user-disabled", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            accountId: "workspace-a",
+            enabled: false,
+            disabledReason: "user" as const,
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "network-error" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "token-1",
+            accountId: "workspace-b",
+            enabled: false,
+            disabledReason: "user" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const accounts = manager.getAccountsSnapshot();
+
+      expect(manager.incrementAuthFailures(accounts[0])).toBe(1);
+      expect(manager.incrementAuthFailures(accounts[1])).toBe(2);
+
+      const disabledCount = manager.disableAccountsWithSameRefreshToken(accounts[0]);
+      expect(disabledCount).toBe(0);
+      expect(manager.getAccountsSnapshot()).toMatchObject([
+        {
+          accountId: "workspace-a",
+          enabled: false,
+          disabledReason: "user",
+          coolingDownUntil: now + 60_000,
+          cooldownReason: "network-error",
+        },
+        {
+          accountId: "workspace-b",
+          enabled: false,
+          disabledReason: "user",
+        },
+      ]);
+      expect(manager.incrementAuthFailures(accounts[0])).toBe(1);
+    });
+
+    it("records disable reason when setAccountEnabled disables an account", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "network-error" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const disabled = manager.trySetAccountEnabled(0, false, "user");
+      expect(disabled).toMatchObject({
+        ok: true,
+        account: {
+          enabled: false,
+          disabledReason: "user",
+        },
+      });
+
+      const reenabled = manager.trySetAccountEnabled(0, true);
+      expect(reenabled).toMatchObject({
+        ok: true,
+        account: {
+          enabled: true,
+        },
+      });
+      if (!reenabled.ok) {
+        throw new Error("expected setAccountEnabled to re-enable account");
+      }
+      expect(reenabled.account.disabledReason).toBeUndefined();
+      expect(reenabled.account.coolingDownUntil).toBeUndefined();
+      expect(reenabled.account.cooldownReason).toBeUndefined();
+    });
+
+    it("defaults disable reason to user when disabling without an explicit reason", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const disabled = manager.trySetAccountEnabled(0, false);
+      expect(disabled).toMatchObject({
+        ok: true,
+        account: {
+          enabled: false,
+          disabledReason: "user",
+        },
+      });
+    });
+
+    it("preserves auth-failure disabledReason when disabling without an explicit reason", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: false,
+            disabledReason: "auth-failure" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const disabled = manager.trySetAccountEnabled(0, false);
+      expect(disabled).toMatchObject({
+        ok: true,
+        account: {
+          enabled: false,
+          disabledReason: "auth-failure",
+        },
+      });
+    });
+
+    it("blocks re-enabling auth-failure disabled accounts through setAccountEnabled", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: false,
+            disabledReason: "auth-failure" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const reenabled = manager.trySetAccountEnabled(0, true);
+      expect(reenabled).toEqual({
+        ok: false,
+        reason: "auth-failure-blocked",
+      });
+      expect(manager.getAccountsSnapshot()[0]).toMatchObject({
+        enabled: false,
+        disabledReason: "auth-failure",
+      });
+    });
+
+    it("preserves cooldown metadata when enabling an already enabled account", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: true,
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "network-error" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const result = manager.trySetAccountEnabled(0, true);
+      expect(result).toMatchObject({
+        ok: true,
+        account: {
+          enabled: true,
+          coolingDownUntil: now + 60_000,
+          cooldownReason: "network-error",
+        },
+      });
+    });
+
+    it("ignores explicit disable-reason overrides for auth-failure disabled accounts", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            enabled: false,
+            disabledReason: "auth-failure" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      const disabled = manager.trySetAccountEnabled(0, false, "user");
+      expect(disabled).toMatchObject({
+        ok: true,
+        account: {
+          enabled: false,
+          disabledReason: "auth-failure",
+        },
+      });
+
+      expect(manager.trySetAccountEnabled(0, true)).toEqual({
+        ok: false,
+        reason: "auth-failure-blocked",
+      });
+      expect(manager.setAccountEnabled(0, true)).toBeNull();
+    });
+
+    it("preserves the legacy setAccountEnabled account-or-null contract", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      expect(manager.setAccountEnabled(99, false)).toBeNull();
+
+      const userDisabled = manager.setAccountEnabled(0, false, "user");
+      expect(userDisabled).toMatchObject({
+        enabled: false,
+        disabledReason: "user",
+      });
+
+      const reenabled = manager.setAccountEnabled(0, true);
+      expect(reenabled).toMatchObject({
+        enabled: true,
+      });
     });
   });
 
@@ -1277,6 +1719,7 @@ describe("AccountManager", () => {
     it("saves accounts with all fields", async () => {
       const { saveAccounts } = await import("../lib/storage.js");
       const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
       mockSaveAccounts.mockResolvedValueOnce();
 
       const now = Date.now();
@@ -1396,6 +1839,181 @@ describe("AccountManager", () => {
       await vi.advanceTimersByTimeAsync(100);
 
       expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+    });
+
+    it("continues a queued save after the previous save fails", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+
+      const savedSnapshots: Array<
+        Array<{
+          refreshToken?: string;
+          enabled?: false;
+          disabledReason?: string;
+        }>
+      > = [];
+
+      let rejectFirstSave!: (error: Error) => void;
+      mockSaveAccounts.mockImplementationOnce(async (storage) => {
+        savedSnapshots.push(
+          storage.accounts.map((account) => ({
+            refreshToken: account.refreshToken,
+            enabled: account.enabled,
+            disabledReason: account.disabledReason,
+          })),
+        );
+        await new Promise<void>((_, reject) => {
+          rejectFirstSave = reject;
+        });
+      });
+      mockSaveAccounts.mockImplementationOnce(async (storage) => {
+        savedSnapshots.push(
+          storage.accounts.map((account) => ({
+            refreshToken: account.refreshToken,
+            enabled: account.enabled,
+            disabledReason: account.disabledReason,
+          })),
+        );
+      });
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      manager.saveToDiskDebounced(50);
+      await vi.advanceTimersByTimeAsync(60);
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+      const account = manager.getAccountsSnapshot()[0]!;
+      manager.disableAccountsWithSameRefreshToken(account);
+      manager.saveToDiskDebounced(50);
+      await vi.advanceTimersByTimeAsync(60);
+
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+      rejectFirstSave(Object.assign(new Error("EBUSY: file in use"), { code: "EBUSY" }));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let turn = 0; turn < 6; turn += 1) {
+        await Promise.resolve();
+      }
+
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+      expect(savedSnapshots[1]).toEqual([
+        expect.objectContaining({
+          refreshToken: "token-1",
+          enabled: false,
+          disabledReason: "auth-failure",
+        }),
+      ]);
+    });
+
+    it("persists newer disabled state after two queued save failures once a later flush requeues it", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+
+      const savedSnapshots: Array<
+        Array<{
+          refreshToken?: string;
+          enabled?: false;
+          disabledReason?: string;
+        }>
+      > = [];
+
+      let rejectFirstSave!: (error: Error) => void;
+      let rejectSecondSave!: (error: Error) => void;
+      const firstSave = new Promise<void>((_resolve, reject) => {
+        rejectFirstSave = reject;
+      });
+      const secondSave = new Promise<void>((_resolve, reject) => {
+        rejectSecondSave = reject;
+      });
+
+      mockSaveAccounts.mockImplementationOnce(async (storage) => {
+        savedSnapshots.push(
+          storage.accounts.map((account) => ({
+            refreshToken: account.refreshToken,
+            enabled: account.enabled,
+            disabledReason: account.disabledReason,
+          })),
+        );
+        await firstSave;
+      });
+      mockSaveAccounts.mockImplementationOnce(async (storage) => {
+        savedSnapshots.push(
+          storage.accounts.map((account) => ({
+            refreshToken: account.refreshToken,
+            enabled: account.enabled,
+            disabledReason: account.disabledReason,
+          })),
+        );
+        await secondSave;
+      });
+      mockSaveAccounts.mockImplementationOnce(async (storage) => {
+        savedSnapshots.push(
+          storage.accounts.map((account) => ({
+            refreshToken: account.refreshToken,
+            enabled: account.enabled,
+            disabledReason: account.disabledReason,
+          })),
+        );
+      });
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+
+      manager.saveToDiskDebounced(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+      const account = manager.getAccountsSnapshot()[0]!;
+      manager.disableAccountsWithSameRefreshToken(account);
+      manager.saveToDiskDebounced(50);
+      await vi.advanceTimersByTimeAsync(60);
+
+      rejectFirstSave(Object.assign(new Error("EBUSY: file in use"), { code: "EBUSY" }));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let turn = 0; turn < 6; turn += 1) {
+        await Promise.resolve();
+      }
+
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+
+      rejectSecondSave(Object.assign(new Error("EBUSY: file in use"), { code: "EBUSY" }));
+      await vi.advanceTimersByTimeAsync(0);
+      for (let turn = 0; turn < 6; turn += 1) {
+        await Promise.resolve();
+      }
+
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+
+      manager.saveToDiskDebounced(0);
+      await manager.flushPendingSave();
+
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(3);
+      expect(savedSnapshots[2]).toEqual([
+        expect.objectContaining({
+          refreshToken: "token-1",
+          enabled: false,
+          disabledReason: "auth-failure",
+        }),
+      ]);
     });
   });
 
@@ -1689,6 +2307,12 @@ describe("AccountManager", () => {
   });
 
   describe("flushPendingSave", () => {
+    const drainMicrotasks = async (turns = 10): Promise<void> => {
+      for (let turn = 0; turn < turns; turn++) {
+        await Promise.resolve();
+      }
+    };
+
     it("flushes pending debounced save", async () => {
       const { saveAccounts } = await import("../lib/storage.js");
       const mockSaveAccounts = vi.mocked(saveAccounts);
@@ -1785,9 +2409,625 @@ describe("AccountManager", () => {
       const savePromise = manager.saveToDisk();
       
       queueMicrotask(() => resolveInFlight!());
-      
+
       await manager.flushPendingSave();
       await savePromise;
+    });
+
+    it("tracks direct saveToDisk work so flushPendingSave waits for it", async () => {
+      const { saveAccounts } = await import("../lib/storage.js");
+      const mockSaveAccounts = vi.mocked(saveAccounts);
+      mockSaveAccounts.mockClear();
+
+      let resolveInFlight: (() => void) | undefined;
+      const inFlightSave = new Promise<void>((resolve) => {
+        resolveInFlight = resolve;
+      });
+      mockSaveAccounts.mockImplementation(() => inFlightSave);
+
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          { refreshToken: "token-1", addedAt: now, lastUsed: now },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const savePromise = manager.saveToDisk();
+      const flushPromise = manager.flushPendingSave();
+
+      expect(manager.hasPendingSave()).toBe(true);
+
+      let flushSettled = false;
+      void flushPromise.then(() => {
+        flushSettled = true;
+      });
+      await Promise.resolve();
+      expect(flushSettled).toBe(false);
+
+      resolveInFlight?.();
+      await savePromise;
+      await flushPromise;
+
+      expect(manager.hasPendingSave()).toBe(false);
+      expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+    });
+
+    it("waits for in-flight save before flushing a pending debounce", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        let resolveFirst!: () => void;
+        const firstSave = new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+        mockSaveAccounts.mockImplementationOnce(() => firstSave);
+        mockSaveAccounts.mockResolvedValue();
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+
+        manager.saveToDiskDebounced(50);
+        await vi.advanceTimersByTimeAsync(60);
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+        manager.saveToDiskDebounced(50);
+        const flushPromise = manager.flushPendingSave();
+        await Promise.resolve();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+        resolveFirst();
+        await flushPromise;
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("resolves settle waiters when flushPendingSave cancels a pending debounce", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+        mockSaveAccounts.mockResolvedValue();
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+
+        manager.saveToDiskDebounced(50);
+        const settlePromise = manager.waitForPendingSaveToSettle();
+        const flushPromise = manager.flushPendingSave();
+
+        await flushPromise;
+        await expect(settlePromise).resolves.toBeUndefined();
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("retries a failed debounced save during flush even after pending state clears", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        const savedSnapshots: Array<
+          Array<{
+            refreshToken?: string;
+            enabled?: false;
+            disabledReason?: string;
+          }>
+        > = [];
+
+        mockSaveAccounts.mockImplementationOnce(async (storage) => {
+          savedSnapshots.push(
+            storage.accounts.map((account) => ({
+              refreshToken: account.refreshToken,
+              enabled: account.enabled,
+              disabledReason: account.disabledReason,
+            })),
+          );
+          throw Object.assign(new Error("EBUSY: file in use"), { code: "EBUSY" });
+        });
+        mockSaveAccounts.mockImplementationOnce(async (storage) => {
+          savedSnapshots.push(
+            storage.accounts.map((account) => ({
+              refreshToken: account.refreshToken,
+              enabled: account.enabled,
+              disabledReason: account.disabledReason,
+            })),
+          );
+        });
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getAccountsSnapshot()[0]!;
+
+        manager.disableAccountsWithSameRefreshToken(account);
+        manager.saveToDiskDebounced(0);
+        await vi.advanceTimersByTimeAsync(0);
+        await drainMicrotasks();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+        expect(manager.hasPendingSave()).toBe(false);
+
+        await manager.flushPendingSave();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+        expect(savedSnapshots[1]).toEqual([
+          expect.objectContaining({
+            refreshToken: "token-1",
+            enabled: false,
+            disabledReason: "auth-failure",
+          }),
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("drains saves queued during flush without overlapping writes", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        let activeWrites = 0;
+        let maxConcurrentWrites = 0;
+        const settleWrites: Array<() => void> = [];
+        const writePromises: Promise<void>[] = [];
+
+        mockSaveAccounts.mockImplementation(() => {
+          activeWrites++;
+          maxConcurrentWrites = Math.max(maxConcurrentWrites, activeWrites);
+          const writePromise = new Promise<void>((resolve) => {
+            settleWrites.push(() => {
+              activeWrites--;
+              resolve();
+            });
+          });
+          writePromises.push(writePromise);
+          return writePromise;
+        });
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+
+        manager.saveToDiskDebounced(50);
+        await vi.advanceTimersByTimeAsync(60);
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+        const armGapSave = writePromises[0]!.then(() => {
+          manager.saveToDiskDebounced(0);
+        });
+
+        manager.saveToDiskDebounced(50);
+        const flushPromise = manager.flushPendingSave();
+
+        settleWrites[0]!();
+        await armGapSave;
+        await drainMicrotasks();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+
+        manager.saveToDiskDebounced(0);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+
+        settleWrites[1]!();
+        await drainMicrotasks();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(3);
+
+        settleWrites[2]!();
+        await flushPromise;
+
+        expect(maxConcurrentWrites).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("persists disabled auth-failure state after flushing over an in-flight save", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        let activeWrites = 0;
+        let maxConcurrentWrites = 0;
+        const settleWrites: Array<() => void> = [];
+        const savedSnapshots: Array<
+          Array<{
+            refreshToken?: string;
+            enabled?: false;
+            disabledReason?: string;
+            coolingDownUntil?: number;
+            cooldownReason?: string;
+          }>
+        > = [];
+
+        mockSaveAccounts.mockImplementation(async (storage) => {
+          activeWrites++;
+          maxConcurrentWrites = Math.max(maxConcurrentWrites, activeWrites);
+          savedSnapshots.push(
+            storage.accounts.map((account) => ({
+              refreshToken: account.refreshToken,
+              enabled: account.enabled,
+              disabledReason: account.disabledReason,
+              coolingDownUntil: account.coolingDownUntil,
+              cooldownReason: account.cooldownReason,
+            })),
+          );
+          await new Promise<void>((resolve) => {
+            settleWrites.push(() => {
+              activeWrites--;
+              resolve();
+            });
+          });
+        });
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            {
+              refreshToken: "shared-refresh",
+              addedAt: now,
+              lastUsed: now,
+              coolingDownUntil: now + 10_000,
+              cooldownReason: "auth-failure" as const,
+            },
+            {
+              refreshToken: "shared-refresh",
+              addedAt: now + 1,
+              lastUsed: now + 1,
+              coolingDownUntil: now + 20_000,
+              cooldownReason: "auth-failure" as const,
+            },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+
+        manager.saveToDiskDebounced(50);
+        await vi.advanceTimersByTimeAsync(60);
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+        const account = manager.getAccountsSnapshot()[0]!;
+        manager.disableAccountsWithSameRefreshToken(account);
+        manager.saveToDiskDebounced(50);
+
+        const flushPromise = manager.flushPendingSave();
+
+        settleWrites[0]!();
+        await drainMicrotasks();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+
+        const flushedSharedAccounts = savedSnapshots[1]!.filter(
+          (savedAccount) => savedAccount.refreshToken === "shared-refresh",
+        );
+        expect(flushedSharedAccounts).toEqual([
+          expect.objectContaining({
+            enabled: false,
+            disabledReason: "auth-failure",
+            coolingDownUntil: undefined,
+            cooldownReason: undefined,
+          }),
+          expect.objectContaining({
+            enabled: false,
+            disabledReason: "auth-failure",
+            coolingDownUntil: undefined,
+            cooldownReason: undefined,
+          }),
+        ]);
+
+        settleWrites[1]!();
+        await flushPromise;
+
+        expect(maxConcurrentWrites).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("flushes newer debounced state after an older pending save fails", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        const savedSnapshots: Array<
+          Array<{
+            refreshToken?: string;
+            enabled?: false;
+            disabledReason?: string;
+          }>
+        > = [];
+
+        let rejectFirstSave: (error: Error) => void;
+        const firstSave = new Promise<void>((_resolve, reject) => {
+          rejectFirstSave = reject;
+        });
+        mockSaveAccounts.mockImplementationOnce(async (storage) => {
+          savedSnapshots.push(
+            storage.accounts.map((account) => ({
+              refreshToken: account.refreshToken,
+              enabled: account.enabled,
+              disabledReason: account.disabledReason,
+            })),
+          );
+          await firstSave;
+        });
+        mockSaveAccounts.mockImplementationOnce(async (storage) => {
+          savedSnapshots.push(
+            storage.accounts.map((account) => ({
+              refreshToken: account.refreshToken,
+              enabled: account.enabled,
+              disabledReason: account.disabledReason,
+            })),
+          );
+        });
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "shared-refresh", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+
+        manager.saveToDiskDebounced(0);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+
+        const account = manager.getAccountsSnapshot()[0]!;
+        manager.disableAccountsWithSameRefreshToken(account);
+        manager.saveToDiskDebounced(50);
+
+        const flushPromise = manager.flushPendingSave();
+        await Promise.resolve();
+
+        rejectFirstSave!(Object.assign(new Error("EBUSY: file in use"), { code: "EBUSY" }));
+        await flushPromise;
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+        expect(savedSnapshots[1]).toEqual([
+          expect.objectContaining({
+            refreshToken: "shared-refresh",
+            enabled: false,
+            disabledReason: "auth-failure",
+          }),
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps retrying re-armed flush saves after EBUSY failures until a later write succeeds", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        const savedSnapshots: Array<
+          Array<{
+            refreshToken?: string;
+            enabled?: false;
+            disabledReason?: string;
+          }>
+        > = [];
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "shared-refresh", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getAccountsSnapshot()[0]!;
+        manager.disableAccountsWithSameRefreshToken(account);
+
+        let attempts = 0;
+        mockSaveAccounts.mockImplementation(async (storage) => {
+          savedSnapshots.push(
+            storage.accounts.map((savedAccount) => ({
+              refreshToken: savedAccount.refreshToken,
+              enabled: savedAccount.enabled,
+              disabledReason: savedAccount.disabledReason,
+            })),
+          );
+          attempts += 1;
+          if (attempts < 4) {
+            manager.saveToDiskDebounced(0);
+            throw Object.assign(new Error("EBUSY: file in use"), { code: "EBUSY" });
+          }
+        });
+
+        manager.saveToDiskDebounced(0);
+
+        await expect(manager.flushPendingSave()).resolves.toBeUndefined();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(4);
+        expect(savedSnapshots.at(-1)).toEqual([
+          expect.objectContaining({
+            refreshToken: "shared-refresh",
+            enabled: false,
+            disabledReason: "auth-failure",
+          }),
+        ]);
+        expect(accountLoggerWarn).toHaveBeenCalledWith(
+          "flushPendingSave: retrying after flush save failure while newer save is queued",
+          expect.objectContaining({ error: "EBUSY: file in use" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("warns and rejects if flushPendingSave keeps discovering new saves", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+        mockSaveAccounts.mockResolvedValue();
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const originalSaveToDisk = manager.saveToDisk.bind(manager);
+        let rearmedSaves = 0;
+
+        vi.spyOn(manager, "saveToDisk").mockImplementation(async () => {
+          if (rearmedSaves < 25) {
+            rearmedSaves++;
+            manager.saveToDiskDebounced(0);
+          }
+          await originalSaveToDisk();
+        });
+
+        manager.saveToDiskDebounced(0);
+        await expect(manager.flushPendingSave()).rejects.toThrow(
+          "flushPendingSave: exceeded max flush iterations; save state may be incomplete",
+        );
+
+        expect(accountLoggerWarn).toHaveBeenCalledWith(
+          "flushPendingSave exceeded max iterations; possible save loop",
+          expect.objectContaining({ iterations: 20 }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops retrying flushes once the shutdown deadline is exceeded", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date(1_000));
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+
+        mockSaveAccounts.mockImplementation(async () => {
+          vi.setSystemTime(new Date(2_000));
+          manager.saveToDiskDebounced(0);
+        });
+
+        manager.saveToDiskDebounced(0);
+
+        await expect(
+          manager.flushPendingSave({ deadlineMs: 1_500 }),
+        ).rejects.toThrow("flushPendingSave: shutdown deadline exceeded before save state settled");
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    });
+
+    it("rejects when saveToDisk throws during flush", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+        mockSaveAccounts.mockRejectedValueOnce(new Error("EBUSY: file in use"));
+        mockSaveAccounts.mockResolvedValueOnce();
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "token-1", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        manager.saveToDiskDebounced(0);
+
+        await expect(manager.flushPendingSave()).rejects.toThrow("EBUSY");
+
+        manager.saveToDiskDebounced(0);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

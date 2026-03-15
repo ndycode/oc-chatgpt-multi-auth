@@ -1,7 +1,20 @@
-type CleanupFn = () => void | Promise<void>;
+export type CleanupContext = {
+	deadlineMs?: number;
+};
+
+type CleanupFn = (context?: CleanupContext) => void | Promise<void>;
+
+// Allow enough time for serialized manager flushes to finish on Windows hosts
+// where AV/file-indexer contention can hold the accounts file for multiple seconds.
+const SIGNAL_CLEANUP_TIMEOUT_MS = 10_000;
 
 const cleanupFunctions: CleanupFn[] = [];
 let shutdownRegistered = false;
+let sigintHandler: (() => void) | null = null;
+let sigtermHandler: (() => void) | null = null;
+let beforeExitHandler: (() => void) | null = null;
+let cleanupInFlight: Promise<void> | null = null;
+let signalExitPending = false;
 
 export function registerCleanup(fn: CleanupFn): void {
 	cleanupFunctions.push(fn);
@@ -13,18 +26,58 @@ export function unregisterCleanup(fn: CleanupFn): void {
 	if (index !== -1) {
 		cleanupFunctions.splice(index, 1);
 	}
+	if (
+		cleanupFunctions.length === 0 &&
+		!cleanupInFlight &&
+		!signalExitPending &&
+		shutdownRegistered
+	) {
+		removeShutdownHandlers();
+		shutdownRegistered = false;
+	}
 }
 
-export async function runCleanup(): Promise<void> {
-	const fns = [...cleanupFunctions];
-	cleanupFunctions.length = 0;
+export function runCleanup(context?: CleanupContext): Promise<void> {
+	if (cleanupInFlight) {
+		return cleanupInFlight;
+	}
 
-	for (const fn of fns) {
-		try {
-			await fn();
-		} catch {
-			// Ignore cleanup errors during shutdown
+	cleanupInFlight = (async () => {
+		while (cleanupFunctions.length > 0) {
+			const fns = [...cleanupFunctions];
+			cleanupFunctions.length = 0;
+
+			for (const fn of fns) {
+				try {
+					await fn(context);
+				} catch {
+					// Ignore cleanup errors during shutdown
+				}
+			}
 		}
+	})().finally(() => {
+		cleanupInFlight = null;
+		if (!signalExitPending) {
+			removeShutdownHandlers();
+			shutdownRegistered = false;
+		}
+		if (cleanupFunctions.length > 0 && !shutdownRegistered) {
+			ensureShutdownHandler();
+		}
+	});
+
+	return cleanupInFlight;
+}
+
+function resetSignalStateAfterInterceptedExit(): void {
+	if (!signalExitPending) {
+		return;
+	}
+
+	signalExitPending = false;
+	if (cleanupFunctions.length === 0 && !cleanupInFlight && shutdownRegistered) {
+		removeShutdownHandlers();
+		shutdownRegistered = false;
 	}
 }
 
@@ -33,16 +86,62 @@ function ensureShutdownHandler(): void {
 	shutdownRegistered = true;
 
 	const handleSignal = () => {
-		void runCleanup().finally(() => {
+		if (signalExitPending) {
+			return;
+		}
+		signalExitPending = true;
+		const deadlineMs = Date.now() + SIGNAL_CLEANUP_TIMEOUT_MS;
+		let exitRequested = false;
+		const requestExit = () => {
+			if (exitRequested) {
+				return;
+			}
+			exitRequested = true;
+			if (timeoutHandle) {
+				clearTimeout(timeoutHandle);
+				timeoutHandle = null;
+			}
 			process.exit(0);
+		};
+		let timeoutHandle: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+			requestExit();
+		}, Math.max(0, deadlineMs - Date.now()));
+		void runCleanup({ deadlineMs }).finally(() => {
+			try {
+				requestExit();
+			} finally {
+				// `process.exit()` normally terminates immediately. This only runs when exit
+				// is intercepted (for example in tests), so we need to unlatch signal state.
+				resetSignalStateAfterInterceptedExit();
+			}
 		});
 	};
+	sigintHandler = handleSignal;
+	sigtermHandler = handleSignal;
+	beforeExitHandler = () => {
+		if (!cleanupInFlight) {
+			void runCleanup();
+		}
+	};
 
-	process.once("SIGINT", handleSignal);
-	process.once("SIGTERM", handleSignal);
-	process.once("beforeExit", () => {
-		void runCleanup();
-	});
+	process.on("SIGINT", sigintHandler);
+	process.on("SIGTERM", sigtermHandler);
+	process.on("beforeExit", beforeExitHandler);
+}
+
+function removeShutdownHandlers(): void {
+	if (sigintHandler) {
+		process.off("SIGINT", sigintHandler);
+		sigintHandler = null;
+	}
+	if (sigtermHandler) {
+		process.off("SIGTERM", sigtermHandler);
+		sigtermHandler = null;
+	}
+	if (beforeExitHandler) {
+		process.off("beforeExit", beforeExitHandler);
+		beforeExitHandler = null;
+	}
 }
 
 export function getCleanupCount(): number {

@@ -1050,6 +1050,120 @@ describe("storage", () => {
       expect(result?.accounts).toHaveLength(1);
     });
 
+    it("defaults migrated legacy disabled accounts to user disabledReason", () => {
+      const data = {
+        version: 1,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "t1",
+            accountId: "A",
+            enabled: false,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      };
+
+      const result = normalizeAccountStorage(data);
+      expect(result?.version).toBe(3);
+      expect(result?.accounts[0]).toMatchObject({
+        refreshToken: "t1",
+        enabled: false,
+        disabledReason: "user",
+      });
+    });
+
+    it("defaults invalid migrated legacy disabled reasons to user", () => {
+      const data = {
+        version: 1,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "t1",
+            accountId: "A",
+            enabled: false,
+            disabledReason: "future-reason",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      };
+
+      const result = normalizeAccountStorage(data);
+      expect(result?.version).toBe(3);
+      expect(result?.accounts[0]).toMatchObject({
+        refreshToken: "t1",
+        enabled: false,
+        disabledReason: "user",
+      });
+    });
+
+    it("omits enabled for enabled accounts during v1 migration", () => {
+      const data = {
+        version: 1,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "t1",
+            accountId: "A",
+            enabled: true,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      };
+
+      const result = normalizeAccountStorage(data);
+      expect(result?.accounts[0]?.enabled).toBeUndefined();
+      expect(result?.accounts[0]).not.toHaveProperty("enabled");
+    });
+
+    it("strips invalid disabledReason values from disabled v3 accounts", () => {
+      const data = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "t1",
+            accountId: "A",
+            enabled: false,
+            disabledReason: "future-reason",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      };
+
+      const result = normalizeAccountStorage(data);
+      expect(result?.accounts[0]).toMatchObject({
+        refreshToken: "t1",
+        enabled: false,
+      });
+      expect(result?.accounts[0]?.disabledReason).toBeUndefined();
+      expect(result?.accounts[0]).not.toHaveProperty("disabledReason");
+    });
+
+    it("strips enabled: true from v3 accounts during normalization", () => {
+      const data = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "t1",
+            accountId: "A",
+            enabled: true,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      };
+
+      const result = normalizeAccountStorage(data);
+      expect(result?.accounts[0]?.enabled).toBeUndefined();
+      expect(result?.accounts[0]).not.toHaveProperty("enabled");
+    });
+
     it("preserves activeIndexByFamily when valid", () => {
       const data = {
         version: 3,
@@ -1468,6 +1582,32 @@ describe("storage", () => {
       expect(loaded.accounts).toHaveLength(1);
       expect(loaded.accounts[0]?.organizationId).toBe("org-secondary");
       expect(loaded.accounts[0]?.accountIdSource).toBe("id_token");
+    });
+
+    it("strips stale disabledReason from enabled flagged records during load", async () => {
+      const flaggedPath = join(dirname(testStoragePath), "openai-codex-flagged-accounts.json");
+      await fs.writeFile(
+        flaggedPath,
+        JSON.stringify({
+          version: 1,
+          accounts: [
+            {
+              refreshToken: "flagged-enabled",
+              flaggedAt: 123,
+              addedAt: 123,
+              lastUsed: 123,
+              enabled: true,
+              disabledReason: "auth-failure",
+            },
+          ],
+        }),
+      );
+
+      const loaded = await loadFlaggedAccounts();
+      expect(loaded.accounts).toHaveLength(1);
+      expect(loaded.accounts[0]?.enabled).toBe(true);
+      expect(loaded.accounts[0]?.disabledReason).toBeUndefined();
+      expect(loaded.accounts[0]).not.toHaveProperty("disabledReason");
     });
 
     it("retries flagged storage rename on EBUSY and succeeds", async () => {

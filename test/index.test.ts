@@ -1,4 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { getCleanupCount, runCleanup } from "../lib/shutdown.js";
+
+beforeEach(async () => {
+	await runCleanup();
+});
+
+afterEach(async () => {
+	await runCleanup();
+});
 
 vi.mock("@opencode-ai/plugin/tool", () => {
 	const makeSchema = () => ({
@@ -204,6 +213,7 @@ const mockStorage = {
 		accessToken?: string;
 		expiresAt?: number;
 		enabled?: boolean;
+		disabledReason?: "user" | "auth-failure";
 		addedAt?: number;
 		lastUsed?: number;
 		coolingDownUntil?: number;
@@ -293,6 +303,10 @@ vi.mock("../lib/accounts.js", () => {
 			return this.accounts.length;
 		}
 
+		getEnabledAccountCount() {
+			return this.accounts.filter((account) => account.enabled !== false).length;
+		}
+
 		getCurrentOrNextForFamily() {
 			return this.accounts[0] ?? null;
 		}
@@ -344,6 +358,20 @@ vi.mock("../lib/accounts.js", () => {
 		refundToken() {}
 		markSwitched() {}
 		removeAccount() {}
+		disableAccountsWithSameRefreshToken(account: { refreshToken?: string }) {
+			const refreshToken = account.refreshToken;
+			let disabledCount = 0;
+			for (const storedAccount of this.accounts) {
+				if (storedAccount.refreshToken !== refreshToken) continue;
+				if (storedAccount.enabled === false) continue;
+				delete storedAccount.coolingDownUntil;
+				delete storedAccount.cooldownReason;
+				storedAccount.enabled = false;
+				storedAccount.disabledReason = "auth-failure";
+				disabledCount++;
+			}
+			return disabledCount;
+		}
 		removeAccountsWithSameRefreshToken() { return 1; }
 
 		getMinWaitTimeForFamily() {
@@ -503,6 +531,53 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.type).toBe("failed");
 			expect(result.reason).toBe("invalid_response");
 			expect(vi.mocked(authModule.exchangeAuthorizationCode)).not.toHaveBeenCalled();
+		});
+
+		it("invalidates cached account manager after manual OAuth persistence", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const authModule = await import("../lib/auth/auth.js");
+			const accountsModule = await import("../lib/accounts.js");
+			const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+
+			mockStorage.accounts = [{ refreshToken: "existing-refresh", email: "existing@example.com" }];
+
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "existing-access",
+				refresh: "existing-refresh",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			loadFromDiskSpy.mockClear();
+
+			vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+				type: "success",
+				access: "manual-access",
+				refresh: "manual-refresh",
+				expires: Date.now() + 60_000,
+				idToken: "manual-id-token",
+			});
+			vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([]);
+
+			const manualMethod = plugin.auth.methods[1] as unknown as {
+				authorize: () => Promise<{
+					callback: (input: string) => Promise<{ type: string }>;
+				}>;
+			};
+
+			const flow = await manualMethod.authorize();
+			const result = await flow.callback(
+				"http://127.0.0.1:1455/auth/callback?code=manual-code&state=test-state",
+			);
+
+			expect(result.type).toBe("success");
+			expect(mockStorage.accounts).toHaveLength(2);
+
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+
+			expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
 		});
 	});
 
@@ -2038,7 +2113,75 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(await response.text()).toContain("server errors or auth issues");
 	});
 
-	it("cools down the account when grouped auth removal removes zero entries", async () => {
+	it("reports disabled pools separately from missing pools", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+
+		const customManager = {
+			getAccountCount: () => 2,
+			getEnabledAccountCount: () => 0,
+			getCurrentOrNextForFamilyHybrid: () => null,
+			getSelectionExplainability: () => [],
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-disabled",
+				refresh: "refresh-disabled",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			markAccountCoolingDown: () => {},
+			markRateLimitedWithReason: () => {},
+			recordRateLimit: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+			hasPendingSave: () => false,
+			waitForPendingSaveToSettle: async () => {},
+			flushPendingSave: async () => {},
+			getAccountsSnapshot: () => [
+				{
+					index: 0,
+					email: "user1@example.com",
+					refreshToken: "refresh-disabled-a",
+					enabled: false,
+					disabledReason: "user" as const,
+				},
+				{
+					index: 1,
+					email: "user2@example.com",
+					refreshToken: "refresh-disabled-b",
+					enabled: false,
+					disabledReason: "user" as const,
+				},
+			],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+		globalThis.fetch = vi.fn();
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(response.status).toBe(503);
+		const responseText = await response.text();
+		expect(responseText).toContain("All stored Codex accounts are user-disabled");
+		expect(responseText).toContain("Re-enable them from account management");
+	});
+
+	it("disables grouped accounts when auth failures hit the threshold", async () => {
 		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
 		const { AccountManager } = await import("../lib/accounts.js");
 		const { ACCOUNT_LIMITS } = await import("../lib/constants.js");
@@ -2049,9 +2192,56 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		);
 		const incrementAuthFailuresSpy = vi
 			.spyOn(AccountManager.prototype, "incrementAuthFailures")
-			.mockReturnValue(ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL);
-		const removeGroupedAccountsSpy = vi
-			.spyOn(AccountManager.prototype, "removeAccountsWithSameRefreshToken")
+			.mockReturnValue(ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_DISABLE);
+		const disableGroupedAccountsSpy = vi
+			.spyOn(AccountManager.prototype, "disableAccountsWithSameRefreshToken")
+			.mockReturnValue(2);
+		vi.spyOn(AccountManager.prototype, "getCurrentOrNextForFamilyHybrid")
+			.mockImplementationOnce(() => ({
+				index: 0,
+				email: "user1@example.com",
+				refreshToken: "refresh-1",
+			}) as never)
+			.mockImplementation(() => null);
+
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "should-not-fetch" }), { status: 200 }),
+		);
+
+		const { sdk, mockClient } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(incrementAuthFailuresSpy).toHaveBeenCalledTimes(1);
+		expect(disableGroupedAccountsSpy).toHaveBeenCalledTimes(1);
+		expect(mockClient.tui.showToast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				body: expect.objectContaining({
+					message: expect.stringContaining("Disabled 2 accounts"),
+					variant: "error",
+				}),
+			}),
+		);
+	});
+
+	it("cools down the account when grouped auth disable updates zero entries", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		const { ACCOUNT_LIMITS } = await import("../lib/constants.js");
+
+		vi.spyOn(fetchHelpers, "shouldRefreshToken").mockReturnValue(true);
+		vi.mocked(fetchHelpers.refreshAndUpdateToken).mockRejectedValue(
+			new Error("Token expired"),
+		);
+		const incrementAuthFailuresSpy = vi
+			.spyOn(AccountManager.prototype, "incrementAuthFailures")
+			.mockReturnValue(ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_DISABLE);
+		const disableGroupedAccountsSpy = vi
+			.spyOn(AccountManager.prototype, "disableAccountsWithSameRefreshToken")
 			.mockReturnValue(0);
 		const markAccountsWithRefreshTokenCoolingDownSpy = vi.spyOn(
 			AccountManager.prototype,
@@ -2071,12 +2261,266 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		expect(response.status).toBe(503);
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 		expect(incrementAuthFailuresSpy).toHaveBeenCalledTimes(1);
-		expect(removeGroupedAccountsSpy).toHaveBeenCalledTimes(1);
+		expect(disableGroupedAccountsSpy).toHaveBeenCalledTimes(1);
 		expect(markAccountsWithRefreshTokenCoolingDownSpy).toHaveBeenCalledWith(
 			"refresh-1",
 			ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
 			"auth-failure",
 		);
+	});
+
+	it("surfaces a disabled-pool response when grouped disable and cooldown both no-op", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		const { ACCOUNT_LIMITS } = await import("../lib/constants.js");
+
+		vi.spyOn(fetchHelpers, "shouldRefreshToken").mockReturnValue(true);
+		vi.mocked(fetchHelpers.refreshAndUpdateToken).mockRejectedValue(
+			new Error("Token expired"),
+		);
+
+		let selected = false;
+		const disableGroupedAccountsSpy = vi.fn(() => 0);
+		const markAccountsWithRefreshTokenCoolingDownSpy = vi.fn(() => 0);
+		const saveToDiskDebouncedSpy = vi.fn();
+		const customManager = {
+			getAccountCount: () => 1,
+			getEnabledAccountCount: () => 0,
+			getCurrentOrNextForFamilyHybrid: () => {
+				if (selected) {
+					return null;
+				}
+				selected = true;
+				return {
+					index: 0,
+					email: "user1@example.com",
+					refreshToken: "refresh-1",
+				};
+			},
+			getSelectionExplainability: () => [],
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-disabled",
+				refresh: "refresh-disabled",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: saveToDiskDebouncedSpy,
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_DISABLE,
+			disableAccountsWithSameRefreshToken: disableGroupedAccountsSpy,
+			markAccountsWithRefreshTokenCoolingDown: markAccountsWithRefreshTokenCoolingDownSpy,
+			markAccountCoolingDown: () => {},
+			markRateLimitedWithReason: () => {},
+			recordRateLimit: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			setActiveIndex: () => null,
+			hasPendingSave: () => false,
+			waitForPendingSaveToSettle: async () => {},
+			flushPendingSave: async () => {},
+			getAccountsSnapshot: () => [],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "should-not-fetch" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(disableGroupedAccountsSpy).toHaveBeenCalledTimes(1);
+		expect(markAccountsWithRefreshTokenCoolingDownSpy).toHaveBeenCalledWith(
+			"refresh-1",
+			ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
+			"auth-failure",
+		);
+		expect(saveToDiskDebouncedSpy).toHaveBeenCalledTimes(1);
+		const responseText = await response.text();
+		expect(responseText).toContain(
+			"All stored Codex accounts are disabled. Re-enable any manually disabled accounts from account management, or run `opencode auth login` to restore access.",
+		);
+	});
+
+	it("surfaces the disabled-pool response when same-token variants were already user-disabled", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		const { ACCOUNT_LIMITS } = await import("../lib/constants.js");
+
+		vi.spyOn(fetchHelpers, "shouldRefreshToken").mockReturnValue(true);
+		vi.mocked(fetchHelpers.refreshAndUpdateToken).mockRejectedValue(
+			new Error("Token expired"),
+		);
+
+		let selected = false;
+		const disableGroupedAccountsSpy = vi.fn(() => 0);
+		const markAccountsWithRefreshTokenCoolingDownSpy = vi.fn(() => 0);
+		const saveToDiskDebouncedSpy = vi.fn();
+		const customManager = {
+			getAccountCount: () => 2,
+			getEnabledAccountCount: () => 0,
+			getCurrentOrNextForFamilyHybrid: () => {
+				if (selected) {
+					return null;
+				}
+				selected = true;
+				return {
+					index: 0,
+					email: "user1@example.com",
+					refreshToken: "refresh-shared",
+				};
+			},
+			getSelectionExplainability: () => [],
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-disabled",
+				refresh: "refresh-shared",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: saveToDiskDebouncedSpy,
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_DISABLE,
+			disableAccountsWithSameRefreshToken: disableGroupedAccountsSpy,
+			markAccountsWithRefreshTokenCoolingDown: markAccountsWithRefreshTokenCoolingDownSpy,
+			markAccountCoolingDown: () => {},
+			markRateLimitedWithReason: () => {},
+			recordRateLimit: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			setActiveIndex: () => null,
+			hasPendingSave: () => false,
+			waitForPendingSaveToSettle: async () => {},
+			flushPendingSave: async () => {},
+			getAccountsSnapshot: () => [
+				{
+					index: 0,
+					email: "user1@example.com",
+					refreshToken: "refresh-shared",
+					enabled: false,
+					disabledReason: "user" as const,
+				},
+				{
+					index: 1,
+					email: "user1@example.com",
+					refreshToken: "refresh-shared",
+					enabled: false,
+					disabledReason: "user" as const,
+				},
+			],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "should-not-fetch" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(disableGroupedAccountsSpy).toHaveBeenCalledTimes(1);
+		expect(markAccountsWithRefreshTokenCoolingDownSpy).toHaveBeenCalledWith(
+			"refresh-shared",
+			ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
+			"auth-failure",
+		);
+		expect(saveToDiskDebouncedSpy).toHaveBeenCalledTimes(1);
+		const responseText = await response.text();
+		expect(responseText).toContain("All stored Codex accounts are user-disabled");
+		expect(responseText).toContain("Re-enable them from account management");
+	});
+
+	it("surfaces an auth-failure-specific disabled-pool response when every account is auth-failure disabled", async () => {
+		const { AccountManager } = await import("../lib/accounts.js");
+
+		const customManager = {
+			getAccountCount: () => 2,
+			getEnabledAccountCount: () => 0,
+			getCurrentOrNextForFamilyHybrid: () => null,
+			getSelectionExplainability: () => [],
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-disabled",
+				refresh: "refresh-disabled",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: () => {},
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => 1,
+			markAccountCoolingDown: () => {},
+			markRateLimitedWithReason: () => {},
+			recordRateLimit: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			markToastShown: () => {},
+			setActiveIndex: () => null,
+			hasPendingSave: () => false,
+			waitForPendingSaveToSettle: async () => {},
+			flushPendingSave: async () => {},
+			getAccountsSnapshot: () => [
+				{
+					index: 0,
+					email: "user1@example.com",
+					refreshToken: "refresh-disabled-a",
+					enabled: false,
+					disabledReason: "auth-failure" as const,
+				},
+				{
+					index: 1,
+					email: "user2@example.com",
+					refreshToken: "refresh-disabled-b",
+					enabled: false,
+					disabledReason: "auth-failure" as const,
+				},
+			],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+		globalThis.fetch = vi.fn();
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(response.status).toBe(503);
+		const responseText = await response.text();
+		expect(responseText).toContain("disabled after repeated auth failures");
+		expect(responseText).toContain("Run `opencode auth login` to restore access");
 	});
 
 	it("skips fetch when local token bucket is depleted", async () => {
@@ -2290,6 +2734,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			let fallbackSelection = 0;
 			const customManager = {
 				getAccountCount: () => 2,
+				getEnabledAccountCount: () => 2,
 				getCurrentOrNextForFamilyHybrid: (_family: string, currentModel?: string) => {
 					if (currentModel === "gpt-5-codex") {
 						if (fallbackSelection === 0) {
@@ -2457,6 +2902,80 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				{ model: "gpt-5-codex", accessToken: "access-account-1" },
 			]);
 			expect(response.status).toBe(200);
+		});
+
+		it("uses enabled-account positions in selection toasts", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+
+			const account = {
+				index: 2,
+				accountId: "acc-3",
+				email: "user3@example.com",
+				refreshToken: "refresh-3",
+			};
+			const markToastShown = vi.fn();
+			const customManager = {
+				getAccountCount: () => 3,
+				getEnabledAccountCount: () => 2,
+				getCurrentOrNextForFamilyHybrid: (() => {
+					let selected = false;
+					return () => {
+						if (selected) {
+							return null;
+						}
+						selected = true;
+						return account;
+					};
+				})(),
+				getSelectionExplainability: () => [],
+				toAuthDetails: (selectedAccount: { accountId?: string }) => ({
+					type: "oauth" as const,
+					access: `access-${selectedAccount.accountId ?? "unknown"}`,
+					refresh: "refresh-token",
+					expires: Date.now() + 60_000,
+				}),
+				hasRefreshToken: () => true,
+				saveToDiskDebounced: () => {},
+				updateFromAuth: () => {},
+				clearAuthFailures: () => {},
+				incrementAuthFailures: () => 1,
+				markAccountCoolingDown: () => {},
+				markRateLimitedWithReason: () => {},
+				recordRateLimit: () => {},
+				consumeToken: () => true,
+				refundToken: () => {},
+				markSwitched: () => {},
+				removeAccount: () => {},
+				recordFailure: () => {},
+				recordSuccess: () => {},
+				getMinWaitTimeForFamily: () => 0,
+				shouldShowAccountToast: () => true,
+				markToastShown,
+				setActiveIndex: () => account,
+				getAccountsSnapshot: () => [account],
+			};
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+
+			globalThis.fetch = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ content: "test" }), { status: 200 }),
+			);
+
+			const { sdk, mockClient } = await setupPlugin();
+			const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-5.1" }),
+			});
+
+			expect(response.status).toBe(200);
+			expect(mockClient.tui.showToast).toHaveBeenCalledWith(
+				expect.objectContaining({
+					body: expect.objectContaining({
+						message: expect.stringContaining("enabled 1/2"),
+						variant: "info",
+					}),
+				}),
+			);
+			expect(markToastShown).toHaveBeenCalledWith(2);
 		});
 
 		it("handles empty body in request", async () => {
@@ -3075,7 +3594,6 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				organizationId: "org-keep",
 				email: "org@example.com",
 				refreshToken: "shared-refresh",
-				enabled: true,
 				addedAt: 10,
 				lastUsed: 10,
 			},
@@ -3122,8 +3640,192 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const mergedOrg = mergedOrgEntries[0];
 		expect(mergedOrg?.accountId).toBe("org-shared");
 		expect(mergedOrg?.enabled).toBe(false);
+		expect(mergedOrg?.disabledReason).toBe("user");
 		expect(mergedOrg?.coolingDownUntil).toBe(12_000);
 		expect(mergedOrg?.cooldownReason).toBe("auth-failure");
+	});
+
+	it("preserves manual disable reason over auth-failure when collapsing same-organization duplicates", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const authModule = await import("../lib/auth/auth.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "org-shared",
+				organizationId: "org-keep",
+				email: "manual@example.com",
+				refreshToken: "shared-refresh",
+				enabled: false,
+				disabledReason: "user",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+			{
+				accountId: "org-shared",
+				organizationId: "org-keep",
+				email: "auth-failure@example.com",
+				refreshToken: "shared-refresh",
+				enabled: false,
+				disabledReason: "auth-failure",
+				coolingDownUntil: 12_000,
+				cooldownReason: "auth-failure",
+				addedAt: 20,
+				lastUsed: 20,
+			},
+		];
+
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-unrelated-user-disabled",
+			refresh: "refresh-unrelated-user-disabled",
+			expires: Date.now() + 300_000,
+			idToken: "id-unrelated-user-disabled",
+		});
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([]);
+		vi.mocked(accountsModule.extractAccountId).mockImplementation((accessToken) =>
+			accessToken === "access-unrelated-user-disabled" ? "unrelated-user-disabled" : "account-1",
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
+
+		const mergedOrgEntries = mockStorage.accounts.filter(
+			(account) => account.organizationId === "org-keep",
+		);
+		expect(mergedOrgEntries).toHaveLength(1);
+		const mergedOrg = mergedOrgEntries[0];
+		expect(mergedOrg).toMatchObject({
+			accountId: "org-shared",
+			enabled: false,
+			disabledReason: "user",
+			coolingDownUntil: 12_000,
+			cooldownReason: "auth-failure",
+		});
+	});
+
+	it("preserves user-disabled and legacy-disabled variants while reviving auth-failure disables on explicit login", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const authModule = await import("../lib/auth/auth.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "unrelated-disabled",
+				organizationId: "org-unrelated",
+				email: "unrelated@example.com",
+				refreshToken: "different-refresh",
+				enabled: false,
+				disabledReason: "user",
+				addedAt: 9,
+				lastUsed: 9,
+			},
+			{
+				accountId: "org-shared",
+				organizationId: "org-keep",
+				email: "org@example.com",
+				refreshToken: "shared-refresh",
+				enabled: false,
+				disabledReason: "auth-failure",
+				coolingDownUntil: 12_000,
+				cooldownReason: "auth-failure",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+			{
+				accountId: "org-sibling",
+				organizationId: "org-sibling",
+				email: "sibling@example.com",
+				refreshToken: "shared-refresh",
+				enabled: false,
+				disabledReason: "user",
+				addedAt: 11,
+				lastUsed: 11,
+			},
+			{
+				accountId: "org-legacy",
+				organizationId: "org-legacy",
+				email: "legacy@example.com",
+				refreshToken: "shared-refresh",
+				enabled: false,
+				coolingDownUntil: 18_000,
+				cooldownReason: "auth-failure",
+				addedAt: 12,
+				lastUsed: 12,
+			},
+		];
+
+		vi.mocked(authModule.exchangeAuthorizationCode).mockResolvedValueOnce({
+			type: "success",
+			access: "access-shared-refresh",
+			refresh: "shared-refresh",
+			expires: Date.now() + 300_000,
+			idToken: "id-shared-refresh",
+		});
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([]);
+		vi.mocked(accountsModule.extractAccountId).mockImplementation((accessToken) =>
+			accessToken === "access-shared-refresh" ? "org-shared" : "account-1",
+		);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
+
+		const revivedEntries = mockStorage.accounts.filter(
+			(account) => account.refreshToken === "shared-refresh",
+		);
+		expect(revivedEntries).toHaveLength(3);
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-shared"),
+		).toMatchObject({
+			accountId: "org-shared",
+			enabled: undefined,
+			disabledReason: undefined,
+			coolingDownUntil: undefined,
+			cooldownReason: undefined,
+		});
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-sibling"),
+		).toMatchObject({
+			accountId: "org-sibling",
+			enabled: false,
+			disabledReason: "user",
+		});
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-legacy"),
+		).toMatchObject({
+			accountId: "org-legacy",
+			enabled: false,
+			coolingDownUntil: 18_000,
+			cooldownReason: "auth-failure",
+		});
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-legacy")?.disabledReason,
+		).toBeUndefined();
+		expect(
+			revivedEntries.find((account) => account.accountId === "org-shared")?.accessToken,
+		).toBe("access-shared-refresh");
+		expect(
+			mockStorage.accounts.find((account) => account.accountId === "unrelated-disabled"),
+		).toMatchObject({
+			accountId: "unrelated-disabled",
+			refreshToken: "different-refresh",
+			enabled: false,
+			disabledReason: "user",
+		});
 	});
 
 	it("preserves same-organization entries when accountId differs", async () => {
@@ -3227,6 +3929,23 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const accountsModule = await import("../lib/accounts.js");
 		const refreshQueueModule = await import("../lib/refresh-queue.js");
 
+		mockStorage.accounts = [
+			{
+				refreshToken: "refreshed-refresh",
+				organizationId: "org-refresh",
+				accountId: "flagged-live",
+				accountIdSource: "manual",
+				accountLabel: "Refresh Workspace",
+				email: "refresh@example.com",
+				enabled: false,
+				disabledReason: "auth-failure",
+				coolingDownUntil: 60_000,
+				cooldownReason: "auth-failure",
+				addedAt: Date.now() - 1500,
+				lastUsed: Date.now() - 1500,
+			},
+		];
+
 		const flaggedAccounts = [
 			{
 				refreshToken: "flagged-refresh-cache",
@@ -3280,16 +3999,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			}
 			return null;
 		});
-		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValue([
-			{
-				accountId: "token-shared",
-				source: "token",
-				label: "Token Shared [id:shared]",
-			},
-		]);
-		vi.mocked(accountsModule.selectBestAccountCandidate).mockImplementation(
-			(candidates) => candidates[0] ?? null,
-		);
+		vi.mocked(accountsModule.getAccountIdCandidates).mockReturnValueOnce([]);
 
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
@@ -3308,10 +4018,764 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(new Set(mockStorage.accounts.map((account) => account.organizationId))).toEqual(
 			new Set(["org-cache", "org-refresh"]),
 		);
+		expect(
+			mockStorage.accounts.find((account) => account.organizationId === "org-refresh"),
+		).toMatchObject({
+			accountId: "flagged-live",
+			refreshToken: "refreshed-refresh",
+			enabled: undefined,
+			disabledReason: undefined,
+			coolingDownUntil: undefined,
+			cooldownReason: undefined,
+			accessToken: "refreshed-access",
+		});
 		expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith({
 			version: 1,
 			accounts: [],
 		});
+	});
+
+	it("flushes pending account saves during shutdown cleanup", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const flushPendingSave = vi.fn(async () => {});
+		const manager = await accountsModule.AccountManager.loadFromDisk();
+		manager.flushPendingSave = flushPendingSave;
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(manager);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		await runCleanup();
+
+		expect(flushPendingSave).toHaveBeenCalledTimes(1);
+	});
+
+	it("forwards the shutdown deadline to pending account save flushers", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const flushPendingSave = vi.fn(async () => {});
+		const manager = await accountsModule.AccountManager.loadFromDisk();
+		manager.flushPendingSave = flushPendingSave;
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(manager);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		await runCleanup({ deadlineMs: 12_345 });
+
+		expect(flushPendingSave).toHaveBeenCalledTimes(1);
+		expect(flushPendingSave).toHaveBeenCalledWith({ deadlineMs: 12_345 });
+	});
+
+	it("logs when shutdown cleanup flush fails", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const loggerModule = await import("../lib/logger.js");
+		const flushPendingSave = vi.fn(async () => {
+			throw new Error("EBUSY");
+		});
+		const manager = await accountsModule.AccountManager.loadFromDisk();
+		manager.flushPendingSave = flushPendingSave;
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(manager);
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		vi.mocked(loggerModule.logWarn).mockClear();
+		await runCleanup();
+
+		expect(flushPendingSave).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
+			"[shutdown] flushPendingSave failed; disabled state may not be persisted",
+			expect.objectContaining({ error: "EBUSY" }),
+		);
+	});
+
+	it("drops failed tracked managers after shutdown cleanup logs the failure", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const loggerModule = await import("../lib/logger.js");
+		const failingManager = await accountsModule.AccountManager.loadFromDisk();
+		const succeedingManager = await accountsModule.AccountManager.loadFromDisk();
+		const failingFlush = vi.fn(async () => {
+			throw new Error("EBUSY");
+		});
+		const succeedingFlush = vi.fn(async () => {});
+		failingManager.flushPendingSave = failingFlush;
+		succeedingManager.flushPendingSave = succeedingFlush;
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(failingManager)
+			.mockResolvedValueOnce(succeedingManager);
+
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const firstPlugin = (await OpenAIOAuthPlugin({
+			client: createMockClient(),
+		} as never)) as unknown as PluginType;
+		await firstPlugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-1",
+				refresh: "refresh-token-1",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		vi.mocked(loggerModule.logWarn).mockClear();
+		await runCleanup();
+
+		const secondPlugin = (await OpenAIOAuthPlugin({
+			client: createMockClient(),
+		} as never)) as unknown as PluginType;
+		await secondPlugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-2",
+				refresh: "refresh-token-2",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		vi.mocked(loggerModule.logWarn).mockClear();
+		await runCleanup();
+
+		expect(failingFlush).toHaveBeenCalledTimes(1);
+		expect(succeedingFlush).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(loggerModule.logWarn)).not.toHaveBeenCalledWith(
+			"[shutdown] flushPendingSave failed; disabled state may not be persisted",
+			expect.anything(),
+		);
+	});
+
+	it("flushes stale invalidated managers alongside the current manager during shutdown cleanup", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const managerOne = await accountsModule.AccountManager.loadFromDisk();
+		const managerTwo = await accountsModule.AccountManager.loadFromDisk();
+		const flushManagerOne = vi.fn(async () => {});
+		const flushManagerTwo = vi.fn(async () => {});
+		managerOne.flushPendingSave = flushManagerOne;
+		managerTwo.flushPendingSave = flushManagerTwo;
+		managerOne.hasPendingSave = vi.fn(() => true);
+		managerTwo.hasPendingSave = vi.fn(() => false);
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(managerOne)
+			.mockResolvedValue(managerTwo);
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-managed",
+				email: "managed@example.com",
+				refreshToken: "refresh-managed",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-1",
+				refresh: "refresh-token-1",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		flushManagerOne.mockClear();
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-2",
+				refresh: "refresh-token-2",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		await runCleanup();
+
+		expect(flushManagerOne).toHaveBeenCalledTimes(1);
+		expect(flushManagerTwo).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps idle detached managers tracked until shutdown in case they enqueue a later save", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const managerOne = await accountsModule.AccountManager.loadFromDisk();
+		const managerTwo = await accountsModule.AccountManager.loadFromDisk();
+		const flushManagerOne = vi.fn(async () => {});
+		const flushManagerTwo = vi.fn(async () => {});
+		let managerOneHasPendingSave = false;
+		managerOne.flushPendingSave = flushManagerOne;
+		managerTwo.flushPendingSave = flushManagerTwo;
+		managerOne.hasPendingSave = vi.fn(() => managerOneHasPendingSave);
+		managerTwo.hasPendingSave = vi.fn(() => false);
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(managerOne)
+			.mockResolvedValue(managerTwo);
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-managed",
+				email: "managed@example.com",
+				refreshToken: "refresh-managed",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-1",
+				refresh: "refresh-token-1",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		flushManagerOne.mockClear();
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-2",
+				refresh: "refresh-token-2",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		managerOneHasPendingSave = true;
+		await runCleanup();
+
+		expect(flushManagerOne).toHaveBeenCalledTimes(1);
+		expect(flushManagerTwo).toHaveBeenCalledTimes(1);
+	});
+
+	it("prunes tracked invalidated managers once their pending saves settle", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const managerOne = await accountsModule.AccountManager.loadFromDisk();
+		const flushManagerOne = vi.fn(async () => {});
+		let managerOneHasPendingSave = true;
+		let resolveManagerOneSettled: (() => void) | null = null;
+		managerOne.flushPendingSave = flushManagerOne;
+		managerOne.hasPendingSave = vi.fn(() => managerOneHasPendingSave);
+		managerOne.waitForPendingSaveToSettle = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					resolveManagerOneSettled = resolve;
+				}),
+		);
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk")
+			.mockResolvedValue(managerOne);
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-managed",
+				email: "managed@example.com",
+				refreshToken: "refresh-managed",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-1",
+				refresh: "refresh-token-1",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		flushManagerOne.mockClear();
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		managerOneHasPendingSave = false;
+		resolveManagerOneSettled?.();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		await runCleanup();
+
+		expect(flushManagerOne).not.toHaveBeenCalled();
+	});
+
+	it("flushes a tracked debounce-only manager during shutdown before its settle waiter resolves naturally", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const managerOne = await accountsModule.AccountManager.loadFromDisk();
+		const managerTwo = await accountsModule.AccountManager.loadFromDisk();
+		const flushManagerOne = vi.fn(async () => {
+			managerOneHasPendingSave = false;
+			resolveManagerOneSettled?.();
+		});
+		const flushManagerTwo = vi.fn(async () => {});
+		let managerOneHasPendingSave = true;
+		let resolveManagerOneSettled: (() => void) | null = null;
+		managerOne.flushPendingSave = flushManagerOne;
+		managerOne.hasPendingSave = vi.fn(() => managerOneHasPendingSave);
+		managerOne.waitForPendingSaveToSettle = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					resolveManagerOneSettled = resolve;
+				}),
+		);
+		managerTwo.flushPendingSave = flushManagerTwo;
+		managerTwo.hasPendingSave = vi.fn(() => false);
+		managerTwo.waitForPendingSaveToSettle = vi.fn(async () => {});
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(managerOne)
+			.mockResolvedValue(managerTwo);
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-managed",
+				email: "managed@example.com",
+				refreshToken: "refresh-managed",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-1",
+				refresh: "refresh-token-1",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		flushManagerOne.mockClear();
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-2",
+				refresh: "refresh-token-2",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		expect(managerOne.waitForPendingSaveToSettle).toHaveBeenCalledTimes(1);
+
+		await runCleanup();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(flushManagerOne).toHaveBeenCalledTimes(1);
+		expect(flushManagerTwo).toHaveBeenCalledTimes(1);
+		expect(managerOneHasPendingSave).toBe(false);
+	});
+
+	it("re-arms tracked manager prune waiters when pending saves continue after a settle notification", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const managerOne = await accountsModule.AccountManager.loadFromDisk();
+		const flushManagerOne = vi.fn(async () => {
+			managerOneHasPendingSave = false;
+		});
+		let managerOneHasPendingSave = true;
+		const settleResolvers: Array<() => void> = [];
+		managerOne.flushPendingSave = flushManagerOne;
+		managerOne.hasPendingSave = vi.fn(() => managerOneHasPendingSave);
+		managerOne.waitForPendingSaveToSettle = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					settleResolvers.push(resolve);
+				}),
+		);
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(managerOne);
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-managed",
+				email: "managed@example.com",
+				refreshToken: "refresh-managed",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await plugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-1",
+				refresh: "refresh-token-1",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		flushManagerOne.mockClear();
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+		expect(managerOne.waitForPendingSaveToSettle).toHaveBeenCalledTimes(1);
+
+		settleResolvers[0]?.();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(managerOne.waitForPendingSaveToSettle).toHaveBeenCalledTimes(2);
+
+		await runCleanup();
+
+		expect(flushManagerOne).toHaveBeenCalledTimes(1);
+	});
+
+	it("flushes tracked account managers from multiple plugin instances during shutdown cleanup", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const managerOne = await accountsModule.AccountManager.loadFromDisk();
+		const managerTwo = await accountsModule.AccountManager.loadFromDisk();
+		const flushManagerOne = vi.fn(async () => {});
+		const flushManagerTwo = vi.fn(async () => {});
+		managerOne.flushPendingSave = flushManagerOne;
+		managerTwo.flushPendingSave = flushManagerTwo;
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk")
+			.mockResolvedValueOnce(managerOne)
+			.mockResolvedValueOnce(managerTwo);
+
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const firstPlugin = (await OpenAIOAuthPlugin({
+			client: createMockClient(),
+		} as never)) as unknown as PluginType;
+		const secondPlugin = (await OpenAIOAuthPlugin({
+			client: createMockClient(),
+		} as never)) as unknown as PluginType;
+
+		await firstPlugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-1",
+				refresh: "refresh-token-1",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+		await secondPlugin.auth.loader(
+			async () => ({
+				type: "oauth",
+				access: "access-token-2",
+				refresh: "refresh-token-2",
+				expires: Date.now() + 60_000,
+			}) as never,
+			{},
+		);
+
+		expect(getCleanupCount()).toBe(1);
+
+		await runCleanup();
+
+		expect(flushManagerOne).toHaveBeenCalledTimes(1);
+		expect(flushManagerTwo).toHaveBeenCalledTimes(1);
+	});
+
+	it("replaces the account-save shutdown cleanup on plugin re-initialization", async () => {
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+
+		expect(getCleanupCount()).toBe(0);
+
+		await OpenAIOAuthPlugin({ client: createMockClient() } as never);
+		expect(getCleanupCount()).toBe(1);
+
+		await OpenAIOAuthPlugin({ client: createMockClient() } as never);
+		expect(getCleanupCount()).toBe(1);
+	});
+
+	it("writes user disable metadata from the auth manage menu and clears it on manual re-enable", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-managed",
+				email: "managed@example.com",
+				refreshToken: "refresh-managed",
+				coolingDownUntil: 30_000,
+				cooldownReason: "network-error",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		const saveAccountsMock = vi.mocked(storageModule.saveAccounts);
+		expect(saveAccountsMock).toHaveBeenCalledTimes(2);
+		expect(saveAccountsMock.mock.calls[0]?.[0].accounts[0]).toMatchObject({
+			accountId: "workspace-managed",
+			enabled: false,
+			disabledReason: "user",
+			coolingDownUntil: 30_000,
+			cooldownReason: "network-error",
+		});
+		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).toMatchObject({
+			accountId: "workspace-managed",
+		});
+		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).not.toHaveProperty("enabled");
+		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).not.toHaveProperty("disabledReason");
+		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).not.toHaveProperty("coolingDownUntil");
+		expect(saveAccountsMock.mock.calls[1]?.[0].accounts[0]).not.toHaveProperty("cooldownReason");
+		expect(mockStorage.accounts[0]).toMatchObject({
+			accountId: "workspace-managed",
+		});
+		expect(mockStorage.accounts[0]).not.toHaveProperty("enabled");
+		expect(mockStorage.accounts[0]).not.toHaveProperty("disabledReason");
+		expect(mockStorage.accounts[0]).not.toHaveProperty("coolingDownUntil");
+		expect(mockStorage.accounts[0]).not.toHaveProperty("cooldownReason");
+	});
+
+	it("keeps auth-failure disables blocked in the auth manage menu until a fresh login", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const loggerModule = await import("../lib/logger.js");
+		const storageModule = await import("../lib/storage.js");
+
+		mockStorage.accounts = [
+			{
+				accountId: "workspace-auth-failure",
+				email: "blocked@example.com",
+				refreshToken: "refresh-blocked",
+				enabled: false,
+				disabledReason: "auth-failure",
+				coolingDownUntil: 30_000,
+				cooldownReason: "auth-failure",
+				addedAt: 10,
+				lastUsed: 10,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		vi.mocked(loggerModule.logWarn).mockClear();
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		expect(vi.mocked(storageModule.saveAccounts)).not.toHaveBeenCalled();
+		expect(mockStorage.accounts[0]).toMatchObject({
+			accountId: "workspace-auth-failure",
+			enabled: false,
+			disabledReason: "auth-failure",
+			coolingDownUntil: 30_000,
+			cooldownReason: "auth-failure",
+		});
+		expect(mockClient.tui.showToast).toHaveBeenCalledWith({
+			body: expect.objectContaining({
+				message:
+					"This account was disabled after repeated auth failures. Run 'opencode auth login' to re-enable with fresh credentials.",
+				variant: "warning",
+			}),
+		});
+		const infoCall = vi
+			.mocked(loggerModule.logInfo)
+			.mock.calls.find(([message]) => message === "[account-menu] prompted re-auth for auth-failure disabled account");
+		const warnCall = vi
+			.mocked(loggerModule.logWarn)
+			.mock.calls.find(([message]) => message === "[account-menu] blocked re-enable for auth-failure disabled account");
+		expect(infoCall?.[1]).toEqual(expect.objectContaining({ accountIndex: 1 }));
+		expect(warnCall?.[1]).toEqual(expect.objectContaining({ accountIndex: 1 }));
+		expect(infoCall?.[1]).not.toHaveProperty("accountId");
+		expect(warnCall?.[1]).not.toHaveProperty("accountId");
+	});
+
+	it("falls back to a generic console hint when TUI toast is unavailable for auth-failure disables", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const loggerModule = await import("../lib/logger.js");
+		const storageModule = await import("../lib/storage.js");
+		const stdoutWrite = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+		try {
+			mockStorage.accounts = [
+				{
+					accountId: "workspace-auth-failure",
+					email: "blocked@example.com",
+					refreshToken: "refresh-blocked",
+					enabled: false,
+					disabledReason: "auth-failure",
+					coolingDownUntil: 30_000,
+					cooldownReason: "auth-failure",
+					addedAt: 10,
+					lastUsed: 10,
+				},
+			];
+
+			vi.mocked(cliModule.promptLoginMode)
+				.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+				.mockResolvedValueOnce({ mode: "cancel" });
+
+			const mockClient = createMockClient();
+			mockClient.tui.showToast.mockRejectedValueOnce(new Error("TUI unavailable"));
+			const { OpenAIOAuthPlugin } = await import("../index.js");
+			const plugin = (await OpenAIOAuthPlugin({
+				client: mockClient,
+			} as never)) as unknown as PluginType;
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
+
+			vi.mocked(loggerModule.logWarn).mockClear();
+			const authResult = await autoMethod.authorize();
+			expect(authResult.instructions).toBe("Authentication cancelled");
+
+			expect(vi.mocked(storageModule.saveAccounts)).not.toHaveBeenCalled();
+			expect(stdoutWrite).toHaveBeenCalledWith(
+				"\nRun 'opencode auth login' to re-enable this account.\n\n",
+			);
+			const infoCall = vi
+				.mocked(loggerModule.logInfo)
+				.mock.calls.find(([message]) => message === "[account-menu] prompted re-auth for auth-failure disabled account");
+			const warnCall = vi
+				.mocked(loggerModule.logWarn)
+				.mock.calls.find(([message]) => message === "[account-menu] blocked re-enable for auth-failure disabled account");
+			expect(infoCall?.[1]).toEqual(expect.objectContaining({ accountIndex: 1 }));
+			expect(warnCall?.[1]).toEqual(expect.objectContaining({ accountIndex: 1 }));
+			expect(infoCall?.[1]).not.toHaveProperty("accountId");
+			expect(warnCall?.[1]).not.toHaveProperty("accountId");
+		} finally {
+			stdoutWrite.mockRestore();
+		}
 	});
 });
 

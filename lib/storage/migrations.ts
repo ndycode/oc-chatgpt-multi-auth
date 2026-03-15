@@ -7,6 +7,32 @@ import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import type { AccountIdSource } from "../types.js";
 
 export type CooldownReason = "auth-failure" | "network-error";
+export type AccountDisabledReason = "user" | "auth-failure";
+
+export function isAccountDisabledReason(value: unknown): value is AccountDisabledReason {
+	return value === "user" || value === "auth-failure";
+}
+
+export function normalizeAccountDisabledReason(
+	value: unknown,
+): AccountDisabledReason | undefined {
+	return isAccountDisabledReason(value) ? value : undefined;
+}
+
+export function normalizeStoredAccountDisabledReason(
+	enabled: unknown,
+	disabledReason: unknown,
+): AccountDisabledReason | undefined {
+	// Unlike V1 migration, V3 normalization intentionally leaves missing/invalid
+	// reasons unset so legacy-disabled accounts are not auto-revived as auth failures.
+	return enabled === false
+		? normalizeAccountDisabledReason(disabledReason)
+		: undefined;
+}
+
+export function normalizeStoredEnabled(enabled: unknown): false | undefined {
+	return enabled === false ? false : undefined;
+}
 
 export interface RateLimitStateV3 {
 	[key: string]: number | undefined;
@@ -26,6 +52,8 @@ export interface AccountMetadataV1 {
 	/** Optional access token expiry timestamp (ms since epoch). */
 	expiresAt?: number;
 	enabled?: boolean;
+	/** Never set by V1 storage; migration defaults disabled V1 accounts to "user". */
+	disabledReason?: AccountDisabledReason;
 	addedAt: number;
 	lastUsed: number;
 	lastSwitchReason?: "rate-limit" | "initial" | "rotation";
@@ -54,6 +82,7 @@ export interface AccountMetadataV3 {
 	/** Optional access token expiry timestamp (ms since epoch). */
 	expiresAt?: number;
 	enabled?: boolean;
+	disabledReason?: AccountDisabledReason;
 	addedAt: number;
 	lastUsed: number;
 	lastSwitchReason?: "rate-limit" | "initial" | "rotation";
@@ -95,7 +124,11 @@ export function migrateV1ToV3(v1: AccountStorageV1): AccountStorageV3 {
 				refreshToken: account.refreshToken,
 				accessToken: account.accessToken,
 				expiresAt: account.expiresAt,
-				enabled: account.enabled,
+				enabled: normalizeStoredEnabled(account.enabled),
+				disabledReason:
+					account.enabled === false
+						? normalizeAccountDisabledReason(account.disabledReason) ?? "user"
+						: undefined,
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,
 				lastSwitchReason: account.lastSwitchReason,

@@ -7,16 +7,27 @@ import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
 import { AnyAccountStorageSchema, getValidationErrors } from "./schemas.js";
 import { getConfigDir, getProjectConfigDir, getProjectGlobalConfigDir, findProjectRoot, resolvePath } from "./storage/paths.js";
 import {
-  migrateV1ToV3,
-  type CooldownReason,
-  type RateLimitStateV3,
-  type AccountMetadataV1,
-  type AccountStorageV1,
-  type AccountMetadataV3,
-  type AccountStorageV3,
+	migrateV1ToV3,
+	normalizeStoredAccountDisabledReason,
+	normalizeStoredEnabled,
+	type AccountDisabledReason,
+	type CooldownReason,
+	type RateLimitStateV3,
+	type AccountMetadataV1,
+	type AccountStorageV1,
+	type AccountMetadataV3,
+	type AccountStorageV3,
 } from "./storage/migrations.js";
 
-export type { CooldownReason, RateLimitStateV3, AccountMetadataV1, AccountStorageV1, AccountMetadataV3, AccountStorageV3 };
+export type {
+	AccountDisabledReason,
+	CooldownReason,
+	RateLimitStateV3,
+	AccountMetadataV1,
+	AccountStorageV1,
+	AccountMetadataV3,
+	AccountStorageV3,
+};
 
 const log = createLogger("storage");
 const ACCOUNTS_FILE_NAME = "openai-codex-accounts.json";
@@ -612,10 +623,27 @@ export function normalizeAccountStorage(data: unknown): AccountStorageV3 | null 
       ? migrateV1ToV3(data as unknown as AccountStorageV1)
       : (data as unknown as AccountStorageV3);
 
-  const validAccounts = rawAccounts.filter(
-    (account): account is AccountMetadataV3 =>
-      isRecord(account) && typeof account.refreshToken === "string" && !!account.refreshToken.trim(),
-  );
+  const validAccounts: AccountMetadataV3[] = baseStorage.accounts
+    .filter(
+      (account): account is AccountMetadataV3 =>
+        isRecord(account) && typeof account.refreshToken === "string" && !!account.refreshToken.trim(),
+    )
+    .map((account) => {
+      const normalizedAccount: AccountMetadataV3 = { ...account };
+      const enabled = normalizeStoredEnabled(account.enabled);
+      const disabledReason = normalizeStoredAccountDisabledReason(account.enabled, account.disabledReason);
+      if (enabled === undefined) {
+        delete normalizedAccount.enabled;
+      } else {
+        normalizedAccount.enabled = enabled;
+      }
+      if (disabledReason === undefined) {
+        delete normalizedAccount.disabledReason;
+      } else {
+        normalizedAccount.disabledReason = disabledReason;
+      }
+      return normalizedAccount;
+    });
 
   const deduplicatedAccounts = deduplicateAccountsForStorage(validAccounts);
 
@@ -972,6 +1000,10 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 		const cooldownReason = isCooldownReason(rawAccount.cooldownReason)
 			? rawAccount.cooldownReason
 			: undefined;
+		const disabledReason = normalizeStoredAccountDisabledReason(
+			rawAccount.enabled,
+			rawAccount.disabledReason,
+		);
 		const accountTags = normalizeTags(rawAccount.accountTags);
 		const accountNote =
 			typeof rawAccount.accountNote === "string" && rawAccount.accountNote.trim()
@@ -1000,6 +1032,9 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 			flaggedReason: typeof rawAccount.flaggedReason === "string" ? rawAccount.flaggedReason : undefined,
 			lastError: typeof rawAccount.lastError === "string" ? rawAccount.lastError : undefined,
 		};
+		if (disabledReason !== undefined) {
+			normalized.disabledReason = disabledReason;
+		}
 		byRefreshToken.set(refreshToken, normalized);
 	}
 

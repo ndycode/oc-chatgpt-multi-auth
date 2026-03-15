@@ -6,6 +6,7 @@ import { createLogger } from "./logger.js";
 import {
 	loadAccounts,
 	saveAccounts,
+	type AccountDisabledReason,
 	type AccountStorageV3,
 	type CooldownReason,
 	type RateLimitStateV3,
@@ -70,6 +71,10 @@ export type CodexCliTokenCacheEntry = {
 	expiresAt?: number;
 	refreshToken?: string;
 	accountId?: string;
+};
+
+type FlushPendingSaveOptions = {
+	deadlineMs?: number;
 };
 
 const CODEX_CLI_ACCOUNTS_PATH = join(homedir(), ".codex", "accounts.json");
@@ -181,6 +186,7 @@ export interface ManagedAccount {
 	email?: string;
 	refreshToken: string;
 	enabled?: boolean;
+	disabledReason?: AccountDisabledReason;
 	access?: string;
 	expires?: number;
 	addedAt: number;
@@ -206,6 +212,12 @@ export interface AccountSelectionExplainability {
 	lastUsed: number;
 }
 
+export type SetAccountEnabledFailureReason = "auth-failure-blocked" | "invalid-index";
+
+export type SetAccountEnabledResult =
+	| { ok: true; account: ManagedAccount }
+	| { ok: false; reason: SetAccountEnabledFailureReason };
+
 export class AccountManager {
 	private accounts: ManagedAccount[] = [];
 	private cursorByFamily: Record<ModelFamily, number> = initFamilyState(0);
@@ -214,7 +226,11 @@ export class AccountManager {
 	private lastToastTime = 0;
 	private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingSave: Promise<void> | null = null;
+	private saveRetryNeeded = false;
 	private authFailuresByRefreshToken: Map<string, number> = new Map();
+	private pendingSaveSettledWaiters = new Set<() => void>();
+	private saveFinalizationTick = 0;
+	private saveFinalizationWaiters = new Set<{ afterTick: number; resolve: () => void }>();
 
 	static async loadFromDisk(authFallback?: OAuthAuthDetails): Promise<AccountManager> {
 		const stored = await loadAccounts();
@@ -307,8 +323,11 @@ export class AccountManager {
 						email: matchesFallback
 							? fallbackAccountEmail ?? sanitizeEmail(account.email)
 							: sanitizeEmail(account.email),
+						// Storage only persists `enabled: false`; in memory we normalize to a concrete boolean.
 						refreshToken,
 						enabled: account.enabled !== false,
+						disabledReason:
+							account.enabled === false ? account.disabledReason ?? "user" : undefined,
 						access: matchesFallback && authFallback ? authFallback.access : account.accessToken,
 						expires: matchesFallback && authFallback ? authFallback.expires : account.expiresAt,
 						addedAt: clampNonNegativeInt(account.addedAt, baseNow),
@@ -390,6 +409,16 @@ export class AccountManager {
 
 	getAccountCount(): number {
 		return this.accounts.length;
+	}
+
+	getEnabledAccountCount(): number {
+		let enabledCount = 0;
+		for (const account of this.accounts) {
+			if (account.enabled !== false) {
+				enabledCount += 1;
+			}
+		}
+		return enabledCount;
 	}
 
 	getActiveIndex(): number {
@@ -873,6 +902,31 @@ export class AccountManager {
 	}
 
 	/**
+	 * Disable all accounts that share the same refreshToken as the given account.
+	 * This keeps org/workspace variants visible in the pool while preventing reuse.
+	 * @returns Number of accounts newly disabled
+	 */
+	disableAccountsWithSameRefreshToken(account: ManagedAccount): number {
+		const refreshToken = account.refreshToken;
+		let disabledCount = 0;
+
+		for (const accountToDisable of this.accounts) {
+			if (accountToDisable.refreshToken !== refreshToken) continue;
+			if (accountToDisable.enabled === false) continue;
+			this.clearAccountCooldown(accountToDisable);
+			accountToDisable.enabled = false;
+			accountToDisable.disabledReason = "auth-failure";
+			disabledCount++;
+		}
+
+		// Reset any accumulated auth failures for this token, even if matching accounts
+		// were already manually disabled, so a later manual re-enable starts clean.
+		this.authFailuresByRefreshToken.delete(refreshToken);
+
+		return disabledCount;
+	}
+
+	/**
 	 * Remove all accounts that share the same refreshToken as the given account.
 	 * This is used when auth refresh fails to remove all org variants together.
 	 * @returns Number of accounts removed
@@ -895,16 +949,53 @@ export class AccountManager {
 		return removedCount;
 	}
 
-	setAccountEnabled(index: number, enabled: boolean): ManagedAccount | null {
-		if (!Number.isFinite(index)) return null;
-		if (index < 0 || index >= this.accounts.length) return null;
+	trySetAccountEnabled(
+		index: number,
+		enabled: boolean,
+		reason?: AccountDisabledReason,
+	): SetAccountEnabledResult {
+		if (!Number.isFinite(index)) return { ok: false, reason: "invalid-index" };
+		if (index < 0 || index >= this.accounts.length) return { ok: false, reason: "invalid-index" };
 		const account = this.accounts[index];
-		if (!account) return null;
-		account.enabled = enabled;
-		return account;
+		if (!account) return { ok: false, reason: "invalid-index" };
+		if (enabled && account.disabledReason === "auth-failure") {
+			return { ok: false, reason: "auth-failure-blocked" };
+		}
+		// Once an account is auth-failure disabled, callers must refresh credentials
+		// instead of downgrading the reason to a manually re-enableable state.
+		if (!enabled && account.disabledReason === "auth-failure") {
+			account.enabled = false;
+			return { ok: true, account };
+		}
+		if (enabled) {
+			const wasDisabled = account.enabled === false;
+			account.enabled = true;
+			if (wasDisabled) {
+				delete account.disabledReason;
+				this.clearAccountCooldown(account);
+			}
+		} else if (reason) {
+			account.enabled = false;
+			account.disabledReason = reason;
+		} else if (account.disabledReason !== "auth-failure") {
+			account.enabled = false;
+			account.disabledReason = "user";
+		} else {
+			account.enabled = false;
+		}
+		return { ok: true, account };
 	}
 
-	async saveToDisk(): Promise<void> {
+	setAccountEnabled(
+		index: number,
+		enabled: boolean,
+		reason?: AccountDisabledReason,
+	): ManagedAccount | null {
+		const result = this.trySetAccountEnabled(index, enabled, reason);
+		return result.ok ? result.account : null;
+	}
+
+	private async persistToDisk(): Promise<void> {
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
 			const raw = this.currentAccountIndexByFamily[family];
@@ -926,7 +1017,10 @@ export class AccountManager {
 				refreshToken: account.refreshToken,
 				accessToken: account.access,
 				expiresAt: account.expires,
+				// Persist enabled accounts by omitting the flag to preserve the storage convention.
 				enabled: account.enabled === false ? false : undefined,
+				disabledReason:
+					account.enabled === false ? account.disabledReason ?? "user" : undefined,
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,
 				lastSwitchReason: account.lastSwitchReason,
@@ -942,7 +1036,93 @@ export class AccountManager {
 		await saveAccounts(storage);
 	}
 
+	async saveToDisk(): Promise<void> {
+		return this.enqueueSave(() => this.persistToDisk());
+	}
+
+	private enqueueSave(saveOperation: () => Promise<void>): Promise<void> {
+		const previousSave = this.pendingSave;
+		const nextSave = (async () => {
+			if (previousSave) {
+				try {
+					await previousSave;
+				} catch (error) {
+					log.warn("Continuing queued save after previous save failure", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+			try {
+				await saveOperation();
+				this.saveRetryNeeded = false;
+			} catch (error) {
+				this.saveRetryNeeded = true;
+				throw error;
+			}
+		})().finally(() => {
+			if (this.pendingSave === nextSave) {
+				this.pendingSave = null;
+			}
+			this.resolvePendingSaveSettledWaiters();
+			this.notifySaveFinalization();
+		});
+		this.pendingSave = nextSave;
+		return nextSave;
+	}
+
+	hasPendingSave(): boolean {
+		return this.saveDebounceTimer !== null || this.pendingSave !== null;
+	}
+
+	waitForPendingSaveToSettle(): Promise<void> {
+		if (!this.hasPendingSave()) {
+			return Promise.resolve();
+		}
+
+		// This intentionally treats debounce-only timers as pending work too. Callers
+		// such as scheduleTrackedManagerPrune wait across those gaps so a later re-arm
+		// cannot drop shutdown tracking before the deferred save actually runs. If a
+		// manager is abandoned before the debounce is replayed through flushPendingSave
+		// or the timer itself fires, cleanup-time pruning is the final backstop.
+		return new Promise((resolve) => {
+			this.pendingSaveSettledWaiters.add(resolve);
+		});
+	}
+
+	private waitForSaveFinalization(afterTick: number): Promise<void> {
+		if (this.saveFinalizationTick > afterTick) {
+			return Promise.resolve();
+		}
+
+		return new Promise((resolve) => {
+			this.saveFinalizationWaiters.add({ afterTick, resolve });
+		});
+	}
+
+	private notifySaveFinalization(): void {
+		this.saveFinalizationTick += 1;
+		for (const waiter of [...this.saveFinalizationWaiters]) {
+			if (this.saveFinalizationTick <= waiter.afterTick) {
+				continue;
+			}
+			this.saveFinalizationWaiters.delete(waiter);
+			waiter.resolve();
+		}
+	}
+
+	private resolvePendingSaveSettledWaiters(): void {
+		if (this.hasPendingSave() || this.pendingSaveSettledWaiters.size === 0) {
+			return;
+		}
+
+		for (const resolve of [...this.pendingSaveSettledWaiters]) {
+			this.pendingSaveSettledWaiters.delete(resolve);
+			resolve();
+		}
+	}
+
 	saveToDiskDebounced(delayMs = 500): void {
+		this.saveRetryNeeded = true;
 		if (this.saveDebounceTimer) {
 			clearTimeout(this.saveDebounceTimer);
 		}
@@ -950,13 +1130,7 @@ export class AccountManager {
 			this.saveDebounceTimer = null;
 			const doSave = async () => {
 				try {
-					if (this.pendingSave) {
-						await this.pendingSave;
-					}
-					this.pendingSave = this.saveToDisk().finally(() => {
-						this.pendingSave = null;
-					});
-					await this.pendingSave;
+					await this.saveToDisk();
 				} catch (error) {
 					log.warn("Debounced save failed", { error: error instanceof Error ? error.message : String(error) });
 				}
@@ -965,14 +1139,95 @@ export class AccountManager {
 		}, delayMs);
 	}
 
-	async flushPendingSave(): Promise<void> {
-		if (this.saveDebounceTimer) {
-			clearTimeout(this.saveDebounceTimer);
-			this.saveDebounceTimer = null;
-			await this.saveToDisk();
-		}
-		if (this.pendingSave) {
-			await this.pendingSave;
+	async flushPendingSave(options?: FlushPendingSaveOptions): Promise<void> {
+		const MAX_FLUSH_ITERATIONS = 20;
+		let flushIterations = 0;
+		const deadlineMs =
+			typeof options?.deadlineMs === "number" && Number.isFinite(options.deadlineMs)
+				? options.deadlineMs
+				: undefined;
+		const throwIfDeadlineExceeded = (): void => {
+			if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+				throw new Error("flushPendingSave: shutdown deadline exceeded before save state settled");
+			}
+		};
+
+		while (true) {
+			throwIfDeadlineExceeded();
+			flushIterations += 1;
+			if (flushIterations > MAX_FLUSH_ITERATIONS) {
+				// This is intentionally far above realistic debounce re-arm chains; if we
+				// still haven't converged, shutdown callers log the failure and continue exit.
+				log.warn("flushPendingSave exceeded max iterations; possible save loop", {
+					iterations: flushIterations - 1,
+				});
+				throw new Error("flushPendingSave: exceeded max flush iterations; save state may be incomplete");
+			}
+			const hadDebouncedSave = !!this.saveDebounceTimer;
+			if (this.saveDebounceTimer) {
+				clearTimeout(this.saveDebounceTimer);
+				this.saveDebounceTimer = null;
+			}
+			if (this.pendingSave) {
+				const pendingSaveTick = this.saveFinalizationTick;
+				let pendingSaveError: unknown;
+				try {
+					await this.pendingSave;
+				} catch (error) {
+					pendingSaveError = error;
+				}
+				await this.waitForSaveFinalization(pendingSaveTick);
+				if (this.saveDebounceTimer !== null || this.pendingSave !== null) {
+					throwIfDeadlineExceeded();
+					continue;
+				}
+				const shouldRetryAfterPendingSave = hadDebouncedSave || this.saveRetryNeeded;
+				if (pendingSaveError) {
+					if (!shouldRetryAfterPendingSave) {
+						throw pendingSaveError;
+					}
+					log.warn("flushPendingSave: retrying after save failure to flush latest state", {
+						error:
+							pendingSaveError instanceof Error
+								? pendingSaveError.message
+								: String(pendingSaveError),
+					});
+				}
+			}
+			if (!hadDebouncedSave && !this.saveRetryNeeded) {
+				return;
+			}
+			if (this.saveDebounceTimer !== null || this.pendingSave !== null) {
+				throwIfDeadlineExceeded();
+				continue;
+			}
+			const flushSaveTick = this.saveFinalizationTick;
+			const flushSave = this.saveToDisk();
+			let flushSaveError: unknown;
+			try {
+				await flushSave;
+			} catch (error) {
+				flushSaveError = error;
+			}
+			await this.waitForSaveFinalization(flushSaveTick);
+			if (this.saveDebounceTimer !== null || this.pendingSave !== null) {
+				if (flushSaveError) {
+					log.warn("flushPendingSave: retrying after flush save failure while newer save is queued", {
+						error:
+							flushSaveError instanceof Error
+								? flushSaveError.message
+								: String(flushSaveError),
+					});
+				}
+				throwIfDeadlineExceeded();
+				continue;
+			}
+			if (flushSaveError) {
+				throw flushSaveError;
+			}
+			if (this.saveDebounceTimer === null && this.pendingSave === null) {
+				return;
+			}
 		}
 	}
 }

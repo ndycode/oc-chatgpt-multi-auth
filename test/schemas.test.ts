@@ -155,6 +155,18 @@ describe("AccountMetadataV3Schema", () => {
 		expect(result.success).toBe(false);
 	});
 
+	it("normalizes invalid disabledReason values to undefined", () => {
+		const result = AccountMetadataV3Schema.safeParse({
+			...validAccount,
+			enabled: false,
+			disabledReason: "future-reason",
+		});
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.disabledReason).toBeUndefined();
+		}
+	});
+
 	it("normalizes account tags by trimming, lowercasing, and filtering blanks", () => {
 		const result = AccountMetadataV3Schema.safeParse({
 			...validAccount,
@@ -540,5 +552,22 @@ describe("getValidationErrors", () => {
 		const errors = getValidationErrors(PluginConfigSchema, "not-an-object");
 		expect(errors.length).toBeGreaterThan(0);
 		expect(errors[0]).not.toMatch(/^[a-zA-Z0-9_.]+: /);
+	});
+
+	it("does not warn for unknown disabledReason values in account storage", () => {
+		const errors = getValidationErrors(AnyAccountStorageSchema, {
+			version: 3,
+			accounts: [
+				{
+					refreshToken: "rt",
+					enabled: false,
+					disabledReason: "future-reason",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+			activeIndex: 0,
+		});
+		expect(errors).toEqual([]);
 	});
 });

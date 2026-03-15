@@ -88,6 +88,7 @@ import {
 } from "./lib/logger.js";
 import { checkAndNotify } from "./lib/auto-update-checker.js";
 import { handleContextOverflow } from "./lib/context-overflow.js";
+import { registerCleanup, unregisterCleanup } from "./lib/shutdown.js";
 import {
 	AccountManager,
 	type AccountSelectionExplainability,
@@ -118,6 +119,7 @@ import {
 	loadFlaggedAccounts,
 	saveFlaggedAccounts,
 	clearFlaggedAccounts,
+	type AccountDisabledReason,
 	StorageError,
 	formatStorageErrorHint,
 	type AccountStorageV3,
@@ -199,6 +201,14 @@ import {
  * }
  * ```
  */
+// Shared across plugin instances so shutdown cleanup can flush debounced saves
+// even when multiple plugin objects coexist during reloads or tests.
+let accountManagerCleanupHook: (() => Promise<void>) | null = null;
+// `active...` retains only the shared currently cached manager. Older managers move to
+// `tracked...` only while they still have pending disk work and self-prune once settled.
+const activeAccountManagersForCleanup = new Set<AccountManager>();
+const trackedAccountManagersForCleanup = new Set<AccountManager>();
+
 // eslint-disable-next-line @typescript-eslint/require-await
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
@@ -471,15 +481,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 );
         };
 
+		type PersistAccountPoolOptions = {
+			reviveMatchingDisabledAccounts?: boolean;
+		};
+
 	        const persistAccountPool = async (
 	                results: TokenSuccessWithAccount[],
 	                replaceAll: boolean = false,
+	                options: PersistAccountPoolOptions = {},
 	        ): Promise<void> => {
 	                if (results.length === 0) return;
 				await withAccountStorageTransaction(async (loadedStorage, persist) => {
 					const now = Date.now();
 					const stored = replaceAll ? null : loadedStorage;
 			let accounts = stored?.accounts ? [...stored.accounts] : [];
+			const refreshTokensToRevive = options.reviveMatchingDisabledAccounts
+				? new Set(
+					results
+						.map((result) => result.refresh.trim())
+						.filter((refreshToken) => refreshToken.length > 0),
+				)
+				: null;
 
 					const pushIndex = (
 						map: Map<string, number[]>,
@@ -548,6 +570,21 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					target.enabled === false || source.enabled === false
 						? false
 						: target.enabled ?? source.enabled;
+				const mergedDisabledReason = (() => {
+					if (mergedEnabled !== false) {
+						return undefined;
+					}
+					const reasons = [target.disabledReason, source.disabledReason];
+					if (reasons.includes("user")) {
+						return "user" satisfies AccountDisabledReason;
+					}
+					if (reasons.includes("auth-failure")) {
+						return "auth-failure" satisfies AccountDisabledReason;
+					}
+					// Unknown disabled reasons are treated as legacy/manual disables.
+					// Explicit login revival is reserved for accounts we know were disabled by auth failure.
+					return "user" satisfies AccountDisabledReason;
+				})();
 				const targetCoolingDownUntil =
 					typeof target.coolingDownUntil === "number" && Number.isFinite(target.coolingDownUntil)
 						? target.coolingDownUntil
@@ -585,6 +622,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					accessToken: newer.accessToken || older.accessToken,
 					expiresAt: newer.expiresAt ?? older.expiresAt,
 					enabled: mergedEnabled,
+					disabledReason: mergedDisabledReason,
 					addedAt: Math.max(target.addedAt ?? 0, source.addedAt ?? 0),
 					lastUsed: Math.max(target.lastUsed ?? 0, source.lastUsed ?? 0),
 					lastSwitchReason: target.lastSwitchReason ?? source.lastSwitchReason,
@@ -1005,6 +1043,27 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 			pruneRefreshTokenCollisions();
 
+			if (refreshTokensToRevive && refreshTokensToRevive.size > 0) {
+				accounts = accounts.map((account) => {
+					const refreshToken = account.refreshToken?.trim();
+					if (
+						!refreshToken ||
+						!refreshTokensToRevive.has(refreshToken) ||
+						account.disabledReason !== "auth-failure"
+					) {
+						return account;
+					}
+
+					return {
+						...account,
+						enabled: undefined,
+						disabledReason: undefined,
+						coolingDownUntil: undefined,
+						cooldownReason: undefined,
+					};
+				});
+			}
+
 			if (accounts.length === 0) return;
 
 			const resolveIndexByIdentityKeys = (identityKeys: string[] | undefined): number | undefined => {
@@ -1069,7 +1128,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 message: string,
                 variant: "info" | "success" | "warning" | "error" = "success",
                 options?: { title?: string; duration?: number },
-        ): Promise<void> => {
+        ): Promise<boolean> => {
                 try {
                         await client.tui.showToast({
                                 body: {
@@ -1079,8 +1138,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         ...(options?.duration && { duration: options.duration }),
                                 },
                         });
+                        return true;
                 } catch {
                         // Ignore when TUI is not available.
+                        return false;
                 }
         };
 
@@ -1627,10 +1688,93 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
+		const managerHasPendingSave = (candidate: AccountManager): boolean =>
+			typeof candidate.hasPendingSave === "function" ? candidate.hasPendingSave() : true;
+		const trackedManagerSettledWaits = new WeakMap<AccountManager, Promise<void>>();
+
+		const scheduleTrackedManagerPrune = (manager: AccountManager): void => {
+			if (
+				!managerHasPendingSave(manager) ||
+				trackedManagerSettledWaits.has(manager) ||
+				typeof manager.waitForPendingSaveToSettle !== "function"
+			) {
+				return;
+			}
+
+			// Re-registering this waiter after each settle is intentional: a manager can
+			// move from "debounce only" to "in-flight save" repeatedly, and we do not
+			// want a transient idle check to drop shutdown tracking before the next save.
+			const waitForSettle = manager
+				.waitForPendingSaveToSettle()
+				.finally(() => {
+					trackedManagerSettledWaits.delete(manager);
+					if (activeAccountManagersForCleanup.has(manager)) {
+						return;
+					}
+					if (managerHasPendingSave(manager)) {
+						trackedAccountManagersForCleanup.add(manager);
+						scheduleTrackedManagerPrune(manager);
+						return;
+					}
+					trackedAccountManagersForCleanup.delete(manager);
+				});
+
+			trackedManagerSettledWaits.set(manager, waitForSettle);
+		};
+
+		const setCachedAccountManager = (manager: AccountManager): AccountManager => {
+			if (cachedAccountManager && cachedAccountManager !== manager) {
+				activeAccountManagersForCleanup.delete(cachedAccountManager);
+				// Detached managers can still enqueue their first debounced save after the
+				// cache switches. Keep them tracked until shutdown so that late work is flushed.
+				trackedAccountManagersForCleanup.add(cachedAccountManager);
+				if (managerHasPendingSave(cachedAccountManager)) {
+					scheduleTrackedManagerPrune(cachedAccountManager);
+				}
+			}
+			activeAccountManagersForCleanup.add(manager);
+			trackedAccountManagersForCleanup.delete(manager);
+			cachedAccountManager = manager;
+			accountManagerPromise = Promise.resolve(manager);
+			return manager;
+		};
+
 		const invalidateAccountManagerCache = (): void => {
+			if (cachedAccountManager) {
+				activeAccountManagersForCleanup.delete(cachedAccountManager);
+				// Once detached, this manager may still persist state from in-flight request
+				// handlers. Keep it in the shutdown tracking set until cleanup runs.
+				trackedAccountManagersForCleanup.add(cachedAccountManager);
+				if (managerHasPendingSave(cachedAccountManager)) {
+					scheduleTrackedManagerPrune(cachedAccountManager);
+				}
+			}
 			cachedAccountManager = null;
 			accountManagerPromise = null;
 		};
+
+		accountManagerCleanupHook ??= async (context?: { deadlineMs?: number }) => {
+			const managersToFlush = new Set<AccountManager>([
+				...activeAccountManagersForCleanup,
+				...trackedAccountManagersForCleanup,
+			]);
+			for (const manager of managersToFlush) {
+				try {
+					await manager.flushPendingSave(
+						context?.deadlineMs !== undefined ? { deadlineMs: context.deadlineMs } : undefined,
+					);
+				} catch (error) {
+					logWarn("[shutdown] flushPendingSave failed; disabled state may not be persisted", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				} finally {
+					activeAccountManagersForCleanup.delete(manager);
+					trackedAccountManagersForCleanup.delete(manager);
+				}
+			}
+		};
+		unregisterCleanup(accountManagerCleanupHook);
+		registerCleanup(accountManagerCleanupHook);
 
         // Event handler for session recovery and account selection
         const eventHandler = async (input: { event: { type: string; properties?: unknown } }) => {
@@ -1673,8 +1817,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 // refresh tokens with stale in-memory state.
                                 if (cachedAccountManager) {
                                         const reloadedManager = await AccountManager.loadFromDisk();
-                                        cachedAccountManager = reloadedManager;
-                                        accountManagerPromise = Promise.resolve(reloadedManager);
+                                        setCachedAccountManager(reloadedManager);
                                 }
 
                                 await showToast(`Switched to account ${index + 1}`, "info");
@@ -1743,8 +1886,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					if (!accountManagerPromise) {
 						accountManagerPromise = AccountManager.loadFromDisk(authFallback);
 					}
-					let accountManager = await accountManagerPromise;
-					cachedAccountManager = accountManager;
+					let accountManager = setCachedAccountManager(await accountManagerPromise);
 					const refreshToken = authFallback?.refresh ?? "";
 					const needsPersist =
 						refreshToken &&
@@ -2083,7 +2225,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 							}
 
 							while (true) {
-										let accountCount = accountManager.getAccountCount();
+										let accountCount = accountManager.getEnabledAccountCount();
 										const attempted = new Set<number>();
 										let restartAccountTraversalWithFallback = false;
 
@@ -2116,7 +2258,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 							}
 							// Log account selection for debugging rotation
 							logDebug(
-								`Using account ${account.index + 1}/${accountCount}: ${account.email ?? "unknown"} for ${modelFamily}`,
+								`Using account ${account.index + 1} (enabled ${attempted.size}/${accountCount}): ${account.email ?? "unknown"} for ${modelFamily}`,
 							);
 
 											let accountAuth = accountManager.toAuthDetails(account) as OAuthAuthDetails;
@@ -2161,11 +2303,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 				const failures = accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index);
 				
-				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL) {
-					const removedCount = accountManager.removeAccountsWithSameRefreshToken(account);
-					if (removedCount <= 0) {
+				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_DISABLE) {
+					const disabledCount = accountManager.disableAccountsWithSameRefreshToken(account);
+					if (disabledCount <= 0) {
 						logWarn(
-							`[${PLUGIN_NAME}] Expected grouped account removal after auth failures, but removed ${removedCount}.`,
+							`[${PLUGIN_NAME}] Expected grouped account disable after auth failures, but disabled ${disabledCount}.`,
 						);
 						const cooledCount = accountManager.markAccountsWithRefreshTokenCoolingDown(
 							account.refreshToken,
@@ -2181,17 +2323,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 						continue;
 					}
 					accountManager.saveToDiskDebounced();
-					const removalMessage = removedCount > 1
-						? `Removed ${removedCount} accounts (same refresh token) after ${failures} consecutive auth failures. Run 'opencode auth login' to re-add.`
-						: `Removed ${accountLabel} after ${failures} consecutive auth failures. Run 'opencode auth login' to re-add.`;
+					const disableMessage = disabledCount > 1
+						? `Disabled ${disabledCount} accounts (same refresh token) after ${failures} consecutive auth failures. Run 'opencode auth login' to re-enable.`
+						: `Disabled ${accountLabel} after ${failures} consecutive auth failures. Run 'opencode auth login' to re-enable.`;
 					await showToast(
-						removalMessage,
+						disableMessage,
 						"error",
 						{ duration: toastDurationMs * 2 },
 					);
 					// Restart traversal: clear attempted and refresh accountCount to avoid skipping healthy accounts
 					attempted.clear();
-					accountCount = accountManager.getAccountCount();
+					accountCount = accountManager.getEnabledAccountCount();
 					continue;
 				}
 				
@@ -2236,7 +2378,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 											) {
 												const accountLabel = formatAccountLabel(account, account.index);
 												await showToast(
-													`Using ${accountLabel} (${account.index + 1}/${accountCount})`,
+													`Using ${accountLabel} (enabled ${attempted.size}/${accountCount})`,
 													"info",
 												);
 												accountManager.markToastShown(account.index);
@@ -2549,7 +2691,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 						);
 
 																														if (
-																															accountManager.getAccountCount() > 1 &&
+																															accountManager.getEnabledAccountCount() > 1 &&
 																															accountManager.shouldShowAccountToast(
 																																account.index,
 																																rateLimitToastDebounceMs,
@@ -2632,11 +2774,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 										}
 
 										const waitMs = accountManager.getMinWaitTimeForFamily(modelFamily, model);
-										const count = accountManager.getAccountCount();
+										const enabledCount = accountManager.getEnabledAccountCount();
+										const totalCount = accountManager.getAccountCount();
 
 								if (
 									retryAllAccountsRateLimited &&
-									count > 0 &&
+									enabledCount > 0 &&
 									waitMs > 0 &&
 									(retryAllAccountsMaxWaitMs === 0 ||
 										waitMs <= retryAllAccountsMaxWaitMs) &&
@@ -2646,19 +2789,40 @@ while (attempted.size < Math.max(1, accountCount)) {
 										`All accounts rate-limited wait ${waitMs}ms`,
 									)
 								) {
-									const countdownMessage = `All ${count} account(s) rate-limited. Waiting`;
+									const countdownMessage = `All ${enabledCount} enabled account(s) rate-limited. Waiting`;
 									await sleepWithCountdown(addJitter(waitMs, 0.2), countdownMessage);
 									allRateLimitedRetries++;
 									continue;
 								}
 
 								const waitLabel = waitMs > 0 ? formatWaitTime(waitMs) : "a bit";
+								const disabledSnapshot =
+									enabledCount === 0 ? accountManager.getAccountsSnapshot() : [];
+								const hasUserDisabled = disabledSnapshot.some(
+									(account) =>
+										account.enabled === false &&
+										account.disabledReason === "user",
+								);
+								const hasAuthFailureDisabled = disabledSnapshot.some(
+									(account) =>
+										account.enabled === false &&
+										account.disabledReason === "auth-failure",
+								);
+								const disabledMessage = hasUserDisabled && hasAuthFailureDisabled
+									? "All stored Codex accounts are disabled. Re-enable user-disabled accounts from account management, or run `opencode auth login` to restore auth-failure disables."
+									: hasAuthFailureDisabled
+										? "All stored Codex accounts are disabled after repeated auth failures. Run `opencode auth login` to restore access."
+										: hasUserDisabled
+											? "All stored Codex accounts are user-disabled. Re-enable them from account management."
+											: "All stored Codex accounts are disabled. Re-enable any manually disabled accounts from account management, or run `opencode auth login` to restore access.";
 								const message =
-									count === 0
+									totalCount === 0
 										? "No Codex accounts configured. Run `opencode auth login`."
+										: enabledCount === 0
+											? disabledMessage
 										: waitMs > 0
-											? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`
-											: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
+											? `All ${enabledCount} enabled account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`
+											: `All ${enabledCount} enabled account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
 								runtimeMetrics.lastErrorCategory = waitMs > 0 ? "rate-limit" : "account-failure";
@@ -3323,7 +3487,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 
 								if (restored.length > 0) {
-									await persistAccountPool(restored, false);
+									await persistAccountPool(restored, false, {
+										reviveMatchingDisabledAccounts: true,
+									});
 									invalidateAccountManagerCache();
 								}
 
@@ -3437,7 +3603,34 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (typeof menuResult.toggleAccountIndex === "number") {
 											const target = workingStorage.accounts[menuResult.toggleAccountIndex];
 											if (target) {
-												target.enabled = target.enabled === false ? true : false;
+												const shouldEnable = target.enabled === false;
+												if (shouldEnable && target.disabledReason === "auth-failure") {
+													const message =
+														"This account was disabled after repeated auth failures. Run 'opencode auth login' to re-enable with fresh credentials.";
+													const logContext = {
+														accountIndex: menuResult.toggleAccountIndex + 1,
+													};
+													logWarn("[account-menu] blocked re-enable for auth-failure disabled account", {
+														...logContext,
+													});
+													logInfo("[account-menu] prompted re-auth for auth-failure disabled account", {
+														...logContext,
+													});
+													const toastShown = await showToast(message, "warning");
+													if (!toastShown) {
+														process.stdout.write("\nRun 'opencode auth login' to re-enable this account.\n\n");
+													}
+													continue;
+												}
+												if (shouldEnable) {
+													delete target.enabled;
+													delete target.disabledReason;
+													delete target.coolingDownUntil;
+													delete target.cooldownReason;
+												} else {
+													target.enabled = false;
+													target.disabledReason = "user";
+												}
 												await saveAccounts(workingStorage);
 												invalidateAccountManagerCache();
 												console.log(
@@ -3507,7 +3700,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 								const { pkce, state, url } = await createAuthorizationFlow();
 								return buildManualOAuthFlow(pkce, url, state, async (selection) => {
 									try {
-										await persistAccountPool(selection.variantsForPersistence, startFresh);
+										await persistAccountPool(selection.variantsForPersistence, startFresh, {
+											reviveMatchingDisabledAccounts: true,
+										});
 										invalidateAccountManagerCache();
 									} catch (err) {
 										const storagePath = getStoragePath();
@@ -3582,7 +3777,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 									const isFirstAccount = accounts.length === 1;
 									const entriesToPersist =
 										variantsForPersistence.length > 0 ? variantsForPersistence : [resolved];
-									await persistAccountPool(entriesToPersist, isFirstAccount && startFresh);
+									await persistAccountPool(entriesToPersist, isFirstAccount && startFresh, {
+										reviveMatchingDisabledAccounts: true,
+									});
 									invalidateAccountManagerCache();
 								} catch (err) {
 									const storagePath = getStoragePath();
@@ -3667,7 +3864,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 												const { pkce, state, url } = await createAuthorizationFlow();
 												return buildManualOAuthFlow(pkce, url, state, async (selection) => {
 														try {
-																await persistAccountPool(selection.variantsForPersistence, false);
+																await persistAccountPool(selection.variantsForPersistence, false, {
+																	reviveMatchingDisabledAccounts: true,
+																});
+																invalidateAccountManagerCache();
 														} catch (err) {
                                                                         const storagePath = getStoragePath();
                                                                         const errorCode = (err as NodeJS.ErrnoException)?.code || "UNKNOWN";
@@ -3956,10 +4156,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 						return `Switched to ${label} but failed to persist. Changes may be lost on restart.`;
 					}
 
-                                        if (cachedAccountManager) {
+					if (cachedAccountManager) {
 						const reloadedManager = await AccountManager.loadFromDisk();
-						cachedAccountManager = reloadedManager;
-						accountManagerPromise = Promise.resolve(reloadedManager);
+						setCachedAccountManager(reloadedManager);
                                         }
 
 					const label = formatCommandAccountLabel(account, targetIndex);
@@ -5016,8 +5215,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 						if (cachedAccountManager) {
 							const reloadedManager = await AccountManager.loadFromDisk();
-							cachedAccountManager = reloadedManager;
-							accountManagerPromise = Promise.resolve(reloadedManager);
+							setCachedAccountManager(reloadedManager);
 						}
 					}
 
@@ -5261,8 +5459,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					if (cachedAccountManager) {
 						const reloadedManager = await AccountManager.loadFromDisk();
-						cachedAccountManager = reloadedManager;
-						accountManagerPromise = Promise.resolve(reloadedManager);
+						setCachedAccountManager(reloadedManager);
 					}
 
 					const accountLabel = formatCommandAccountLabel(account, targetIndex);
@@ -5362,8 +5559,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					if (cachedAccountManager) {
 						const reloadedManager = await AccountManager.loadFromDisk();
-						cachedAccountManager = reloadedManager;
-						accountManagerPromise = Promise.resolve(reloadedManager);
+						setCachedAccountManager(reloadedManager);
 					}
 
 					const accountLabel = formatCommandAccountLabel(account, targetIndex);
@@ -5440,8 +5636,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					if (cachedAccountManager) {
 						const reloadedManager = await AccountManager.loadFromDisk();
-						cachedAccountManager = reloadedManager;
-						accountManagerPromise = Promise.resolve(reloadedManager);
+						setCachedAccountManager(reloadedManager);
 					}
 
 					const accountLabel = formatCommandAccountLabel(account, targetIndex);
@@ -5757,8 +5952,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					if (cachedAccountManager) {
 						const reloadedManager = await AccountManager.loadFromDisk();
-						cachedAccountManager = reloadedManager;
-						accountManagerPromise = Promise.resolve(reloadedManager);
+						setCachedAccountManager(reloadedManager);
 					}
 
 					const remaining = storage.accounts.length;
@@ -5852,8 +6046,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 				await saveAccounts(storage);
 				if (cachedAccountManager) {
 					const reloadedManager = await AccountManager.loadFromDisk();
-					cachedAccountManager = reloadedManager;
-					accountManagerPromise = Promise.resolve(reloadedManager);
+					setCachedAccountManager(reloadedManager);
 				}
 				results.push("");
 				results.push(`Summary: ${refreshedCount} refreshed, ${failedCount} failed`);
