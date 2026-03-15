@@ -37,8 +37,14 @@ jobs:
             const repo = context.repo.repo;
             const issueNumber = context.payload.pull_request.number;
             const body = context.payload.pull_request.body || "";
+            const liveLabels = await github.paginate(github.rest.issues.listLabelsOnIssue, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
             const currentLabels = new Set(
-              (context.payload.pull_request.labels ?? [])
+              liveLabels
                 .map((label) => label?.name)
                 .filter((name) => typeof name === "string"),
             );

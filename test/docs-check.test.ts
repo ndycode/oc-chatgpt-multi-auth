@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const tempRoots: string[] = [];
 const TEMP_CLEANUP_DELAYS_MS = [100, 500, 2000];
 const TEMP_CLEANUP_ATTEMPTS = TEMP_CLEANUP_DELAYS_MS.length + 1;
+const DOCS_CHECK_SUBPROCESS_TIMEOUT_MS = 15_000;
 const execFileAsync = promisify(execFile);
 
 async function cleanupTempRoot(root: string) {
@@ -349,6 +350,7 @@ describe("docs-check script", () => {
 
 		const { stdout, stderr } = await execFileAsync(process.execPath, [scriptPath, relativeFixtureRoot], {
 			cwd: process.cwd(),
+			timeout: DOCS_CHECK_SUBPROCESS_TIMEOUT_MS,
 		});
 
 		expect(stdout).toContain("docs-check: verified 2 markdown file(s)");
@@ -362,6 +364,7 @@ describe("docs-check script", () => {
 
 		const { stdout, stderr } = await execFileAsync(process.execPath, [scriptPath, relativeFixtureRoot], {
 			cwd: process.cwd(),
+			timeout: DOCS_CHECK_SUBPROCESS_TIMEOUT_MS,
 		});
 
 		expect(stdout).toContain("docs-check: no markdown files found");
@@ -379,6 +382,7 @@ describe("docs-check script", () => {
 		try {
 			await execFileAsync(process.execPath, [scriptPath, relativeFixtureRoot], {
 				cwd: process.cwd(),
+				timeout: DOCS_CHECK_SUBPROCESS_TIMEOUT_MS,
 			});
 		} catch (error) {
 			if (error instanceof Error) {
