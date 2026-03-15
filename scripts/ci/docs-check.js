@@ -1,12 +1,10 @@
-#!/usr/bin/env node
-
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_FILES = ["README.md", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG.md"];
+const DEFAULT_FILES = ["AGENTS.md", "CHANGELOG.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "README.md", "SECURITY.md"];
 const DEFAULT_DIRS = [".github", "config", "docs", "test"];
 const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
 const IGNORED_DIRS = new Set([".git", ".github/workflows", ".omx", "dist", "node_modules", "tmp"]);
@@ -242,9 +240,10 @@ function extractLinkTarget(markdown, startIndex) {
 }
 
 export function extractMarkdownLinks(markdown) {
+	const fencedCodePattern = new RegExp("(?:`{3}|~{3})[\\s\\S]*?(?:`{3}|~{3})", "g");
 	const stripped = markdown
 		.replace(/<!--[\s\S]*?-->/g, "")
-		.replace(/```[\s\S]*?```/g, "\n")
+		.replace(fencedCodePattern, "\n")
 		.replace(/`[^`\n]+`/g, "`code`");
 	const openerPattern = /!?\[[^\]]*]\(/g;
 	const referencePattern = /!?\[([^\]]+)]\[([^\]]*)]/g;

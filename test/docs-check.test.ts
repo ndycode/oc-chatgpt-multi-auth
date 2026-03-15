@@ -291,6 +291,14 @@ describe("docs-check script", () => {
 		expect(extractMarkdownLinks(markdown)).toEqual(["./targets/exists.md"]);
 	});
 
+	it("ignores links that only appear inside tilde-fenced code blocks", async () => {
+		const { extractMarkdownLinks } = await import("../scripts/ci/docs-check.js");
+
+		const markdown = "~~~bash\n[missing](./targets/missing.md)\n~~~\n[Config Guide](./targets/exists.md)\n";
+
+		expect(extractMarkdownLinks(markdown)).toEqual(["./targets/exists.md"]);
+	});
+
 	it("accepts angle-bracket targets that include an optional title", async () => {
 		const { extractMarkdownLinks, validateLink } = await import("../scripts/ci/docs-check.js");
 		const { docsFile } = await createDocsFixture('[Config Guide](<./targets/exists.md> "Config target")\n');
@@ -304,7 +312,9 @@ describe("docs-check script", () => {
 	it("discovers default markdown files and skips ignored directories", async () => {
 		const { collectMarkdownFiles } = await import("../scripts/ci/docs-check.js");
 		const { root } = await createRepoFixture({
+			"AGENTS.md": "# Instructions\n",
 			"README.md": "# Root\n",
+			"CODE_OF_CONDUCT.md": "# Code of Conduct\n",
 			"CONTRIBUTING.md": "# Contributing\n",
 			"SECURITY.md": "# Security\n",
 			"CHANGELOG.md": "# Changelog\n",
@@ -327,7 +337,9 @@ describe("docs-check script", () => {
 
 		expect(relativeDiscoveredFiles).toEqual([
 			".github/pull_request_template.md",
+			"AGENTS.md",
 			"CHANGELOG.md",
+			"CODE_OF_CONDUCT.md",
 			"CONTRIBUTING.md",
 			"README.md",
 			"SECURITY.md",

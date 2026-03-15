@@ -120,14 +120,47 @@ jobs:
             ];
 
             const missingSections = requiredHeadings.filter((pattern) => !pattern.test(strippedBody));
-            const complianceChecked = /- \[x\] This change stays within the repository scope and OpenAI Terms of Service expectations\./i.test(strippedBody);
+            function getSectionContent(markdown, heading) {
+              const headingPattern = new RegExp(`^## ${heading}\\s*$`, "m");
+              const match = headingPattern.exec(markdown);
+              if (!match) return "";
+
+              const sectionStart = match.index + match[0].length;
+              const nextHeadingMatch = /^##\s+/m.exec(markdown.slice(sectionStart));
+              const sectionEnd = nextHeadingMatch ? sectionStart + nextHeadingMatch.index : markdown.length;
+              return markdown.slice(sectionStart, sectionEnd);
+            }
+
+            function hasCheckedChecklistLine(section, itemText) {
+              const escapedText = itemText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              return new RegExp(`^\\s*-\\s*\\[x\\]\\s+${escapedText}\\s*$`, "im").test(section);
+            }
+
+            const docsImpactSection = getSectionContent(strippedBody, "Docs Impact");
+            const complianceSection = getSectionContent(strippedBody, "Compliance Confirmation");
+            const complianceChecked = hasCheckedChecklistLine(
+              complianceSection,
+              "This change stays within the repository scope and OpenAI Terms of Service expectations.",
+            );
             const docsImpactChecked =
-              /- \[x\] README or docs updated/i.test(strippedBody) ||
-              /- \[x\] No docs changes needed/i.test(strippedBody);
-            const officialAuthChecked = /- \[x\] This change uses official authentication flows only and does not add bypass, scraping, or credential-sharing behavior\./i.test(strippedBody);
-            const testsDocsChecked = /- \[x\] I updated tests and documentation when the change affected users, maintainers, or repository behavior\./i.test(strippedBody);
-            const noLiveRequiredChecked = /- \[x\] No auth, request-routing, or storage paths changed\./i.test(strippedBody);
-            const manualLiveChecked = /- \[x\] I manually tested with a real ChatGPT Plus\/Pro account\./i.test(strippedBody);
+              hasCheckedChecklistLine(docsImpactSection, "README or docs updated") ||
+              hasCheckedChecklistLine(docsImpactSection, "No docs changes needed");
+            const officialAuthChecked = hasCheckedChecklistLine(
+              complianceSection,
+              "This change uses official authentication flows only and does not add bypass, scraping, or credential-sharing behavior.",
+            );
+            const testsDocsChecked = hasCheckedChecklistLine(
+              complianceSection,
+              "I updated tests and documentation when the change affected users, maintainers, or repository behavior.",
+            );
+            const noLiveRequiredChecked = hasCheckedChecklistLine(
+              complianceSection,
+              "No auth, request-routing, or storage paths changed.",
+            );
+            const manualLiveChecked = hasCheckedChecklistLine(
+              complianceSection,
+              "I manually tested with a real ChatGPT Plus/Pro account.",
+            );
             const liveVerificationLabelName = "needs-live-verification";
             const maintainerVerifiedLabelName = "maintainer-live-verified";
             const invalidateMaintainerVerification =
