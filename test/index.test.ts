@@ -412,7 +412,11 @@ type PluginType = {
 				info: {
 					role: string;
 					sessionID?: string;
-					model?: { providerID: string; modelID: string };
+					model?: {
+						providerID: string;
+						modelID: string;
+						variant?: string;
+					};
 					variant?: string;
 					thinking?: string;
 				};
@@ -2111,7 +2115,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 	const expectedFullIndicator = "user@example.com [1/1]";
 	const expectedLabelOnlyIndicator = "Account 1 [id:ount-1] [1/1]";
 
-	const buildMessageTransformOutput = (sessionID: string, modelID = "gpt-5.1") => ({
+	const buildMessageTransformOutput = (
+		sessionID: string,
+		modelID = "gpt-5.1",
+	): Parameters<PluginType["experimental.chat.messages.transform"]>[1] => ({
 		messages: [
 			{
 				info: {
