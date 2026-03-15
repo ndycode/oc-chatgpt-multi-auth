@@ -1080,6 +1080,66 @@ describe("codex-multi-auth sync", () => {
 		}
 	});
 
+	it("warns when stale sync temp scrubbing hits an unexpected truncate error", async () => {
+		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
+		const fakeHome = await fs.promises.mkdtemp(join(os.tmpdir(), "codex-sync-home-"));
+		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
+		process.env.HOME = fakeHome;
+		process.env.USERPROFILE = fakeHome;
+		const globalPath = join(rootDir, "openai-codex-accounts.json");
+		const tempRoot = join(fakeHome, ".opencode", "tmp");
+		const staleDir = join(tempRoot, "oc-chatgpt-multi-auth-sync-stale-scrub-warning");
+		const staleFile = join(staleDir, "accounts.json");
+		mockExistsSync.mockImplementation((candidate) => String(candidate) === globalPath);
+		mockSourceStorageFile(
+			globalPath,
+			JSON.stringify({
+				version: 3,
+				activeIndex: 0,
+				activeIndexByFamily: {},
+				accounts: [{ accountId: "org-source", organizationId: "org-source", refreshToken: "rt-source", addedAt: 1, lastUsed: 1 }],
+			}),
+		);
+
+		const originalRm = fs.promises.rm.bind(fs.promises);
+		const rmSpy = vi.spyOn(fs.promises, "rm").mockImplementation(async (path, options) => {
+			if (String(path) === staleDir) {
+				throw Object.assign(new Error("still locked"), { code: "EBUSY" });
+			}
+			return originalRm(path, options as never);
+		});
+		const truncateSpy = vi.spyOn(fs.promises, "truncate").mockImplementation(async (path, len) => {
+			if (String(path) === staleFile) {
+				throw Object.assign(new Error("disk io failed"), { code: "EIO" });
+			}
+			return undefined;
+		});
+		const loggerModule = await import("../lib/logger.js");
+
+		try {
+			await fs.promises.mkdir(staleDir, { recursive: true });
+			await fs.promises.writeFile(staleFile, "sensitive-refresh-token", "utf8");
+			const oldTime = new Date(Date.now() - (15 * 60 * 1000));
+			await fs.promises.utimes(staleDir, oldTime, oldTime);
+			await fs.promises.utimes(staleFile, oldTime, oldTime);
+
+			const { previewSyncFromCodexMultiAuth } = await import("../lib/codex-multi-auth-sync.js");
+			await expect(previewSyncFromCodexMultiAuth(process.cwd())).resolves.toMatchObject({
+				rootDir,
+				accountsPath: globalPath,
+				scope: "global",
+			});
+
+			expect(vi.mocked(loggerModule.logWarn)).toHaveBeenCalledWith(
+				expect.stringContaining(`Failed to scrub stale codex sync temp file ${staleFile}: disk io failed`),
+			);
+		} finally {
+			rmSpy.mockRestore();
+			truncateSpy.mockRestore();
+			await fs.promises.rm(fakeHome, { recursive: true, force: true });
+		}
+	});
+
 	it("skips source accounts whose emails already exist locally during sync", async () => {
 		const rootDir = join(process.cwd(), ".tmp-codex-multi-auth");
 		process.env.CODEX_MULTI_AUTH_DIR = rootDir;
@@ -1657,14 +1717,17 @@ describe("codex-multi-auth sync", () => {
 			expect(persist).not.toHaveBeenCalled();
 	});
 
-	it("writes overlap cleanup backups via a temp file before rename", async () => {
+	it("writes overlap cleanup backups via a temp file and retries transient EACCES renames", async () => {
 			const storageModule = await import("../lib/storage.js");
 			vi.mocked(storageModule.withAccountStorageTransaction).mockImplementationOnce(async (handler) =>
 					handler(defaultTransactionalStorage(), vi.fn(async () => {})),
 			);
 			const mkdirSpy = vi.spyOn(fs.promises, "mkdir").mockResolvedValue(undefined);
 			const writeSpy = vi.spyOn(fs.promises, "writeFile").mockResolvedValue(undefined);
-			const renameSpy = vi.spyOn(fs.promises, "rename").mockResolvedValue(undefined);
+			const renameSpy = vi
+				.spyOn(fs.promises, "rename")
+				.mockRejectedValueOnce(Object.assign(new Error("rename locked"), { code: "EACCES" }))
+				.mockResolvedValueOnce(undefined);
 			const unlinkSpy = vi.spyOn(fs.promises, "unlink").mockResolvedValue(undefined);
 
 			try {
@@ -1675,6 +1738,7 @@ describe("codex-multi-auth sync", () => {
 					const tempBackupPath = writeSpy.mock.calls[0]?.[0];
 					expect(String(tempBackupPath)).toMatch(/^\/tmp\/overlap-cleanup-backup\.json\.\d+\.[a-z0-9]+\.tmp$/);
 					expect(renameSpy).toHaveBeenCalledWith(tempBackupPath, "/tmp/overlap-cleanup-backup.json");
+					expect(renameSpy).toHaveBeenCalledTimes(2);
 					expect(unlinkSpy).not.toHaveBeenCalled();
 			} finally {
 					mkdirSpy.mockRestore();

@@ -122,6 +122,8 @@ interface PreparedCodexMultiAuthPreviewStorage {
 const TEMP_CLEANUP_RETRY_DELAYS_MS = [100, 250, 500] as const;
 const STALE_TEMP_CLEANUP_RETRY_DELAY_MS = 150;
 const TEMP_CLEANUP_RETRYABLE_CODES = new Set(["EBUSY", "EAGAIN", "EACCES", "EPERM", "ENOTEMPTY"]);
+const BACKUP_RENAME_RETRY_DELAYS_MS = [100, 250, 500] as const;
+const BACKUP_RENAME_RETRYABLE_CODES = new Set(["EBUSY", "EACCES", "EPERM"]);
 
 function sleepAsync(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -257,6 +259,37 @@ async function scrubStaleNormalizedImportTempFile(candidateDir: string): Promise
 		if (code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "EBUSY" || code === "EAGAIN") {
 			return;
 		}
+		logWarn(
+			`Failed to scrub stale codex sync temp file ${tempPath}: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
+async function renameOverlapCleanupBackupWithRetry(sourcePath: string, destinationPath: string): Promise<void> {
+	let lastError: NodeJS.ErrnoException | null = null;
+
+	for (let attempt = 0; attempt < BACKUP_RENAME_RETRY_DELAYS_MS.length; attempt += 1) {
+		try {
+			await fs.rename(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code && BACKUP_RENAME_RETRYABLE_CODES.has(code)) {
+				lastError = error as NodeJS.ErrnoException;
+				const delayMs = BACKUP_RENAME_RETRY_DELAYS_MS[attempt];
+				if (delayMs !== undefined) {
+					await sleepAsync(delayMs);
+					continue;
+				}
+			}
+			throw error;
+		}
+	}
+
+	if (lastError) {
+		throw lastError;
 	}
 }
 
@@ -1245,7 +1278,7 @@ export async function cleanupCodexMultiAuthSyncedOverlaps(
 					mode: 0o600,
 					flag: "wx",
 				});
-				await fs.rename(tempBackupPath, backupPath);
+				await renameOverlapCleanupBackupWithRetry(tempBackupPath, backupPath);
 				writtenBackupPath = backupPath;
 			} catch (error) {
 				try {

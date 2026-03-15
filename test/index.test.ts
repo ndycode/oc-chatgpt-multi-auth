@@ -2116,7 +2116,7 @@ describe("OpenAIOAuthPlugin", () => {
 	});
 
 	describe("sync maintenance flows", () => {
-		it("shows overlap cleanup backup hints only when cleanup reports a written backup", async () => {
+		it("shows the locally tracked overlap cleanup backup path when cleanup fails", async () => {
 			const cliModule = await import("../lib/cli.js");
 			const confirmModule = await import("../lib/ui/confirm.js");
 			const syncModule = await import("../lib/codex-multi-auth-sync.js");
@@ -2341,7 +2341,7 @@ describe("OpenAIOAuthPlugin", () => {
 			const writeSpy = vi.spyOn(nodeFsPromises, "writeFile").mockResolvedValue(undefined);
 			const renameSpy = vi
 				.spyOn(nodeFsPromises, "rename")
-				.mockRejectedValueOnce(Object.assign(new Error("rename locked"), { code: "EPERM" }))
+				.mockRejectedValueOnce(Object.assign(new Error("rename locked"), { code: "EACCES" }))
 				.mockResolvedValueOnce(undefined);
 			const normalizePath = (value: string) => value.replace(/\\/g, "/");
 			const now = Date.now();

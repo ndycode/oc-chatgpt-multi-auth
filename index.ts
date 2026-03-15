@@ -127,7 +127,6 @@ import {
 	StorageError,
 	formatStorageErrorHint,
 	withAccountAndFlaggedStorageTransaction,
-	withFlaggedAccountsTransaction,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
 } from "./lib/storage.js";
@@ -3428,7 +3427,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										return;
 									} catch (error) {
 										const code = (error as NodeJS.ErrnoException).code;
-										if ((code === "EPERM" || code === "EBUSY")) {
+										if ((code === "EPERM" || code === "EBUSY" || code === "EACCES")) {
 											lastError = error as NodeJS.ErrnoException;
 											const delayMs = SYNC_PRUNE_BACKUP_RENAME_RETRY_DELAYS_MS[attempt];
 											if (delayMs !== undefined) {
