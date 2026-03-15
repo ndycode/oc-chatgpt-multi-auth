@@ -1207,8 +1207,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			index: number,
 			accountCount: number,
 			style: PersistAccountFooterStyle,
-			revision: number = nextPersistedAccountIndicatorRevision(),
-			options?: { preserveOrder?: boolean },
+			revision: number,
 		): boolean => {
 			if (!sessionID) return false;
 			const existing = persistedAccountIndicators.get(sessionID);
@@ -1219,10 +1218,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				label: formatPersistedAccountIndicator(account, index, accountCount, style),
 				revision,
 			};
-			if (existing && options?.preserveOrder) {
-				persistedAccountIndicators.set(sessionID, nextEntry);
-				return true;
-			}
 			if (existing) {
 				// Default writes are true LRU touches: reinserting moves active sessions
 				// to the tail so only inactive sessions age out first.
@@ -1242,16 +1237,18 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			const sessionIDs = Array.from(persistedAccountIndicators.keys());
 			if (sessionIDs.length === 0) return false;
 			const revision = nextPersistedAccountIndicatorRevision();
+			const label = formatPersistedAccountIndicator(
+				account,
+				index,
+				accountCount,
+				style,
+			);
 			for (const sessionID of sessionIDs) {
-				setPersistedAccountIndicator(
-					sessionID,
-					account,
-					index,
-					accountCount,
-					style,
-					revision,
-					{ preserveOrder: true },
-				);
+				const existing = persistedAccountIndicators.get(sessionID);
+				if (existing && existing.revision > revision) {
+					continue;
+				}
+				persistedAccountIndicators.set(sessionID, { label, revision });
 			}
 			return true;
 		};
