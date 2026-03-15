@@ -23,6 +23,8 @@ export function normalizeStoredAccountDisabledReason(
 	enabled: unknown,
 	disabledReason: unknown,
 ): AccountDisabledReason | undefined {
+	// Unlike V1 migration, V3 normalization intentionally leaves missing/invalid
+	// reasons unset so legacy-disabled accounts are not auto-revived as auth failures.
 	return enabled === false
 		? normalizeAccountDisabledReason(disabledReason)
 		: undefined;

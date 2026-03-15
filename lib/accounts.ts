@@ -66,6 +66,12 @@ import {
 
 const log = createLogger("accounts");
 
+async function drainSaveMicrotasks(): Promise<void> {
+	// enqueueSave settles through an async IIFE and a trailing .finally().
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
 export type CodexCliTokenCacheEntry = {
 	accessToken: string;
 	expiresAt?: number;
@@ -1114,7 +1120,7 @@ export class AccountManager {
 					pendingSaveError = error;
 				}
 				// Let debounced callbacks waiting on the completed save re-arm pendingSave.
-				await Promise.resolve();
+				await drainSaveMicrotasks();
 				if (this.saveDebounceTimer !== null || this.pendingSave !== null) {
 					continue;
 				}
@@ -1139,7 +1145,7 @@ export class AccountManager {
 			const flushSave = this.enqueueSave(() => this.saveToDisk());
 			await flushSave;
 			// Drain saves that were queued while the flush save was in flight.
-			await Promise.resolve();
+			await drainSaveMicrotasks();
 			if (this.saveDebounceTimer === null && this.pendingSave === null) {
 				return;
 			}

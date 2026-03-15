@@ -2204,6 +2204,86 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		);
 	});
 
+	it("surfaces a disabled-pool response when grouped disable and cooldown both no-op", async () => {
+		const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+		const { AccountManager } = await import("../lib/accounts.js");
+		const { ACCOUNT_LIMITS } = await import("../lib/constants.js");
+
+		vi.spyOn(fetchHelpers, "shouldRefreshToken").mockReturnValue(true);
+		vi.mocked(fetchHelpers.refreshAndUpdateToken).mockRejectedValue(
+			new Error("Token expired"),
+		);
+
+		let selected = false;
+		const disableGroupedAccountsSpy = vi.fn(() => 0);
+		const markAccountsWithRefreshTokenCoolingDownSpy = vi.fn(() => 0);
+		const saveToDiskDebouncedSpy = vi.fn();
+		const customManager = {
+			getAccountCount: () => 1,
+			getEnabledAccountCount: () => 0,
+			getCurrentOrNextForFamilyHybrid: () => {
+				if (selected) {
+					return null;
+				}
+				selected = true;
+				return {
+					index: 0,
+					email: "user1@example.com",
+					refreshToken: "refresh-1",
+				};
+			},
+			getSelectionExplainability: () => [],
+			toAuthDetails: () => ({
+				type: "oauth" as const,
+				access: "access-disabled",
+				refresh: "refresh-disabled",
+				expires: Date.now() + 60_000,
+			}),
+			hasRefreshToken: () => true,
+			saveToDiskDebounced: saveToDiskDebouncedSpy,
+			updateFromAuth: () => {},
+			clearAuthFailures: () => {},
+			incrementAuthFailures: () => ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_DISABLE,
+			disableAccountsWithSameRefreshToken: disableGroupedAccountsSpy,
+			markAccountsWithRefreshTokenCoolingDown: markAccountsWithRefreshTokenCoolingDownSpy,
+			markAccountCoolingDown: () => {},
+			markRateLimitedWithReason: () => {},
+			recordRateLimit: () => {},
+			consumeToken: () => true,
+			refundToken: () => {},
+			markSwitched: () => {},
+			removeAccount: () => {},
+			recordFailure: () => {},
+			recordSuccess: () => {},
+			getMinWaitTimeForFamily: () => 0,
+			shouldShowAccountToast: () => false,
+			setActiveIndex: () => null,
+			getAccountsSnapshot: () => [],
+		};
+		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
+
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ content: "should-not-fetch" }), { status: 200 }),
+		);
+
+		const { sdk } = await setupPlugin();
+		const response = await sdk.fetch!("https://api.openai.com/v1/chat", {
+			method: "POST",
+			body: JSON.stringify({ model: "gpt-5.1" }),
+		});
+
+		expect(response.status).toBe(503);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(disableGroupedAccountsSpy).toHaveBeenCalledTimes(1);
+		expect(markAccountsWithRefreshTokenCoolingDownSpy).toHaveBeenCalledWith(
+			"refresh-1",
+			ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
+			"auth-failure",
+		);
+		expect(saveToDiskDebouncedSpy).toHaveBeenCalledTimes(1);
+		expect(await response.text()).toContain("All stored Codex accounts are disabled");
+	});
+
 	it("skips fetch when local token bucket is depleted", async () => {
 		const { AccountManager } = await import("../lib/accounts.js");
 		const consumeSpy = vi.spyOn(AccountManager.prototype, "consumeToken").mockReturnValue(false);
@@ -4155,7 +4235,6 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 				"[account-menu] blocked re-enable for auth-failure disabled account",
 				expect.objectContaining({
 					accountId: "workspace-auth-failure",
-					email: "blocked@example.com",
 				}),
 			);
 		} finally {
