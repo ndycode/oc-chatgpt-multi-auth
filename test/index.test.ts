@@ -2836,6 +2836,36 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		});
 	});
 
+	it("uses the latest perProjectAccounts setting when authorize writes storage", async () => {
+		const configModule = await import("../lib/config.js");
+		const storageModule = await import("../lib/storage.js");
+		const loaderConfig = { source: "loader-config" };
+		const authorizeConfig = { source: "authorize-config" };
+
+		vi.mocked(configModule.loadPluginConfig).mockReturnValue(loaderConfig);
+		vi.spyOn(configModule, "getPerProjectAccounts").mockImplementation(
+			(config) => config === authorizeConfig,
+		);
+
+		const { plugin } = await setupPlugin();
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<unknown>;
+		};
+		const manualMethod = plugin.auth.methods[1] as unknown as {
+			authorize: () => Promise<unknown>;
+		};
+
+		vi.mocked(storageModule.setStoragePath).mockClear();
+		vi.mocked(configModule.loadPluginConfig).mockReturnValue(authorizeConfig);
+
+		await autoMethod.authorize({ loginMode: "add", accountCount: "1" });
+		expect(storageModule.setStoragePath).toHaveBeenCalledWith(process.cwd());
+
+		vi.mocked(storageModule.setStoragePath).mockClear();
+		await manualMethod.authorize();
+		expect(storageModule.setStoragePath).toHaveBeenCalledWith(process.cwd());
+	});
+
 	it("shows the account-switch info toast when the footer is disabled", async () => {
 		await disablePersistedFooter();
 		mockStorage.accounts = [

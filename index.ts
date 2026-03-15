@@ -1248,6 +1248,8 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				if (existing && existing.revision > revision) {
 					continue;
 				}
+				// Bulk switch refreshes should update the visible label without
+				// re-promoting every tracked session to the newest LRU position.
 				persistedAccountIndicators.set(sessionID, { label, revision });
 			}
 			return true;
@@ -1448,6 +1450,14 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 		const resolveRuntimePluginConfig = (): ReturnType<typeof loadPluginConfig> => {
 			return runtimePluginConfigSnapshot ?? loadPluginConfig();
+		};
+
+		const refreshAuthorizeStoragePath = (): void => {
+			// Auth writes are infrequent, so prefer a fresh storage-location read
+			// while footer runtime state stays on the last loader/fetch snapshot.
+			const storagePluginConfig = loadPluginConfig();
+			const perProjectAccounts = getPerProjectAccounts(storagePluginConfig);
+			setStoragePath(perProjectAccounts ? process.cwd() : null);
 		};
 
 		const getStatusMarker = (
@@ -3025,10 +3035,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 						label: AUTH_LABELS.OAUTH,
 						type: "oauth" as const,
 						authorize: async (inputs?: Record<string, string>) => {
-							const authPluginConfig = resolveRuntimePluginConfig();
-							syncRuntimePluginConfig(authPluginConfig);
-							const authPerProjectAccounts = getPerProjectAccounts(authPluginConfig);
-							setStoragePath(authPerProjectAccounts ? process.cwd() : null);
+							syncRuntimePluginConfig(resolveRuntimePluginConfig());
+							refreshAuthorizeStoragePath();
 
 							const accounts: TokenSuccessWithAccount[] = [];
 							const noBrowser =
@@ -4000,10 +4008,8 @@ while (attempted.size < Math.max(1, accountCount)) {
 					authorize: async () => {
                                                         // Initialize storage path for manual OAuth flow
                                                         // Must happen BEFORE persistAccountPool to ensure correct storage location
-                                                        const manualPluginConfig = resolveRuntimePluginConfig();
-							syncRuntimePluginConfig(manualPluginConfig);
-                                                        const manualPerProjectAccounts = getPerProjectAccounts(manualPluginConfig);
-							setStoragePath(manualPerProjectAccounts ? process.cwd() : null);
+							syncRuntimePluginConfig(resolveRuntimePluginConfig());
+							refreshAuthorizeStoragePath();
 
 												const { pkce, state, url } = await createAuthorizationFlow();
 												return buildManualOAuthFlow(pkce, url, state, async (selection) => {
