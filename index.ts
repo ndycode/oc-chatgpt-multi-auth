@@ -1430,6 +1430,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				getPersistAccountFooterStyle(pluginConfig);
 			if (runtimePersistAccountFooter && !persistAccountFooter) {
 				persistedAccountIndicators.clear();
+				persistedAccountCountHint = 0;
 			}
 			runtimePluginConfigSnapshot = pluginConfig;
 			runtimePersistAccountFooter = persistAccountFooter;

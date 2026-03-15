@@ -2615,6 +2615,48 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 		).toBeUndefined();
 	});
 
+	it("clears the persisted account count hint when the footer is disabled", async () => {
+		await enablePersistedFooter("full-email");
+		mockStorage.accounts = [
+			{ accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+			{ accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+		const accountsModule = await import("../lib/accounts.js");
+		const manager = await accountsModule.AccountManager.loadFromDisk() as unknown as {
+			accounts: Array<{
+				index: number;
+				accountId: string;
+				email: string;
+				refreshToken: string;
+			}>;
+			getAccountCount: () => number;
+		};
+		manager.accounts = [
+			{ index: 0, accountId: "acc-1", email: "user@example.com", refreshToken: "refresh-token" },
+			{ index: 1, accountId: "acc-2", email: "user2@example.com", refreshToken: "refresh-2" },
+		];
+		vi.spyOn(accountsModule.AccountManager, "loadFromDisk").mockResolvedValue(manager as never);
+		const { plugin, sdk } = await setupPlugin();
+		vi.spyOn(manager, "getAccountCount")
+			.mockImplementationOnce(() => 2)
+			.mockImplementation(() => 0);
+
+		await sendPersistedAccountRequest(sdk, "session-count-hint-prime");
+		expect((await readPersistedAccountIndicator(plugin, "session-count-hint-prime")).variant).toBe(
+			"user@example.com [1/2]",
+		);
+
+		await disablePersistedFooter();
+		await sendPersistedAccountRequest(sdk, "session-count-hint-disabled");
+
+		await enablePersistedFooter("full-email");
+		await sendPersistedAccountRequest(sdk, "session-count-hint-reset");
+
+		expect((await readPersistedAccountIndicator(plugin, "session-count-hint-reset")).variant).toBe(
+			expectedFullIndicator,
+		);
+	});
+
 	it("suppresses account-switch info toasts when the footer is enabled and refreshes the visible indicator", async () => {
 		await enablePersistedFooter("full-email");
 		mockStorage.accounts = [
