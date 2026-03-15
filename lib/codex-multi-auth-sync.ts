@@ -269,12 +269,7 @@ async function withNormalizedImportFile<T>(
 			return result;
 		} catch (error) {
 			await redactNormalizedImportTempFile(tempPath, storage);
-			try {
-				await removeNormalizedImportTempDir(tempDir, tempPath, { postSuccessCleanupFailureMode: "warn" });
-			} catch (cleanupError) {
-				const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-				logWarn(`Failed to remove temporary codex sync directory ${tempDir}: ${message}`);
-			}
+			await removeNormalizedImportTempDir(tempDir, tempPath, { postSuccessCleanupFailureMode: "warn" });
 			throw error;
 		}
 	};

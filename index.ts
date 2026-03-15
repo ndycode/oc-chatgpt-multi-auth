@@ -126,6 +126,7 @@ import {
 	clearFlaggedAccounts,
 	StorageError,
 	formatStorageErrorHint,
+	withAccountAndFlaggedStorageTransaction,
 	withFlaggedAccountsTransaction,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
@@ -3444,12 +3445,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 										if (!normalizedAccounts) {
 											throw new Error("Prune backup account snapshot failed validation.");
 										}
-										await withAccountStorageTransaction(async (_current, persist) => {
-											await persist(normalizedAccounts);
+										await withAccountAndFlaggedStorageTransaction(async (_current, persist) => {
+											await persist.accounts(normalizedAccounts);
+											await persist.flagged(
+												restoreFlaggedSnapshot as { version: 1; accounts: FlaggedAccountMetadataV1[] },
+											);
 										});
-										await saveFlaggedAccounts(
-											restoreFlaggedSnapshot as { version: 1; accounts: FlaggedAccountMetadataV1[] },
-										);
 										invalidateAccountManagerCache();
 									},
 								};
@@ -3465,20 +3466,33 @@ while (attempted.size < Math.max(1, accountCount)) {
 									index: number;
 									account: AccountStorageV3["accounts"][number];
 								}> = [];
-								let rollbackStorage: AccountStorageV3 | null = null;
-								await withAccountStorageTransaction(async (loadedStorage, persist) => {
-									const currentStorage =
-										loadedStorage ??
+								await withAccountAndFlaggedStorageTransaction(
+									async ({ accounts: loadedStorage, flagged: currentFlaggedStorage }, persist) => {
+										const currentStorage =
+											loadedStorage ??
 										({
 											version: 3,
 											accounts: [],
 											activeIndex: 0,
 											activeIndexByFamily: {},
 										} satisfies AccountStorageV3);
-									removedTargets = currentStorage.accounts
-										.map((account, index) => ({ index, account }))
-										.filter((entry) =>
-											targetKeySet.has(
+										removedTargets = currentStorage.accounts
+											.map((account, index) => ({ index, account }))
+											.filter((entry) =>
+												targetKeySet.has(
+													getSyncRemovalTargetKey({
+														refreshToken: entry.account.refreshToken,
+														organizationId: entry.account.organizationId,
+														accountId: entry.account.accountId,
+													}),
+												),
+											);
+										if (removedTargets.length === 0) {
+											return;
+										}
+
+										const removedFlaggedKeys = new Set(
+											removedTargets.map((entry) =>
 												getSyncRemovalTargetKey({
 													refreshToken: entry.account.refreshToken,
 													organizationId: entry.account.organizationId,
@@ -3486,111 +3500,103 @@ while (attempted.size < Math.max(1, accountCount)) {
 												}),
 											),
 										);
-									if (removedTargets.length === 0) {
-										return;
-									}
-									rollbackStorage = structuredClone(currentStorage);
-
-									const activeAccountIdentity = {
-										refreshToken:
-											currentStorage.accounts[currentStorage.activeIndex]?.refreshToken ?? "",
-										organizationId:
-											currentStorage.accounts[currentStorage.activeIndex]?.organizationId,
-										accountId: currentStorage.accounts[currentStorage.activeIndex]?.accountId,
-									} satisfies SyncRemovalTarget;
-									const familyActiveIdentities = Object.fromEntries(
-										MODEL_FAMILIES.map((family) => {
-											const familyIndex = currentStorage.activeIndexByFamily?.[family] ?? currentStorage.activeIndex;
-											const familyAccount = currentStorage.accounts[familyIndex];
-											return [
-												family,
-												familyAccount
-													? ({
-															refreshToken: familyAccount.refreshToken,
-															organizationId: familyAccount.organizationId,
-															accountId: familyAccount.accountId,
-														} satisfies SyncRemovalTarget)
-													: null,
-											];
-										}),
-									) as Partial<Record<ModelFamily, SyncRemovalTarget | null>>;
-
-									currentStorage.accounts = currentStorage.accounts.filter(
-										(account) =>
-											!targetKeySet.has(
-												getSyncRemovalTargetKey({
-													refreshToken: account.refreshToken,
-													organizationId: account.organizationId,
-													accountId: account.accountId,
-												}),
+										const nextFlaggedStorage = {
+											version: 1 as const,
+											accounts: currentFlaggedStorage.accounts.filter(
+												(flagged) =>
+													!removedFlaggedKeys.has(
+														getSyncRemovalTargetKey({
+															refreshToken: flagged.refreshToken,
+															organizationId: flagged.organizationId,
+															accountId: flagged.accountId,
+														}),
+													),
 											),
-									);
-									const remappedActiveIndex = findAccountIndexByExactIdentity(
-										currentStorage.accounts,
-										activeAccountIdentity,
-									);
-									currentStorage.activeIndex =
-										remappedActiveIndex >= 0
-											? remappedActiveIndex
-											: Math.min(currentStorage.activeIndex, Math.max(0, currentStorage.accounts.length - 1));
-									currentStorage.activeIndexByFamily = currentStorage.activeIndexByFamily ?? {};
-									for (const family of MODEL_FAMILIES) {
-										const remappedFamilyIndex = findAccountIndexByExactIdentity(
-											currentStorage.accounts,
-											familyActiveIdentities[family] ?? null,
-										);
-										currentStorage.activeIndexByFamily[family] =
-											remappedFamilyIndex >= 0 ? remappedFamilyIndex : currentStorage.activeIndex;
-									}
-									clampActiveIndices(currentStorage);
-									await persist(currentStorage);
-								});
+										};
 
-								if (removedTargets.length > 0) {
-									const removedFlaggedKeys = new Set(
-										removedTargets.map((entry) =>
-											getSyncRemovalTargetKey({
-												refreshToken: entry.account.refreshToken,
-												organizationId: entry.account.organizationId,
-												accountId: entry.account.accountId,
+										const activeAccountIdentity = {
+											refreshToken:
+												currentStorage.accounts[currentStorage.activeIndex]?.refreshToken ?? "",
+											organizationId:
+												currentStorage.accounts[currentStorage.activeIndex]?.organizationId,
+											accountId: currentStorage.accounts[currentStorage.activeIndex]?.accountId,
+										} satisfies SyncRemovalTarget;
+										const familyActiveIdentities = Object.fromEntries(
+											MODEL_FAMILIES.map((family) => {
+												const familyIndex =
+													currentStorage.activeIndexByFamily?.[family] ?? currentStorage.activeIndex;
+												const familyAccount = currentStorage.accounts[familyIndex];
+												return [
+													family,
+													familyAccount
+														? ({
+																refreshToken: familyAccount.refreshToken,
+																organizationId: familyAccount.organizationId,
+																accountId: familyAccount.accountId,
+															} satisfies SyncRemovalTarget)
+														: null,
+												];
 											}),
-										),
-									);
-									try {
-										await withFlaggedAccountsTransaction(async (currentFlaggedStorage, persist) => {
-											await persist({
-												version: 1,
-												accounts: currentFlaggedStorage.accounts.filter(
-													(flagged) =>
-														!removedFlaggedKeys.has(
-															getSyncRemovalTargetKey({
-																refreshToken: flagged.refreshToken,
-																organizationId: flagged.organizationId,
-																accountId: flagged.accountId,
-															}),
-														),
+										) as Partial<Record<ModelFamily, SyncRemovalTarget | null>>;
+
+										currentStorage.accounts = currentStorage.accounts.filter(
+											(account) =>
+												!targetKeySet.has(
+													getSyncRemovalTargetKey({
+														refreshToken: account.refreshToken,
+														organizationId: account.organizationId,
+														accountId: account.accountId,
+													}),
 												),
-											});
-										});
-									} catch (flaggedError) {
-										if (rollbackStorage) {
+										);
+										const remappedActiveIndex = findAccountIndexByExactIdentity(
+											currentStorage.accounts,
+											activeAccountIdentity,
+										);
+										currentStorage.activeIndex =
+											remappedActiveIndex >= 0
+												? remappedActiveIndex
+												: Math.min(
+														currentStorage.activeIndex,
+														Math.max(0, currentStorage.accounts.length - 1),
+													);
+										currentStorage.activeIndexByFamily = currentStorage.activeIndexByFamily ?? {};
+										for (const family of MODEL_FAMILIES) {
+											const remappedFamilyIndex = findAccountIndexByExactIdentity(
+												currentStorage.accounts,
+												familyActiveIdentities[family] ?? null,
+											);
+											currentStorage.activeIndexByFamily[family] =
+												remappedFamilyIndex >= 0 ? remappedFamilyIndex : currentStorage.activeIndex;
+										}
+										clampActiveIndices(currentStorage);
+
+										// Persist flagged cleanup before account removal so a crash cannot leave
+										// flagged entries pointing at deleted accounts.
+										await persist.flagged(nextFlaggedStorage);
+										try {
+											await persist.accounts(currentStorage);
+										} catch (accountsError) {
 											try {
-												await withAccountStorageTransaction(async (_current, persist) => {
-													await persist(rollbackStorage as AccountStorageV3);
-												});
-											} catch (restoreError) {
-												const flaggedMessage =
-													flaggedError instanceof Error ? flaggedError.message : String(flaggedError);
-												const restoreMessage =
-													restoreError instanceof Error ? restoreError.message : String(restoreError);
+												await persist.flagged(currentFlaggedStorage);
+											} catch (restoreFlaggedError) {
+												const accountsMessage =
+													accountsError instanceof Error ? accountsError.message : String(accountsError);
+												const restoreFlaggedMessage =
+													restoreFlaggedError instanceof Error
+														? restoreFlaggedError.message
+														: String(restoreFlaggedError);
 												throw new Error(
-													`Failed to remove flagged sync entries after account removal: ${flaggedMessage}; ` +
-														`failed to restore removed accounts: ${restoreMessage}`,
+													`Failed to remove sync accounts after flagged cleanup: ${accountsMessage}; ` +
+														`failed to restore flagged storage: ${restoreFlaggedMessage}`,
 												);
 											}
+											throw accountsError;
 										}
-										throw flaggedError;
-									}
+									},
+								);
+
+								if (removedTargets.length > 0) {
 									invalidateAccountManagerCache();
 								}
 							};

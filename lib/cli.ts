@@ -229,7 +229,7 @@ async function promptLoginModeFallback(
 
 		while (true) {
 			const answer = await rl.question(
-				"(a)dd, (f)resh, (c)heck, (d)eep, (v)erify flagged, s(y)nc tools, or (q)uit? [a/f/c/d/v/s/y/q]: ",
+				"(a)dd, (f)resh, (c)heck, (d)eep, (v)erify flagged, (s)ync tools, or (q)uit? [a/f/c/d/v/s/q]: ",
 			);
 			const normalized = answer.trim().toLowerCase();
 			if (normalized === "a" || normalized === "add") return { mode: "add" };
@@ -237,7 +237,7 @@ async function promptLoginModeFallback(
 			if (normalized === "c" || normalized === "check") return { mode: "check" };
 			if (normalized === "d" || normalized === "deep") return { mode: "deep-check" };
 			if (normalized === "v" || normalized === "verify") return { mode: "verify-flagged" };
-			if (normalized === "s" || normalized === "sync" || normalized === "y") {
+			if (normalized === "s" || normalized === "sync") {
 				const syncAction = await promptSyncToolsFallback(
 					rl,
 					options.syncFromCodexMultiAuthEnabled === true,
@@ -246,7 +246,7 @@ async function promptLoginModeFallback(
 				continue;
 			}
 			if (normalized === "q" || normalized === "quit") return { mode: "cancel" };
-			console.log("Please enter one of: a, f, c, d, v, s, y, q.");
+			console.log("Please enter one of: a, f, c, d, v, s, q.");
 		}
 	} finally {
 		rl.close();

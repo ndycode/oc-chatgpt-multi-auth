@@ -342,6 +342,40 @@ vi.mock("../lib/storage.js", () => ({
 			return await callback(loadedStorage, persist);
 		},
 	),
+	withAccountAndFlaggedStorageTransaction: vi.fn(
+		async <T>(
+			callback: (
+				current: {
+					accounts: typeof mockStorage;
+					flagged: typeof mockFlaggedStorage;
+				},
+				persist: {
+					accounts: (nextStorage: typeof mockStorage) => Promise<void>;
+					flagged: (nextStorage: typeof mockFlaggedStorage) => Promise<void>;
+				},
+			) => Promise<T>,
+		) => {
+			const persist = {
+				accounts: async (nextStorage: typeof mockStorage) => {
+					mockStorage.version = nextStorage.version;
+					mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+					mockStorage.activeIndex = nextStorage.activeIndex;
+					mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+				},
+				flagged: async (nextStorage: typeof mockFlaggedStorage) => {
+					mockFlaggedStorage.version = nextStorage.version;
+					mockFlaggedStorage.accounts = nextStorage.accounts.map(cloneFlaggedAccount);
+				},
+			};
+			return await callback(
+				{
+					accounts: cloneMockStorage(),
+					flagged: cloneMockFlaggedStorage(),
+				},
+				persist,
+			);
+		},
+	),
 	clearAccounts: vi.fn(async () => {}),
 	setStoragePath: vi.fn(),
 	exportAccounts: vi.fn(async () => {}),
@@ -524,6 +558,7 @@ beforeEach(async () => {
 	vi.mocked(storageModule.loadAccounts).mockReset();
 	vi.mocked(storageModule.saveAccounts).mockReset();
 	vi.mocked(storageModule.withAccountStorageTransaction).mockReset();
+	vi.mocked(storageModule.withAccountAndFlaggedStorageTransaction).mockReset();
 	vi.mocked(storageModule.loadAccountAndFlaggedStorageSnapshot).mockReset();
 	vi.mocked(storageModule.loadFlaggedAccounts).mockReset();
 	vi.mocked(storageModule.saveFlaggedAccounts).mockReset();
@@ -598,6 +633,40 @@ beforeEach(async () => {
 				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
 			};
 			return await callback(loadedStorage, persist);
+		},
+	);
+	vi.mocked(storageModule.withAccountAndFlaggedStorageTransaction).mockImplementation(
+		async <T>(
+			callback: (
+				current: {
+					accounts: typeof mockStorage;
+					flagged: typeof mockFlaggedStorage;
+				},
+				persist: {
+					accounts: (nextStorage: typeof mockStorage) => Promise<void>;
+					flagged: (nextStorage: typeof mockFlaggedStorage) => Promise<void>;
+				},
+			) => Promise<T>,
+		) => {
+			const persist = {
+				accounts: async (nextStorage: typeof mockStorage) => {
+					mockStorage.version = nextStorage.version;
+					mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+					mockStorage.activeIndex = nextStorage.activeIndex;
+					mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+				},
+				flagged: async (nextStorage: typeof mockFlaggedStorage) => {
+					mockFlaggedStorage.version = nextStorage.version;
+					mockFlaggedStorage.accounts = nextStorage.accounts.map(cloneFlaggedAccount);
+				},
+			};
+			return await callback(
+				{
+					accounts: cloneMockStorage(),
+					flagged: cloneMockFlaggedStorage(),
+				},
+				persist,
+			);
 		},
 	);
 	vi.mocked(storageModule.loadAccountAndFlaggedStorageSnapshot).mockImplementation(async () => ({
@@ -2217,13 +2286,12 @@ describe("OpenAIOAuthPlugin", () => {
 			}
 		});
 
-		it("restores removed accounts when flagged sync cleanup fails mid-prune", async () => {
+		it("restores flagged storage when account removal fails after flagged cleanup", async () => {
 			const cliModule = await import("../lib/cli.js");
 			const confirmModule = await import("../lib/ui/confirm.js");
 			const configModule = await import("../lib/config.js");
 			const storageModule = await import("../lib/storage.js");
 			const syncModule = await import("../lib/codex-multi-auth-sync.js");
-			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 			mockStorage.accounts = [
 				{
@@ -2301,21 +2369,36 @@ describe("OpenAIOAuthPlugin", () => {
 					],
 				}),
 			);
-			vi.mocked(storageModule.withFlaggedAccountsTransaction).mockImplementationOnce(async () => {
-				throw new Error("flagged remove failed");
-			});
+			vi.mocked(storageModule.withAccountAndFlaggedStorageTransaction).mockImplementationOnce(
+				async (callback) => {
+					const persist = {
+						flagged: async (nextStorage: typeof mockFlaggedStorage) => {
+							mockFlaggedStorage.version = nextStorage.version;
+							mockFlaggedStorage.accounts = nextStorage.accounts.map(cloneFlaggedAccount);
+						},
+						accounts: async (_nextStorage: typeof mockStorage) => {
+							throw new Error("account remove failed");
+						},
+					};
+					return await callback(
+						{
+							accounts: cloneMockStorage(),
+							flagged: cloneMockFlaggedStorage(),
+						},
+						persist,
+					);
+				},
+			);
 
-			try {
-				const autoMethod = plugin.auth.methods[0] as unknown as {
-					authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
-				};
+			const autoMethod = plugin.auth.methods[0] as unknown as {
+				authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+			};
 
-				await expect(autoMethod.authorize()).rejects.toThrow("flagged remove failed");
-				expect(mockStorage).toMatchObject(originalAccounts);
-				expect(mockFlaggedStorage).toMatchObject(originalFlagged);
-			} finally {
-				logSpy.mockRestore();
-			}
+			await expect(autoMethod.authorize()).rejects.toThrow("account remove failed");
+			expect(mockStorage).toMatchObject(originalAccounts);
+			expect(mockFlaggedStorage).toMatchObject(originalFlagged);
+			expect(vi.mocked(storageModule.withAccountAndFlaggedStorageTransaction)).toHaveBeenCalled();
+			expect(vi.mocked(storageModule.withFlaggedAccountsTransaction)).not.toHaveBeenCalled();
 		});
 	});
 });
