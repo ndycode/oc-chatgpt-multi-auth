@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { createSyncPruneBackupPayload } from "../lib/sync-prune-backup.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 
 describe("sync prune backup payload", () => {
-	it("omits live tokens from the prune backup payload", () => {
+	it("redacts live tokens by default", () => {
 		const storage: AccountStorageV3 = {
 			version: 3,
 			activeIndex: 0,
@@ -32,12 +32,104 @@ describe("sync prune backup payload", () => {
 			],
 		});
 
-		expect(payload.accounts.accounts[0]).not.toHaveProperty("accessToken");
-		expect(payload.accounts.accounts[0]).not.toHaveProperty("refreshToken");
-		expect(payload.accounts.accounts[0]).not.toHaveProperty("idToken");
-		expect(payload.flagged.accounts[0]).not.toHaveProperty("accessToken");
-		expect(payload.flagged.accounts[0]).not.toHaveProperty("refreshToken");
-		expect(payload.flagged.accounts[0]).not.toHaveProperty("idToken");
+		expect(payload.accounts.accounts[0]).toMatchObject({
+			refreshToken: "__redacted__",
+			accessToken: undefined,
+			idToken: undefined,
+		});
+		expect(payload.flagged.accounts[0]).toMatchObject({
+			refreshToken: "__redacted__",
+			accessToken: undefined,
+			idToken: undefined,
+		});
+	});
+
+	it("keeps live tokens when explicitly requested for crash recovery", () => {
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [
+				{
+					accountId: "org-sync",
+					organizationId: "org-sync",
+					accountIdSource: "org",
+					refreshToken: "refresh-token",
+					accessToken: "access-token",
+					idToken: "id-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		const payload = createSyncPruneBackupPayload(
+			storage,
+			{
+				version: 1,
+				accounts: [
+					{
+						refreshToken: "refresh-token",
+						accessToken: "flagged-access-token",
+						idToken: "flagged-id-token",
+					},
+				],
+			},
+			{ includeLiveTokens: true },
+		);
+
+		expect(payload.accounts.accounts[0]).toMatchObject({
+			refreshToken: "refresh-token",
+			accessToken: "access-token",
+			idToken: "id-token",
+		});
+		expect(payload.flagged.accounts[0]).toMatchObject({
+			refreshToken: "refresh-token",
+			accessToken: "flagged-access-token",
+			idToken: "flagged-id-token",
+		});
+	});
+
+	it("reflects redacted and live-token payload shapes in the type system", () => {
+		const storage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			activeIndexByFamily: {},
+			accounts: [
+				{
+					accountId: "org-sync",
+					organizationId: "org-sync",
+					accountIdSource: "org",
+					refreshToken: "refresh-token",
+					accessToken: "access-token",
+					idToken: "id-token",
+					addedAt: 1,
+					lastUsed: 1,
+				},
+			],
+		};
+		const flagged = {
+			version: 1 as const,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					accessToken: "flagged-access-token",
+					idToken: "flagged-id-token",
+				},
+			],
+		};
+
+		const redactedPayload = createSyncPruneBackupPayload(storage, flagged);
+		const livePayload = createSyncPruneBackupPayload(storage, flagged, { includeLiveTokens: true });
+
+		expectTypeOf(redactedPayload.accounts.accounts[0]!.refreshToken).toEqualTypeOf<"__redacted__">();
+		expectTypeOf(redactedPayload.accounts.accounts[0]!.accessToken).toEqualTypeOf<undefined>();
+		expectTypeOf(redactedPayload.flagged.accounts[0]!.refreshToken).toEqualTypeOf<"__redacted__">();
+		expectTypeOf(redactedPayload.flagged.accounts[0]!.accessToken).toEqualTypeOf<undefined>();
+
+		expectTypeOf(livePayload.accounts.accounts[0]!.refreshToken).toEqualTypeOf<string>();
+		expectTypeOf(livePayload.accounts.accounts[0]!.accessToken).toEqualTypeOf<string | undefined>();
+		expectTypeOf(livePayload.flagged.accounts[0]!.refreshToken).toEqualTypeOf<string>();
+		expectTypeOf(livePayload.flagged.accounts[0]!.accessToken).toEqualTypeOf<string>();
 	});
 
 	it("deep-clones nested metadata so later mutations do not leak into the snapshot", () => {
@@ -76,7 +168,7 @@ describe("sync prune backup payload", () => {
 			],
 		};
 
-		const payload = createSyncPruneBackupPayload(storage, flagged);
+		const payload = createSyncPruneBackupPayload(storage, flagged, { includeLiveTokens: true });
 
 		storage.accounts[0]!.accountTags?.push("mutated");
 		storage.accounts[0]!.lastSelectedModelByFamily!.codex = "gpt-5.5";
@@ -84,13 +176,16 @@ describe("sync prune backup payload", () => {
 
 		expect(payload.accounts.accounts[0]?.accountTags).toEqual(["work"]);
 		expect(payload.accounts.accounts[0]?.lastSelectedModelByFamily).toEqual({ codex: "gpt-5.4" });
-		expect(payload.accounts.accounts[0]).not.toHaveProperty("idToken");
+		expect(payload.accounts.accounts[0]?.refreshToken).toBe("refresh-token");
+		expect(payload.accounts.accounts[0]?.accessToken).toBe("access-token");
+		expect(payload.accounts.accounts[0]?.idToken).toBe("id-token");
 		expect(payload.flagged.accounts[0]).toMatchObject({
+			refreshToken: "refresh-token",
+			accessToken: "flagged-access-token",
+			idToken: "flagged-id-token",
 			metadata: {
 				source: "flagged",
 			},
 		});
-		expect(payload.flagged.accounts[0]).not.toHaveProperty("refreshToken");
-		expect(payload.flagged.accounts[0]).not.toHaveProperty("idToken");
 	});
 });

@@ -22,6 +22,7 @@ import {
   previewImportAccountsWithExistingStorage,
   createTimestampedBackupPath,
   withAccountStorageTransaction,
+  withAccountAndFlaggedStorageTransaction,
   withFlaggedAccountsTransaction,
   loadAccountAndFlaggedStorageSnapshot,
   backupRawAccountsFile,
@@ -1884,6 +1885,225 @@ describe("storage", () => {
       } finally {
         readSpy.mockRestore();
       }
+    });
+
+    it("persists both files inside withAccountAndFlaggedStorageTransaction", async () => {
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        activeIndexByFamily: {},
+        accounts: [
+          {
+            refreshToken: "account-refresh",
+            accountId: "account-id",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [
+          {
+            refreshToken: "account-refresh",
+            flaggedAt: 1,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+
+      await withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+        await persist.flagged({
+          version: 1,
+          accounts: [
+            ...current.flagged.accounts,
+            {
+              refreshToken: "account-next",
+              flaggedAt: 2,
+              addedAt: 2,
+              lastUsed: 2,
+            },
+          ],
+        });
+        await persist.accounts({
+          version: 3,
+          activeIndex: 1,
+          activeIndexByFamily: { codex: 1 },
+          accounts: [
+            ...(current.accounts?.accounts ?? []),
+            {
+              refreshToken: "account-next",
+              accountId: "account-next-id",
+              addedAt: 2,
+              lastUsed: 2,
+            },
+          ],
+        });
+      });
+
+      const loadedAccounts = await loadAccounts();
+      const loadedFlagged = await loadFlaggedAccounts();
+      expect(loadedAccounts?.accounts.map((account) => account.refreshToken)).toEqual([
+        "account-refresh",
+        "account-next",
+      ]);
+      expect(loadedAccounts?.activeIndex).toBe(1);
+      expect(loadedAccounts?.activeIndexByFamily?.codex).toBe(1);
+      expect(Object.values(loadedAccounts?.activeIndexByFamily ?? {})).toSatisfy((values) =>
+        values.every((value) => value === 1),
+      );
+      expect(loadedFlagged.accounts.map((account) => account.refreshToken)).toEqual([
+        "account-refresh",
+        "account-next",
+      ]);
+    });
+
+    it("documents partial writes if withAccountAndFlaggedStorageTransaction throws after one persist", async () => {
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        activeIndexByFamily: {},
+        accounts: [
+          {
+            refreshToken: "account-refresh",
+            accountId: "account-id",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [
+          {
+            refreshToken: "account-refresh",
+            flaggedAt: 1,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+
+      await expect(
+        withAccountAndFlaggedStorageTransaction(async (_current, persist) => {
+          await persist.flagged({
+            version: 1,
+            accounts: [],
+          });
+          throw new Error("stop after flagged write");
+        }),
+      ).rejects.toThrow("stop after flagged write");
+
+      const loadedAccounts = await loadAccounts();
+      const loadedFlagged = await loadFlaggedAccounts();
+      expect(loadedAccounts?.accounts.map((account) => account.refreshToken)).toEqual(["account-refresh"]);
+      expect(loadedFlagged.accounts).toEqual([]);
+    });
+
+    it("holds the shared lock until both account and flagged writes finish", async () => {
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        activeIndexByFamily: {},
+        accounts: [
+          {
+            refreshToken: "account-refresh",
+            accountId: "account-id",
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+      await saveFlaggedAccounts({
+        version: 1,
+        accounts: [
+          {
+            refreshToken: "account-refresh",
+            flaggedAt: 1,
+            addedAt: 1,
+            lastUsed: 1,
+          },
+        ],
+      });
+
+      const events: string[] = [];
+      let releaseFirstTransaction!: () => void;
+      const firstTransactionPaused = new Promise<void>((resolve) => {
+        releaseFirstTransaction = resolve;
+      });
+      let firstTransactionReady!: () => void;
+      const firstTransactionEntered = new Promise<void>((resolve) => {
+        firstTransactionReady = resolve;
+      });
+      let secondEntered = false;
+      let resolveSecondStarted!: () => void;
+      const secondStarted = new Promise<void>((resolve) => {
+        resolveSecondStarted = resolve;
+      });
+
+      const firstTransaction = withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+        events.push("first:start");
+        await persist.flagged({
+          version: 1,
+          accounts: [
+            ...current.flagged.accounts,
+            {
+              refreshToken: "account-next",
+              flaggedAt: 2,
+              addedAt: 2,
+              lastUsed: 2,
+            },
+          ],
+        });
+        events.push("first:after-flagged");
+        firstTransactionReady();
+        await firstTransactionPaused;
+        await persist.accounts({
+          version: 3,
+          activeIndex: 1,
+          activeIndexByFamily: { codex: 1 },
+          accounts: [
+            ...(current.accounts?.accounts ?? []),
+            {
+              refreshToken: "account-next",
+              accountId: "account-next-id",
+              addedAt: 2,
+              lastUsed: 2,
+            },
+          ],
+        });
+        events.push("first:after-accounts");
+      });
+
+      await firstTransactionEntered;
+
+      const secondTransaction = withAccountAndFlaggedStorageTransaction(async () => {
+        secondEntered = true;
+        events.push("second:start");
+        resolveSecondStarted();
+      });
+
+      const secondProgress = await Promise.race([
+        secondStarted.then(() => "started" as const),
+        Promise.resolve()
+          .then(() => Promise.resolve())
+          .then(() => "waiting" as const),
+      ]);
+
+      expect(secondProgress).toBe("waiting");
+      expect(secondEntered).toBe(false);
+      expect(events).toEqual(["first:start", "first:after-flagged"]);
+
+      releaseFirstTransaction();
+      await Promise.all([firstTransaction, secondTransaction]);
+
+      expect(events).toEqual([
+        "first:start",
+        "first:after-flagged",
+        "first:after-accounts",
+        "second:start",
+      ]);
     });
 
     it("copies the raw accounts file for backup", async () => {

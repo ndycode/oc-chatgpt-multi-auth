@@ -24,6 +24,8 @@
  */
 
 import { tool } from "@opencode-ai/plugin/tool";
+import { promises as fsPromises } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
 import {
@@ -35,7 +37,7 @@ import {
 import { queuedRefresh, getRefreshQueueMetrics } from "./lib/refresh-queue.js";
 import { openBrowserUrl } from "./lib/auth/browser.js";
 import { startLocalOAuthServer } from "./lib/auth/server.js";
-import { promptAddAnotherAccount, promptLoginMode } from "./lib/cli.js";
+import { promptAddAnotherAccount, promptCodexMultiAuthSyncPrune, promptLoginMode } from "./lib/cli.js";
 import {
 	getCodexMode,
 	getRequestTransformMode,
@@ -65,7 +67,9 @@ import {
 	getCodexTuiColorProfile,
 	getCodexTuiGlyphMode,
 	getBeginnerSafeMode,
+	getSyncFromCodexMultiAuthEnabled,
 	loadPluginConfig,
+	setSyncFromCodexMultiAuthEnabled,
 } from "./lib/config.js";
 import {
         AUTH_LABELS,
@@ -115,11 +119,14 @@ import {
 	importAccounts,
 	previewImportAccounts,
 	createTimestampedBackupPath,
+	loadAccountAndFlaggedStorageSnapshot,
 	loadFlaggedAccounts,
+	normalizeAccountStorage,
 	saveFlaggedAccounts,
 	clearFlaggedAccounts,
 	StorageError,
 	formatStorageErrorHint,
+	withAccountAndFlaggedStorageTransaction,
 	type AccountStorageV3,
 	type FlaggedAccountMetadataV1,
 } from "./lib/storage.js";
@@ -151,6 +158,7 @@ import {
 import { addJitter } from "./lib/rotation.js";
 import { buildTableHeader, buildTableRow, type TableOptions } from "./lib/table-formatter.js";
 import { setUiRuntimeOptions, type UiRuntimeOptions } from "./lib/ui/runtime.js";
+import { confirm } from "./lib/ui/confirm.js";
 import { paintUiText, formatUiBadge, formatUiHeader, formatUiItem, formatUiKeyValue, formatUiSection } from "./lib/ui/format.js";
 import {
 	buildBeginnerChecklist,
@@ -182,6 +190,16 @@ import {
 	detectErrorType,
 	getRecoveryToastContent,
 } from "./lib/recovery.js";
+import {
+	CodexMultiAuthSyncCapacityError,
+	cleanupCodexMultiAuthSyncedOverlaps,
+	isCodexMultiAuthSourceTooLargeForCapacity,
+	loadCodexMultiAuthSourceStorage,
+	previewCodexMultiAuthSyncedOverlapCleanup,
+	previewSyncFromCodexMultiAuth,
+	syncFromCodexMultiAuth,
+} from "./lib/codex-multi-auth-sync.js";
+import { createSyncPruneBackupPayload } from "./lib/sync-prune-backup.js";
 
 /**
  * OpenAI Codex OAuth authentication plugin for opencode
@@ -3337,6 +3355,689 @@ while (attempted.size < Math.max(1, accountCount)) {
 								console.log("");
 							};
 
+							type SyncRemovalTarget = {
+								refreshToken: string;
+								organizationId?: string;
+								accountId?: string;
+							};
+							type SyncRemovalSuggestion = SyncRemovalTarget & {
+								index: number;
+								email?: string;
+								accountLabel?: string;
+								isCurrentAccount: boolean;
+								score: number;
+								reason: string;
+							};
+
+							const getSyncRemovalTargetKey = (target: SyncRemovalTarget): string => {
+								return `${target.organizationId ?? ""}|${target.accountId ?? ""}|${target.refreshToken}`;
+							};
+
+							const getSyncRemovalRefreshTokenKey = (refreshToken: string | undefined): string => {
+								return refreshToken?.trim() ?? "";
+							};
+
+							const findAccountIndexByExactIdentity = (
+								accounts: AccountStorageV3["accounts"],
+								target: SyncRemovalTarget | null | undefined,
+							): number => {
+								if (!target || !target.refreshToken) return -1;
+								const targetKey = getSyncRemovalTargetKey(target);
+								return accounts.findIndex((account) =>
+									getSyncRemovalTargetKey({
+										refreshToken: account.refreshToken,
+										organizationId: account.organizationId,
+										accountId: account.accountId,
+									}) === targetKey,
+								);
+							};
+
+							const toggleCodexMultiAuthSyncSetting = async (): Promise<void> => {
+								try {
+									const currentConfig = loadPluginConfig();
+									const enabled = getSyncFromCodexMultiAuthEnabled(currentConfig);
+									await setSyncFromCodexMultiAuthEnabled(!enabled);
+									console.log(`\nSync from codex-multi-auth ${!enabled ? "enabled" : "disabled"}.\n`);
+								} catch (error) {
+									const message = error instanceof Error ? error.message : String(error);
+									console.log(`\nFailed to update sync setting: ${message}\n`);
+								}
+							};
+
+							const SYNC_PRUNE_BACKUP_PREFIX = "codex-sync-prune-backup";
+							// Crash-safe prune restores can retain live tokens here when explicitly requested, so
+							// keep retention low; pruneOldSyncPruneBackups is the only automatic cleanup gate and
+							// Windows still relies on config-home ACLs because `mode: 0o600` is only advisory.
+							const SYNC_PRUNE_BACKUP_RETAIN_COUNT = 2;
+							const SYNC_PRUNE_BACKUP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+							const SYNC_PRUNE_BACKUP_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160] as const;
+
+							const renameSyncPruneBackupWithRetry = async (
+								sourcePath: string,
+								destinationPath: string,
+							): Promise<void> => {
+								let lastError: NodeJS.ErrnoException | null = null;
+								for (
+									let attempt = 0;
+									attempt <= SYNC_PRUNE_BACKUP_RENAME_RETRY_DELAYS_MS.length;
+									attempt += 1
+								) {
+									try {
+										await fsPromises.rename(sourcePath, destinationPath);
+										return;
+									} catch (error) {
+										const code = (error as NodeJS.ErrnoException).code;
+										if ((code === "EPERM" || code === "EBUSY" || code === "EACCES")) {
+											lastError = error as NodeJS.ErrnoException;
+											const delayMs = SYNC_PRUNE_BACKUP_RENAME_RETRY_DELAYS_MS[attempt];
+											if (delayMs !== undefined) {
+												await new Promise((resolve) => setTimeout(resolve, delayMs));
+												continue;
+											}
+										}
+										throw error;
+									}
+								}
+								if (lastError) {
+									throw lastError;
+								}
+							};
+
+							const pruneTimestampedBackups = async (
+								backupDir: string,
+								{
+									prefix,
+									keepPaths = [],
+									logLabel,
+								}: {
+									prefix: string;
+									keepPaths?: string[];
+									logLabel: string;
+								},
+							): Promise<void> => {
+								const entries = await fsPromises.readdir(backupDir, { withFileTypes: true }).catch((error) => {
+									const code = (error as NodeJS.ErrnoException).code;
+									if (code === "ENOENT") {
+										return null;
+									}
+									throw error;
+								});
+								if (!entries) return;
+
+								const keepSet = new Set(keepPaths);
+								const now = Date.now();
+								const backupCandidates = (
+									await Promise.all(
+										entries
+											.filter(
+												(entry) =>
+													entry.isFile() &&
+													entry.name.startsWith(`${prefix}-`) &&
+													entry.name.endsWith(".json"),
+											)
+											.map(async (entry) => {
+												const candidatePath = join(backupDir, entry.name);
+												if (keepSet.has(candidatePath)) {
+													return null;
+												}
+												const stats = await fsPromises.stat(candidatePath).catch((error) => {
+													const code = (error as NodeJS.ErrnoException).code;
+													if (code === "ENOENT") {
+														return null;
+													}
+													throw error;
+												});
+												if (!stats) {
+													return null;
+												}
+												return {
+													path: candidatePath,
+													mtimeMs: stats.mtimeMs,
+												};
+											}),
+									)
+								)
+									.filter((candidate): candidate is { path: string; mtimeMs: number } => candidate !== null)
+									.sort((left, right) => {
+										if (right.mtimeMs !== left.mtimeMs) {
+											return right.mtimeMs - left.mtimeMs;
+										}
+										return left.path.localeCompare(right.path);
+									});
+								const staleBackupPaths = [
+									...backupCandidates
+										.filter((candidate) => now - candidate.mtimeMs > SYNC_PRUNE_BACKUP_MAX_AGE_MS)
+										.map((candidate) => candidate.path),
+									...backupCandidates
+										.filter((candidate) => now - candidate.mtimeMs <= SYNC_PRUNE_BACKUP_MAX_AGE_MS)
+										.slice(SYNC_PRUNE_BACKUP_RETAIN_COUNT)
+										.map((candidate) => candidate.path),
+								];
+
+								for (const staleBackupPath of staleBackupPaths) {
+									try {
+										await fsPromises.unlink(staleBackupPath);
+									} catch (error) {
+										const code = (error as NodeJS.ErrnoException).code;
+										if (code === "ENOENT") {
+											continue;
+										}
+										const message = error instanceof Error ? error.message : String(error);
+										logWarn(
+											`[${PLUGIN_NAME}] Failed to prune stale ${logLabel} ${staleBackupPath}: ${message}`,
+										);
+									}
+								}
+							};
+
+							const pruneOldSyncPruneBackups = async (
+								backupDir: string,
+								keepPaths: string[] = [],
+							): Promise<void> =>
+								pruneTimestampedBackups(backupDir, {
+									prefix: SYNC_PRUNE_BACKUP_PREFIX,
+									keepPaths,
+									logLabel: "sync prune backup",
+								});
+
+							const pruneOldOverlapCleanupBackups = async (
+								backupDir: string,
+								keepPaths: string[] = [],
+							): Promise<void> =>
+								pruneTimestampedBackups(backupDir, {
+									prefix: "codex-maintenance-overlap-backup",
+									keepPaths,
+									logLabel: "overlap cleanup backup",
+								});
+
+							const createSyncPruneBackup = async (): Promise<{
+								backupPath: string;
+								restore: () => Promise<void>;
+								cleanup: () => Promise<void>;
+							}> => {
+								const { accounts: loadedAccountsStorage, flagged: currentFlaggedStorage } =
+									await loadAccountAndFlaggedStorageSnapshot();
+								const currentAccountsStorage =
+									loadedAccountsStorage ??
+									({
+										version: 3,
+										accounts: [],
+										activeIndex: 0,
+										activeIndexByFamily: {},
+									} satisfies AccountStorageV3);
+								const backupPath = createTimestampedBackupPath(SYNC_PRUNE_BACKUP_PREFIX);
+								const backupDir = dirname(backupPath);
+								await fsPromises.mkdir(backupDir, { recursive: true });
+								const backupPayload = createSyncPruneBackupPayload(
+									currentAccountsStorage,
+									currentFlaggedStorage,
+									{ includeLiveTokens: true },
+								);
+								const restoreAccountsSnapshot = structuredClone(currentAccountsStorage);
+								const restoreFlaggedSnapshot = structuredClone(currentFlaggedStorage);
+								let tempBackupPath: string | null = null;
+								try {
+									for (let attempt = 0; attempt < 3; attempt += 1) {
+										tempBackupPath = `${backupPath}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+										try {
+											await fsPromises.writeFile(
+												tempBackupPath,
+												`${JSON.stringify(backupPayload, null, 2)}\n`,
+												{
+													encoding: "utf-8",
+													mode: 0o600,
+													flag: "wx",
+												},
+											);
+											break;
+										} catch (error) {
+											if ((error as NodeJS.ErrnoException).code === "EEXIST" && attempt < 2) {
+												tempBackupPath = null;
+												continue;
+											}
+											throw error;
+										}
+									}
+									if (!tempBackupPath) {
+										throw new Error("Failed to allocate a temporary sync prune backup path.");
+									}
+									await renameSyncPruneBackupWithRetry(tempBackupPath, backupPath);
+									await pruneOldSyncPruneBackups(backupDir, [backupPath]).catch((cleanupError) => {
+										const cleanupMessage =
+											cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+										logWarn(
+											`[${PLUGIN_NAME}] Failed to prune old sync prune backups in ${backupDir}: ${cleanupMessage}`,
+										);
+									});
+								} catch (error) {
+									try {
+										if (tempBackupPath) {
+											await fsPromises.unlink(tempBackupPath);
+										}
+									} catch {
+										// best-effort cleanup
+									}
+									throw error;
+								}
+								return {
+									backupPath,
+									restore: async () => {
+										const normalizedAccounts = normalizeAccountStorage(restoreAccountsSnapshot);
+										if (!normalizedAccounts) {
+											throw new Error("Prune backup account snapshot failed validation.");
+										}
+										await withAccountAndFlaggedStorageTransaction(async (current, persist) => {
+											const rollbackAccounts =
+												current.accounts ??
+												({
+													version: 3,
+													accounts: [],
+													activeIndex: 0,
+													activeIndexByFamily: {},
+												} satisfies AccountStorageV3);
+											await persist.accounts(normalizedAccounts);
+											try {
+												await persist.flagged(
+													restoreFlaggedSnapshot as {
+														version: 1;
+														accounts: FlaggedAccountMetadataV1[];
+													},
+												);
+											} catch (flaggedError) {
+												try {
+													await persist.accounts(rollbackAccounts);
+												} catch (rollbackError) {
+													const flaggedMessage =
+														flaggedError instanceof Error ? flaggedError.message : String(flaggedError);
+													const rollbackMessage =
+														rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+													throw new Error(
+														`Failed to restore sync prune flagged storage: ${flaggedMessage}; ` +
+															`failed to roll back account restore: ${rollbackMessage}`,
+													);
+												}
+												throw flaggedError;
+											}
+										});
+										invalidateAccountManagerCache();
+									},
+									cleanup: async () => {
+										try {
+											await fsPromises.unlink(backupPath);
+										} catch (error) {
+											const code = (error as NodeJS.ErrnoException).code;
+											if (code !== "ENOENT") {
+												throw error;
+											}
+										}
+										await pruneOldSyncPruneBackups(backupDir);
+									},
+								};
+							};
+
+							const removeAccountsForSync = async (targets: SyncRemovalTarget[]): Promise<void> => {
+								const targetKeySet = new Set(
+									targets
+										.filter((target) => target.refreshToken.length > 0)
+										.map((target) => getSyncRemovalTargetKey(target)),
+								);
+								let removedTargets: Array<{
+									index: number;
+									account: AccountStorageV3["accounts"][number];
+								}> = [];
+								await withAccountAndFlaggedStorageTransaction(
+									async ({ accounts: loadedStorage, flagged: currentFlaggedStorage }, persist) => {
+										const currentStorage =
+											loadedStorage ??
+										({
+											version: 3,
+											accounts: [],
+											activeIndex: 0,
+											activeIndexByFamily: {},
+										} satisfies AccountStorageV3);
+										removedTargets = currentStorage.accounts
+											.map((account, index) => ({ index, account }))
+											.filter((entry) =>
+												targetKeySet.has(
+													getSyncRemovalTargetKey({
+														refreshToken: entry.account.refreshToken,
+														organizationId: entry.account.organizationId,
+														accountId: entry.account.accountId,
+													}),
+												),
+											);
+										if (removedTargets.length === 0) {
+											return;
+										}
+
+										const removedRefreshTokens = new Set(
+											removedTargets.map((entry) =>
+												getSyncRemovalRefreshTokenKey(entry.account.refreshToken),
+											),
+										);
+										const nextFlaggedStorage = {
+											version: 1 as const,
+											accounts: currentFlaggedStorage.accounts.filter(
+												(flagged) =>
+													!removedRefreshTokens.has(
+														getSyncRemovalRefreshTokenKey(flagged.refreshToken),
+													),
+											),
+										};
+
+										const activeAccountIdentity = {
+											refreshToken:
+												currentStorage.accounts[currentStorage.activeIndex]?.refreshToken ?? "",
+											organizationId:
+												currentStorage.accounts[currentStorage.activeIndex]?.organizationId,
+											accountId: currentStorage.accounts[currentStorage.activeIndex]?.accountId,
+										} satisfies SyncRemovalTarget;
+										const familyActiveIdentities = Object.fromEntries(
+											MODEL_FAMILIES.map((family) => {
+												const familyIndex =
+													currentStorage.activeIndexByFamily?.[family] ?? currentStorage.activeIndex;
+												const familyAccount = currentStorage.accounts[familyIndex];
+												return [
+													family,
+													familyAccount
+														? ({
+																refreshToken: familyAccount.refreshToken,
+																organizationId: familyAccount.organizationId,
+																accountId: familyAccount.accountId,
+															} satisfies SyncRemovalTarget)
+														: null,
+												];
+											}),
+										) as Partial<Record<ModelFamily, SyncRemovalTarget | null>>;
+
+										currentStorage.accounts = currentStorage.accounts.filter(
+											(account) =>
+												!targetKeySet.has(
+													getSyncRemovalTargetKey({
+														refreshToken: account.refreshToken,
+														organizationId: account.organizationId,
+														accountId: account.accountId,
+													}),
+												),
+										);
+										const remappedActiveIndex = findAccountIndexByExactIdentity(
+											currentStorage.accounts,
+											activeAccountIdentity,
+										);
+										currentStorage.activeIndex =
+											remappedActiveIndex >= 0
+												? remappedActiveIndex
+												: Math.min(
+														currentStorage.activeIndex,
+														Math.max(0, currentStorage.accounts.length - 1),
+													);
+										currentStorage.activeIndexByFamily = currentStorage.activeIndexByFamily ?? {};
+										for (const family of MODEL_FAMILIES) {
+											const remappedFamilyIndex = findAccountIndexByExactIdentity(
+												currentStorage.accounts,
+												familyActiveIdentities[family] ?? null,
+											);
+											currentStorage.activeIndexByFamily[family] =
+												remappedFamilyIndex >= 0 ? remappedFamilyIndex : currentStorage.activeIndex;
+										}
+										clampActiveIndices(currentStorage);
+
+										// Persist flagged cleanup before account removal so a crash cannot leave
+										// flagged entries pointing at deleted accounts.
+										await persist.flagged(nextFlaggedStorage);
+										try {
+											await persist.accounts(currentStorage);
+										} catch (accountsError) {
+											try {
+												await persist.flagged(currentFlaggedStorage);
+											} catch (restoreFlaggedError) {
+												const accountsMessage =
+													accountsError instanceof Error ? accountsError.message : String(accountsError);
+												const restoreFlaggedMessage =
+													restoreFlaggedError instanceof Error
+														? restoreFlaggedError.message
+														: String(restoreFlaggedError);
+												throw new Error(
+													`Failed to remove sync accounts after flagged cleanup: ${accountsMessage}; ` +
+														`failed to restore flagged storage: ${restoreFlaggedMessage}`,
+												);
+											}
+											throw accountsError;
+										}
+									},
+								);
+
+								if (removedTargets.length > 0) {
+									invalidateAccountManagerCache();
+								}
+							};
+
+							const buildSyncRemovalPlan = (
+								indexes: number[],
+								suggestions: SyncRemovalSuggestion[],
+							): {
+								previewLines: string[];
+								targets: SyncRemovalTarget[];
+							} => {
+								const byIndex = new Map(suggestions.map((suggestion) => [suggestion.index, suggestion]));
+								const candidates = [...indexes]
+									.sort((left, right) => left - right)
+									.map((index) => {
+										const suggestion = byIndex.get(index);
+										if (!suggestion) {
+											throw new Error(
+												`Selected account ${index + 1} changed before confirmation. Re-run sync and confirm again.`,
+											);
+										}
+										const label = suggestion.email ?? suggestion.accountLabel ?? `Account ${index + 1}`;
+										const currentSuffix = suggestion.isCurrentAccount ? " | current" : "";
+										return {
+											previewLine: `${index + 1}. ${label}${currentSuffix}`,
+											target: {
+												refreshToken: suggestion.refreshToken,
+												organizationId: suggestion.organizationId,
+												accountId: suggestion.accountId,
+											} satisfies SyncRemovalTarget,
+										};
+									});
+								return {
+									previewLines: candidates.map((candidate) => candidate.previewLine),
+									targets: candidates.map((candidate) => candidate.target),
+								};
+							};
+
+							const runCodexMultiAuthSync = async (): Promise<void> => {
+								const currentConfig = loadPluginConfig();
+								if (!getSyncFromCodexMultiAuthEnabled(currentConfig)) {
+									console.log("\nEnable sync from codex-multi-auth in Sync tools first.\n");
+									return;
+								}
+
+								let pruneBackup: {
+									backupPath: string;
+									restore: () => Promise<void>;
+									cleanup: () => Promise<void>;
+								} | null = null;
+								const restorePruneBackup = async (): Promise<void> => {
+									const currentBackup = pruneBackup;
+									if (!currentBackup) return;
+									await currentBackup.restore();
+									pruneBackup = null;
+									await currentBackup.cleanup().catch((cleanupError) => {
+										const cleanupMessage =
+											cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+										logWarn(
+											`[${PLUGIN_NAME}] Failed to delete sync prune backup ${currentBackup.backupPath}: ${cleanupMessage}`,
+										);
+									});
+								};
+								const cleanupPruneBackup = async (): Promise<void> => {
+									const currentBackup = pruneBackup;
+									if (!currentBackup) return;
+									pruneBackup = null;
+									await currentBackup.cleanup().catch((cleanupError) => {
+										const cleanupMessage =
+											cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+										logWarn(
+											`[${PLUGIN_NAME}] Failed to delete sync prune backup ${currentBackup.backupPath}: ${cleanupMessage}`,
+										);
+									});
+								};
+
+								while (true) {
+									try {
+										const loadedSource = await loadCodexMultiAuthSourceStorage(process.cwd());
+										const preview = await previewSyncFromCodexMultiAuth(process.cwd(), loadedSource);
+										console.log("");
+										console.log(`codex-multi-auth source: ${preview.accountsPath}`);
+										console.log(`Scope: ${preview.scope}`);
+										console.log(`Preview: +${preview.imported} new, ${preview.skipped} skipped, ${preview.total} total`);
+
+										if (preview.imported <= 0) {
+											await restorePruneBackup();
+											console.log("No new accounts to import.\n");
+											return;
+										}
+
+										if (!(await confirm(`Import ${preview.imported} new account(s) from codex-multi-auth?`))) {
+											await restorePruneBackup();
+											console.log("\nSync cancelled.\n");
+											return;
+										}
+
+										const result = await syncFromCodexMultiAuth(process.cwd(), loadedSource);
+										await cleanupPruneBackup();
+										invalidateAccountManagerCache();
+										const backupLabel =
+											result.backupStatus === "created"
+												? result.backupPath ?? "created"
+												: result.backupStatus === "skipped"
+													? "skipped"
+													: result.backupError ?? "failed";
+										console.log("");
+										console.log("Sync complete.");
+										console.log(`Source: ${result.accountsPath}`);
+										console.log(`Imported: ${result.imported}`);
+										console.log(`Skipped: ${result.skipped}`);
+										console.log(`Total: ${result.total}`);
+										console.log(`Auto-backup: ${backupLabel}`);
+										console.log("");
+										return;
+									} catch (error) {
+										if (error instanceof CodexMultiAuthSyncCapacityError) {
+											const { details } = error;
+											console.log("");
+											console.log("Sync blocked by account limit.");
+											console.log(`Source: ${details.accountsPath}`);
+											console.log(`Scope: ${details.scope}`);
+											console.log(`Current accounts: ${details.currentCount}`);
+											console.log(`Importable new accounts: ${details.importableNewAccounts}`);
+											console.log(`Maximum allowed: ${details.maxAccounts}`);
+											if (isCodexMultiAuthSourceTooLargeForCapacity(details)) {
+												await restorePruneBackup();
+												console.log("Source alone exceeds the configured maximum.\n");
+												return;
+											}
+											console.log(`Remove at least ${details.needToRemove} account(s) first.`);
+											const indexesToRemove = await promptCodexMultiAuthSyncPrune(
+												details.needToRemove,
+												details.suggestedRemovals,
+											);
+											if (!indexesToRemove || indexesToRemove.length === 0) {
+												await restorePruneBackup();
+												console.log("Sync cancelled.\n");
+												return;
+											}
+											const removalPlan = buildSyncRemovalPlan(
+												indexesToRemove,
+												details.suggestedRemovals as SyncRemovalSuggestion[],
+											);
+											console.log("Dry run removal:");
+											for (const line of removalPlan.previewLines) {
+												console.log(`  ${line}`);
+											}
+											if (!pruneBackup) {
+												pruneBackup = await createSyncPruneBackup();
+											}
+											if (!(await confirm(`Remove ${indexesToRemove.length} selected account(s) and retry sync?`))) {
+												await restorePruneBackup();
+												console.log("Sync cancelled.\n");
+												return;
+											}
+											try {
+												await removeAccountsForSync(removalPlan.targets);
+											} catch (removalError) {
+												await restorePruneBackup();
+												throw removalError;
+											}
+											continue;
+										}
+
+										const message = error instanceof Error ? error.message : String(error);
+										await restorePruneBackup().catch((restoreError) => {
+											const restoreMessage =
+												restoreError instanceof Error ? restoreError.message : String(restoreError);
+											logWarn(`[${PLUGIN_NAME}] Failed to restore sync prune backup: ${restoreMessage}`);
+										});
+										console.log(`\nSync failed: ${message}\n`);
+										return;
+									}
+								}
+							};
+
+							const runCodexMultiAuthOverlapCleanup = async (): Promise<void> => {
+								let backupPath: string | undefined;
+								try {
+									const preview = await previewCodexMultiAuthSyncedOverlapCleanup();
+									if (preview.removed <= 0 && preview.updated <= 0) {
+										console.log("\nNo synced overlaps found.\n");
+										return;
+									}
+									console.log("");
+									console.log("Cleanup preview.");
+									console.log(`Before: ${preview.before}`);
+									console.log(`After: ${preview.after}`);
+									console.log(`Would remove overlaps: ${preview.removed}`);
+									console.log(`Would update synced records: ${preview.updated}`);
+									if (!(await confirm("Create a backup and apply synced overlap cleanup?"))) {
+										console.log("\nCleanup cancelled.\n");
+										return;
+									}
+									backupPath = createTimestampedBackupPath("codex-maintenance-overlap-backup");
+									const result = await cleanupCodexMultiAuthSyncedOverlaps(backupPath);
+									invalidateAccountManagerCache();
+									if (backupPath) {
+										const backupDir = dirname(backupPath);
+										await pruneOldOverlapCleanupBackups(backupDir, [backupPath]).catch((cleanupError) => {
+											const cleanupMessage =
+												cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+											logWarn(
+												`[${PLUGIN_NAME}] Failed to prune old overlap cleanup backups in ${backupDir}: ${cleanupMessage}`,
+											);
+										});
+									}
+									console.log("");
+									console.log("Cleanup complete.");
+									console.log(`Before: ${result.before}`);
+									console.log(`After: ${result.after}`);
+									console.log(`Removed overlaps: ${result.removed}`);
+									console.log(`Updated synced records: ${result.updated}`);
+									console.log(`Backup: ${backupPath}`);
+									console.log("Remove this backup after you finish verifying the cleanup.");
+									console.log("");
+								} catch (error) {
+									const message = error instanceof Error ? error.message : String(error);
+									const cleanupBackupPath =
+										error instanceof Error &&
+										typeof (error as Error & { backupPath?: unknown }).backupPath === "string"
+											? ((error as Error & { backupPath: string }).backupPath)
+											: undefined;
+									const hintedBackupPath = cleanupBackupPath ?? backupPath;
+									const backupHint = hintedBackupPath ? `\nBackup: ${hintedBackupPath}` : "";
+									console.log(`\nCleanup failed: ${message}${backupHint}\n`);
+								}
+							};
+
 							if (!explicitLoginMode) {
 								while (true) {
 									const loadedStorage = await hydrateEmails(await loadAccounts());
@@ -3388,6 +4089,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 									const menuResult = await promptLoginMode(existingAccounts, {
 										flaggedCount: flaggedStorage.accounts.length,
+										syncFromCodexMultiAuthEnabled: getSyncFromCodexMultiAuthEnabled(loadPluginConfig()),
 									});
 
 									if (menuResult.mode === "cancel") {
@@ -3412,6 +4114,18 @@ while (attempted.size < Math.max(1, accountCount)) {
 									}
 									if (menuResult.mode === "verify-flagged") {
 										await verifyFlaggedAccounts();
+										continue;
+									}
+									if (menuResult.mode === "experimental-toggle-sync") {
+										await toggleCodexMultiAuthSyncSetting();
+										continue;
+									}
+									if (menuResult.mode === "experimental-sync-now") {
+										await runCodexMultiAuthSync();
+										continue;
+									}
+									if (menuResult.mode === "experimental-cleanup-overlaps") {
+										await runCodexMultiAuthOverlapCleanup();
 										continue;
 									}
 

@@ -1164,6 +1164,37 @@ export async function withFlaggedAccountsTransaction<T>(
 	});
 }
 
+/**
+ * Runs `handler` while the shared storage lock is held and exposes unlocked
+ * persist callbacks for both account files. Callers are responsible for
+ * choosing a write order that preserves invariants if the process crashes
+ * between the two atomic file writes.
+ */
+export async function withAccountAndFlaggedStorageTransaction<T>(
+	handler: (
+		current: {
+			accounts: AccountStorageV3 | null;
+			flagged: FlaggedAccountStorageV1;
+		},
+		persist: {
+			accounts: (storage: AccountStorageV3) => Promise<void>;
+			flagged: (storage: FlaggedAccountStorageV1) => Promise<void>;
+		},
+	) => Promise<T>,
+): Promise<T> {
+	return withStorageLock(async () => {
+		const accounts = await loadAccountsInternal(saveAccountsUnlocked);
+		const flagged = await loadFlaggedAccountsUnlocked(accounts);
+		return handler(
+			{ accounts, flagged },
+			{
+				accounts: saveAccountsUnlocked,
+				flagged: saveFlaggedAccountsUnlocked,
+			},
+		);
+	});
+}
+
 export async function loadAccountAndFlaggedStorageSnapshot(): Promise<{
 	accounts: AccountStorageV3 | null;
 	flagged: FlaggedAccountStorageV1;

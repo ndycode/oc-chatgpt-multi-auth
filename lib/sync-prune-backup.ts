@@ -5,41 +5,98 @@ type FlaggedSnapshot<TAccount extends object> = {
 	accounts: TAccount[];
 };
 
-type TokenRedacted<TAccount extends object> =
-	Omit<TAccount, "accessToken" | "refreshToken" | "idToken"> & {
-		accessToken?: undefined;
-		refreshToken?: undefined;
-		idToken?: undefined;
-	};
+type SyncPruneBackupPayloadOptions = {
+	includeLiveTokens?: boolean;
+};
 
-function cloneWithoutTokens<TAccount extends object>(account: TAccount): TokenRedacted<TAccount> {
-	const clone = structuredClone(account) as TokenRedacted<TAccount>;
-	delete clone.accessToken;
-	delete clone.refreshToken;
-	delete clone.idToken;
-	return clone;
+type TokenBearingRecord = {
+	refreshToken?: string;
+	accessToken?: string;
+	idToken?: string;
+};
+
+type ReplaceTokenField<
+	TAccount extends object,
+	TKey extends keyof TokenBearingRecord,
+	TValue,
+> = TKey extends keyof TAccount
+	? undefined extends TAccount[TKey]
+		? Omit<TAccount, TKey> & { [K in TKey]?: TValue }
+		: Omit<TAccount, TKey> & { [K in TKey]: TValue }
+	: TAccount;
+
+export type TokenRedacted<TAccount extends object> = ReplaceTokenField<
+	ReplaceTokenField<ReplaceTokenField<TAccount, "refreshToken", "__redacted__">, "accessToken", undefined>,
+	"idToken",
+	undefined
+>;
+
+type RedactedAccountStorage = Omit<AccountStorageV3, "accounts"> & {
+	accounts: Array<TokenRedacted<AccountStorageV3["accounts"][number]>>;
+};
+
+type SyncPruneBackupPayload<TAccountsStorage extends AccountStorageV3, TFlaggedAccount extends object> = {
+	version: 1;
+	accounts: TAccountsStorage;
+	flagged: FlaggedSnapshot<TFlaggedAccount>;
+};
+
+function redactCredentialRecord<TAccount extends object>(account: TAccount): TokenRedacted<TAccount> {
+	const clone = structuredClone(account) as TAccount & TokenBearingRecord;
+	if (typeof clone.refreshToken === "string") {
+		clone.refreshToken = "__redacted__";
+	}
+	if ("accessToken" in clone) {
+		clone.accessToken = undefined;
+	}
+	if ("idToken" in clone) {
+		clone.idToken = undefined;
+	}
+	return clone as TokenRedacted<TAccount>;
 }
 
 export function createSyncPruneBackupPayload<TFlaggedAccount extends object>(
 	currentAccountsStorage: AccountStorageV3,
 	currentFlaggedStorage: FlaggedSnapshot<TFlaggedAccount>,
-): {
-	version: 1;
-	accounts: Omit<AccountStorageV3, "accounts"> & {
-		accounts: Array<TokenRedacted<AccountStorageV3["accounts"][number]>>;
+	options?: { includeLiveTokens?: false | undefined },
+): SyncPruneBackupPayload<RedactedAccountStorage, TokenRedacted<TFlaggedAccount>>;
+export function createSyncPruneBackupPayload<TFlaggedAccount extends object>(
+	currentAccountsStorage: AccountStorageV3,
+	currentFlaggedStorage: FlaggedSnapshot<TFlaggedAccount>,
+	options: { includeLiveTokens: true },
+): SyncPruneBackupPayload<AccountStorageV3, TFlaggedAccount>;
+export function createSyncPruneBackupPayload<TFlaggedAccount extends object>(
+	currentAccountsStorage: AccountStorageV3,
+	currentFlaggedStorage: FlaggedSnapshot<TFlaggedAccount>,
+	options: SyncPruneBackupPayloadOptions = {},
+):
+	| SyncPruneBackupPayload<RedactedAccountStorage, TokenRedacted<TFlaggedAccount>>
+	| SyncPruneBackupPayload<AccountStorageV3, TFlaggedAccount> {
+	const accounts = structuredClone(currentAccountsStorage);
+	const flagged = structuredClone(currentFlaggedStorage);
+	if (options.includeLiveTokens) {
+		return {
+			version: 1,
+			accounts,
+			flagged,
+		};
+	}
+
+	const redactedAccounts: RedactedAccountStorage = {
+		...accounts,
+		accounts: accounts.accounts.map((account) => redactCredentialRecord(account)),
 	};
-	flagged: FlaggedSnapshot<TokenRedacted<TFlaggedAccount>>;
-} {
+	const redactedFlagged: FlaggedSnapshot<TokenRedacted<TFlaggedAccount>> = {
+		...flagged,
+		accounts: flagged.accounts.map((account) => redactCredentialRecord(account)),
+	};
+
+	// Callers opt into live tokens only when crash recovery must fully restore pruned accounts.
+	// On Windows the eventual file write still relies on config-home ACLs because `mode: 0o600`
+	// is only a best-effort hint there.
 	return {
 		version: 1,
-		accounts: {
-			...currentAccountsStorage,
-			accounts: currentAccountsStorage.accounts.map((account) => cloneWithoutTokens(account)),
-			activeIndexByFamily: { ...(currentAccountsStorage.activeIndexByFamily ?? {}) },
-		},
-		flagged: {
-			...currentFlaggedStorage,
-			accounts: currentFlaggedStorage.accounts.map((flagged) => cloneWithoutTokens(flagged)),
-		},
+		accounts: redactedAccounts,
+		flagged: redactedFlagged,
 	};
 }
