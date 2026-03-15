@@ -414,4 +414,32 @@ describe("docs-check script", () => {
 		expect(failure?.stderr).toContain("docs-check found broken documentation links:");
 		expect(failure?.stderr).toContain("docs/guide.md: Missing local target: ./targets/missing.md (./targets/missing.md)");
 	});
+
+	it("exits with an error when the direct docs-check pipeline finds a broken workflow badge", async () => {
+		const { root } = await createRepoFixture({
+			"docs/guide.md":
+				"[CI](https://github.com/ndycode/oc-chatgpt-multi-auth/actions/workflows/does-not-exist.yml/badge.svg)\n",
+		});
+		const scriptPath = path.resolve(process.cwd(), "scripts/ci/docs-check.js");
+		const relativeFixtureRoot = path.relative(process.cwd(), root).replace(/\\/g, "/");
+		let failure: (Error & { code?: number; stderr?: string; stdout?: string }) | null = null;
+
+		try {
+			await execFileAsync(process.execPath, [scriptPath, relativeFixtureRoot], {
+				cwd: process.cwd(),
+				timeout: DOCS_CHECK_SUBPROCESS_TIMEOUT_MS,
+			});
+		} catch (error) {
+			if (error instanceof Error) {
+				failure = error as Error & { code?: number; stderr?: string; stdout?: string };
+			} else {
+				throw error;
+			}
+		}
+
+		expect(failure).not.toBeNull();
+		expect(failure?.code).toBe(1);
+		expect(failure?.stderr).toContain("docs-check found broken documentation links:");
+		expect(failure?.stderr).toContain("Missing workflow referenced by GitHub Actions badge/link: does-not-exist.yml");
+	});
 });

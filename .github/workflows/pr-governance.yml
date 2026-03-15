@@ -37,6 +37,9 @@ jobs:
             const repo = context.repo.repo;
             const issueNumber = context.payload.pull_request.number;
             const body = context.payload.pull_request.body || "";
+            const strippedBody = body
+              .replace(/```[\s\S]*?```/g, "")
+              .replace(/`[^`\n]+`/g, "");
             const liveLabels = await github.paginate(github.rest.issues.listLabelsOnIssue, {
               owner,
               repo,
@@ -81,15 +84,15 @@ jobs:
               /^## Notes\s*$/m,
             ];
 
-            const missingSections = requiredHeadings.filter((pattern) => !pattern.test(body));
-            const complianceChecked = /- \[x\] This change stays within the repository scope and OpenAI Terms of Service expectations\./i.test(body);
+            const missingSections = requiredHeadings.filter((pattern) => !pattern.test(strippedBody));
+            const complianceChecked = /- \[x\] This change stays within the repository scope and OpenAI Terms of Service expectations\./i.test(strippedBody);
             const docsImpactChecked =
-              /- \[x\] README or docs updated/i.test(body) ||
-              /- \[x\] No docs changes needed/i.test(body);
-            const officialAuthChecked = /- \[x\] This change uses official authentication flows only and does not add bypass, scraping, or credential-sharing behavior\./i.test(body);
-            const testsDocsChecked = /- \[x\] I updated tests and documentation when the change affected users, maintainers, or repository behavior\./i.test(body);
-            const noLiveRequiredChecked = /- \[x\] No auth, request-routing, or storage paths changed\./i.test(body);
-            const manualLiveChecked = /- \[x\] I manually tested with a real ChatGPT Plus\/Pro account\./i.test(body);
+              /- \[x\] README or docs updated/i.test(strippedBody) ||
+              /- \[x\] No docs changes needed/i.test(strippedBody);
+            const officialAuthChecked = /- \[x\] This change uses official authentication flows only and does not add bypass, scraping, or credential-sharing behavior\./i.test(strippedBody);
+            const testsDocsChecked = /- \[x\] I updated tests and documentation when the change affected users, maintainers, or repository behavior\./i.test(strippedBody);
+            const noLiveRequiredChecked = /- \[x\] No auth, request-routing, or storage paths changed\./i.test(strippedBody);
+            const manualLiveChecked = /- \[x\] I manually tested with a real ChatGPT Plus\/Pro account\./i.test(strippedBody);
             const liveVerificationLabelName = "needs-live-verification";
             const maintainerVerifiedLabelName = "maintainer-live-verified";
             const invalidateMaintainerVerification =
