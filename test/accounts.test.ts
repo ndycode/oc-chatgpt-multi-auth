@@ -2713,6 +2713,71 @@ describe("AccountManager", () => {
       }
     });
 
+    it("keeps retrying re-armed flush saves after EBUSY failures until a later write succeeds", async () => {
+      vi.useFakeTimers();
+      try {
+        const { saveAccounts } = await import("../lib/storage.js");
+        const mockSaveAccounts = vi.mocked(saveAccounts);
+        mockSaveAccounts.mockClear();
+
+        const savedSnapshots: Array<
+          Array<{
+            refreshToken?: string;
+            enabled?: false;
+            disabledReason?: string;
+          }>
+        > = [];
+
+        const now = Date.now();
+        const stored = {
+          version: 3 as const,
+          activeIndex: 0,
+          accounts: [
+            { refreshToken: "shared-refresh", addedAt: now, lastUsed: now },
+          ],
+        };
+
+        const manager = new AccountManager(undefined, stored);
+        const account = manager.getAccountsSnapshot()[0]!;
+        manager.disableAccountsWithSameRefreshToken(account);
+
+        let attempts = 0;
+        mockSaveAccounts.mockImplementation(async (storage) => {
+          savedSnapshots.push(
+            storage.accounts.map((savedAccount) => ({
+              refreshToken: savedAccount.refreshToken,
+              enabled: savedAccount.enabled,
+              disabledReason: savedAccount.disabledReason,
+            })),
+          );
+          attempts += 1;
+          if (attempts < 4) {
+            manager.saveToDiskDebounced(0);
+            throw Object.assign(new Error("EBUSY: file in use"), { code: "EBUSY" });
+          }
+        });
+
+        manager.saveToDiskDebounced(0);
+
+        await expect(manager.flushPendingSave()).resolves.toBeUndefined();
+
+        expect(mockSaveAccounts).toHaveBeenCalledTimes(4);
+        expect(savedSnapshots.at(-1)).toEqual([
+          expect.objectContaining({
+            refreshToken: "shared-refresh",
+            enabled: false,
+            disabledReason: "auth-failure",
+          }),
+        ]);
+        expect(accountLoggerWarn).toHaveBeenCalledWith(
+          "flushPendingSave: retrying after flush save failure while newer save is queued",
+          expect.objectContaining({ error: "EBUSY: file in use" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("warns and rejects if flushPendingSave keeps discovering new saves", async () => {
       vi.useFakeTimers();
       try {

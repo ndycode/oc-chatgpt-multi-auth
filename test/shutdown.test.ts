@@ -266,7 +266,11 @@ describe("Graceful shutdown", () => {
 				expect(cleanupFn).toHaveBeenCalledTimes(1);
 				expect(processExitSpy).not.toHaveBeenCalled();
 
-				await vi.advanceTimersByTimeAsync(5_000);
+				await vi.advanceTimersByTimeAsync(9_999);
+
+				expect(processExitSpy).not.toHaveBeenCalled();
+
+				await vi.advanceTimersByTimeAsync(1);
 
 				expect(processExitSpy).toHaveBeenCalledTimes(1);
 				expect(processExitSpy).toHaveBeenCalledWith(0);

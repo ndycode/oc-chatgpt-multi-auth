@@ -1167,8 +1167,27 @@ export class AccountManager {
 			}
 			const flushSaveTick = this.saveFinalizationTick;
 			const flushSave = this.enqueueSave(() => this.saveToDisk());
-			await flushSave;
+			let flushSaveError: unknown;
+			try {
+				await flushSave;
+			} catch (error) {
+				flushSaveError = error;
+			}
 			await this.waitForSaveFinalization(flushSaveTick);
+			if (this.saveDebounceTimer !== null || this.pendingSave !== null) {
+				if (flushSaveError) {
+					log.warn("flushPendingSave: retrying after flush save failure while newer save is queued", {
+						error:
+							flushSaveError instanceof Error
+								? flushSaveError.message
+								: String(flushSaveError),
+					});
+				}
+				continue;
+			}
+			if (flushSaveError) {
+				throw flushSaveError;
+			}
 			if (this.saveDebounceTimer === null && this.pendingSave === null) {
 				return;
 			}

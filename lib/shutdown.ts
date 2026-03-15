@@ -1,6 +1,8 @@
 type CleanupFn = () => void | Promise<void>;
 
-const SIGNAL_CLEANUP_TIMEOUT_MS = 5_000;
+// Allow enough time for serialized manager flushes to finish on Windows hosts
+// where AV/file-indexer contention can hold the accounts file for multiple seconds.
+const SIGNAL_CLEANUP_TIMEOUT_MS = 10_000;
 
 const cleanupFunctions: CleanupFn[] = [];
 let shutdownRegistered = false;
