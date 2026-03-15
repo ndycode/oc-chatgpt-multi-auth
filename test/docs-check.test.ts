@@ -254,4 +254,17 @@ describe("docs-check script", () => {
 		expect(stdout).toContain("docs-check: verified 2 markdown file(s)");
 		expect(stderr).toBe("");
 	});
+
+	it("exits cleanly when no markdown files are found", async () => {
+		const { root } = await createRepoFixture({});
+		const scriptPath = path.resolve(process.cwd(), "scripts/ci/docs-check.js");
+		const relativeFixtureRoot = path.relative(process.cwd(), root).replace(/\\/g, "/");
+
+		const { stdout, stderr } = await execFileAsync(process.execPath, [scriptPath, relativeFixtureRoot], {
+			cwd: process.cwd(),
+		});
+
+		expect(stdout).toContain("docs-check: no markdown files found");
+		expect(stderr).toBe("");
+	});
 });
