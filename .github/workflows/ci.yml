@@ -48,15 +48,29 @@ jobs:
           workflow_changed=false
           files=()
 
+          collect_changed_files() {
+            local range="$1"
+
+            while IFS=$'\t' read -r status first_path second_path; do
+              [[ -z "${status}" ]] && continue
+
+              case "${status}" in
+                R*|C*)
+                  [[ -n "${first_path}" ]] && files+=("${first_path}")
+                  [[ -n "${second_path}" ]] && files+=("${second_path}")
+                  ;;
+                *)
+                  [[ -n "${first_path}" ]] && files+=("${first_path}")
+                  ;;
+              esac
+            done < <(git diff --find-renames --name-status "${range}")
+          }
+
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             git fetch --no-tags --depth=1 origin "${BASE_REF}"
-            while IFS= read -r file; do
-              files+=("${file}")
-            done < <(git diff --name-only "origin/${BASE_REF}...HEAD")
+            collect_changed_files "origin/${BASE_REF}...HEAD"
           elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
-            while IFS= read -r file; do
-              files+=("${file}")
-            done < <(git diff --name-only "${BEFORE_SHA}...HEAD")
+            collect_changed_files "${BEFORE_SHA}...HEAD"
           else
             while IFS= read -r file; do
               files+=("${file}")
@@ -240,7 +254,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Lint GitHub Actions workflows
-        uses: docker://rhysd/actionlint:1.7.11
+        uses: docker://rhysd/actionlint@sha256:5457037ba91acd225478edac3d4b32e45cf6c10291e0dabbfd2491c63129afe1 # rhysd/actionlint:1.7.11 linux/amd64
         with:
           args: -color
 

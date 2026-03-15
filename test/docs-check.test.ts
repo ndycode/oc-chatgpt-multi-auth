@@ -136,6 +136,20 @@ describe("docs-check script", () => {
 		await expect(validateLink(docsFile, "./bad%2Gname.md", root)).resolves.toBeNull();
 	});
 
+	it("unescapes markdown-escaped local targets before checking the filesystem", async () => {
+		const { extractMarkdownLinks, validateLink } = await import("../scripts/ci/docs-check.js");
+		const { root } = await createRepoFixture({
+			"docs/guide.md": "[Escaped](./array\\[1\\]\\ \\(v2\\).md)\n",
+			"docs/array[1] (v2).md": "# Escaped target\n",
+		});
+		const docsFile = path.join(root, "docs", "guide.md");
+		const markdown = await readFile(docsFile, "utf8");
+		const [linkTarget] = extractMarkdownLinks(markdown);
+
+		expect(linkTarget).toBe("./array[1] (v2).md");
+		await expect(validateLink(docsFile, linkTarget, root)).resolves.toBeNull();
+	});
+
 	it("normalizes direct-run paths consistently for the current platform", async () => {
 		const { normalizePathForCompare } = await import("../scripts/ci/docs-check.js");
 

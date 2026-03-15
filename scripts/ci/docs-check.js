@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,8 +10,8 @@ const DEFAULT_FILES = ["README.md", "CONTRIBUTING.md", "SECURITY.md", "CHANGELOG
 const DEFAULT_DIRS = [".github", "config", "docs", "test"];
 const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
 const IGNORED_DIRS = new Set([".git", ".github/workflows", ".omx", "dist", "node_modules", "tmp"]);
+const MARKDOWN_PATH_ESCAPE_PATTERN = /\\([\x20-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E])/g;
 const __filename = fileURLToPath(import.meta.url);
-const REPOSITORY = process.env.GITHUB_REPOSITORY ?? "ndycode/oc-chatgpt-multi-auth";
 
 function getRootDir() {
 	return process.cwd();
@@ -22,6 +24,62 @@ export function normalizePathForCompare(targetPath) {
 
 function normalizeReferenceLabel(label) {
 	return label.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function unescapeMarkdownPathTarget(target) {
+	return target.replace(MARKDOWN_PATH_ESCAPE_PATTERN, "$1");
+}
+
+function extractRepositorySlug(repositoryValue) {
+	if (!repositoryValue) return null;
+
+	const normalizedValue = repositoryValue
+		.trim()
+		.replace(/^git\+/, "")
+		.replace(/^git@github\.com:/i, "https://github.com/")
+		.replace(/^ssh:\/\/git@github\.com\//i, "https://github.com/")
+		.replace(/\.git$/i, "");
+
+	try {
+		const url = new URL(normalizedValue);
+		if (!["github.com", "www.github.com"].includes(url.hostname)) return null;
+
+		const match = url.pathname.match(/^\/([^/]+)\/([^/]+?)\/?$/);
+		if (!match) return null;
+		return `${match[1]}/${match[2]}`;
+	} catch {
+		const match = normalizedValue.match(/github\.com[:/]([^/]+)\/([^/]+?)(?:\/)?$/i);
+		if (!match) return null;
+		return `${match[1]}/${match[2]}`;
+	}
+}
+
+function getRepositorySlug(rootDir = getRootDir()) {
+	const githubRepository = process.env.GITHUB_REPOSITORY?.trim();
+	if (githubRepository && /^[^/]+\/[^/]+$/.test(githubRepository)) {
+		return githubRepository;
+	}
+
+	try {
+		const packageJson = JSON.parse(readFileSync(path.join(rootDir, "package.json"), "utf8"));
+		const repositoryField =
+			typeof packageJson.repository === "string" ? packageJson.repository : packageJson.repository?.url;
+		const repositoryFromPackage = extractRepositorySlug(repositoryField);
+		if (repositoryFromPackage) return repositoryFromPackage;
+	} catch {
+		// Ignore package.json lookup failures and fall back to git metadata.
+	}
+
+	try {
+		const remoteUrl = execFileSync("git", ["config", "--get", "remote.origin.url"], {
+			cwd: rootDir,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return extractRepositorySlug(remoteUrl);
+	} catch {
+		return null;
+	}
 }
 
 function normalizeLinkTarget(rawTarget) {
@@ -44,6 +102,7 @@ function normalizeLinkTarget(rawTarget) {
 		}
 	}
 
+	target = unescapeMarkdownPathTarget(target);
 	return target || null;
 }
 
@@ -217,7 +276,7 @@ export function extractMarkdownLinks(markdown) {
 	return links;
 }
 
-function getWorkflowPathFromUrl(target) {
+function getWorkflowPathFromUrl(target, rootDir = getRootDir()) {
 	try {
 		const url = new URL(target);
 		if (!["github.com", "www.github.com"].includes(url.hostname)) return null;
@@ -225,7 +284,11 @@ function getWorkflowPathFromUrl(target) {
 		if (!match) return null;
 
 		const [, ownerFromUrl, repoFromUrl, workflowFile] = match;
-		const [owner, repo] = REPOSITORY.split("/");
+		const repositorySlug = getRepositorySlug(rootDir);
+		// Local clones and forks may not expose GitHub context; skip badge validation if the repo slug is unknown.
+		if (!repositorySlug) return null;
+
+		const [owner, repo] = repositorySlug.split("/");
 		if (ownerFromUrl.toLowerCase() !== owner?.toLowerCase() || repoFromUrl.toLowerCase() !== repo?.toLowerCase()) return null;
 
 		return workflowFile;
@@ -242,7 +305,7 @@ export async function validateLink(filePath, linkTarget, rootDir = getRootDir())
 	if (!linkTarget || linkTarget.startsWith("#")) return null;
 	if (/^(mailto:|tel:|data:)/i.test(linkTarget)) return null;
 
-	const workflowFile = getWorkflowPathFromUrl(linkTarget);
+	const workflowFile = getWorkflowPathFromUrl(linkTarget, rootDir);
 	if (workflowFile) {
 		const workflowPath = path.join(rootDir, ".github", "workflows", workflowFile);
 		if (await exists(workflowPath)) return null;
