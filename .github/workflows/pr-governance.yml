@@ -17,7 +17,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: governance-${{ github.event.pull_request.number }}
+  group: governance-${{ github.event.pull_request.number }}-${{ github.event.action }}
   cancel-in-progress: true
 
 jobs:
