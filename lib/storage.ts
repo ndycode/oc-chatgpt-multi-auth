@@ -1023,7 +1023,6 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 			accountNote,
 			email: typeof rawAccount.email === "string" ? rawAccount.email : undefined,
 			enabled: typeof rawAccount.enabled === "boolean" ? rawAccount.enabled : undefined,
-			disabledReason,
 			lastSwitchReason,
 			rateLimitResetTimes,
 			coolingDownUntil:
@@ -1033,6 +1032,9 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 			flaggedReason: typeof rawAccount.flaggedReason === "string" ? rawAccount.flaggedReason : undefined,
 			lastError: typeof rawAccount.lastError === "string" ? rawAccount.lastError : undefined,
 		};
+		if (disabledReason !== undefined) {
+			normalized.disabledReason = disabledReason;
+		}
 		byRefreshToken.set(refreshToken, normalized);
 	}
 

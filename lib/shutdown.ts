@@ -7,7 +7,6 @@ let sigtermHandler: (() => void) | null = null;
 let beforeExitHandler: (() => void) | null = null;
 let cleanupInFlight: Promise<void> | null = null;
 let signalExitPending = false;
-let shouldResetSignalExitPending = true;
 
 export function registerCleanup(fn: CleanupFn): void {
 	cleanupFunctions.push(fn);
@@ -26,31 +25,27 @@ export function runCleanup(): Promise<void> {
 		return cleanupInFlight;
 	}
 
+	const keepHandlersInstalled = signalExitPending;
 	cleanupInFlight = (async () => {
-		try {
-			while (cleanupFunctions.length > 0) {
-				const fns = [...cleanupFunctions];
-				cleanupFunctions.length = 0;
+		while (cleanupFunctions.length > 0) {
+			const fns = [...cleanupFunctions];
+			cleanupFunctions.length = 0;
 
-				for (const fn of fns) {
-					try {
-						await fn();
-					} catch {
-						// Ignore cleanup errors during shutdown
-					}
+			for (const fn of fns) {
+				try {
+					await fn();
+				} catch {
+					// Ignore cleanup errors during shutdown
 				}
 			}
-		} finally {
-			removeShutdownHandlers();
-			shutdownRegistered = false;
 		}
 	})().finally(() => {
 		cleanupInFlight = null;
-		if (shouldResetSignalExitPending) {
-			signalExitPending = false;
+		if (!keepHandlersInstalled) {
+			removeShutdownHandlers();
+			shutdownRegistered = false;
 		}
-		shouldResetSignalExitPending = true;
-		if (cleanupFunctions.length > 0) {
+		if (cleanupFunctions.length > 0 && !shutdownRegistered) {
 			ensureShutdownHandler();
 		}
 	});
@@ -67,7 +62,6 @@ function ensureShutdownHandler(): void {
 			return;
 		}
 		signalExitPending = true;
-		shouldResetSignalExitPending = false;
 		void runCleanup().finally(() => {
 			process.exit(0);
 		});

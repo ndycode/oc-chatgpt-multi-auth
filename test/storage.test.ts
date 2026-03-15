@@ -1542,6 +1542,7 @@ describe("storage", () => {
       expect(loaded.accounts).toHaveLength(1);
       expect(loaded.accounts[0]?.enabled).toBe(true);
       expect(loaded.accounts[0]?.disabledReason).toBeUndefined();
+      expect(loaded.accounts[0]).not.toHaveProperty("disabledReason");
     });
 
     it("retries flagged storage rename on EBUSY and succeeds", async () => {

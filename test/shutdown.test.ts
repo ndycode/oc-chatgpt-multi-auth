@@ -181,7 +181,7 @@ describe("Graceful shutdown", () => {
 
 				resolveCleanup();
 				await vi.waitFor(() => {
-					expect(processOffSpy).toHaveBeenCalledTimes(3);
+					expect(processOffSpy).not.toHaveBeenCalled();
 					expect(processExitSpy).toHaveBeenCalledWith(0);
 				});
 			} finally {

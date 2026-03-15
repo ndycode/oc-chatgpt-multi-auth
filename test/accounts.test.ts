@@ -1067,6 +1067,58 @@ describe("AccountManager", () => {
       expect(manager.incrementAuthFailures(accounts[0])).toBe(1);
     });
 
+    it("clears auth failure counter even when matching accounts were already user-disabled", () => {
+      const now = Date.now();
+      const stored = {
+        version: 3 as const,
+        activeIndex: 0,
+        accounts: [
+          {
+            refreshToken: "token-1",
+            accountId: "workspace-a",
+            enabled: false,
+            disabledReason: "user" as const,
+            coolingDownUntil: now + 60_000,
+            cooldownReason: "network-error" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+          {
+            refreshToken: "token-1",
+            accountId: "workspace-b",
+            enabled: false,
+            disabledReason: "user" as const,
+            addedAt: now,
+            lastUsed: now,
+          },
+        ],
+      };
+
+      const manager = new AccountManager(undefined, stored);
+      const accounts = manager.getAccountsSnapshot();
+
+      expect(manager.incrementAuthFailures(accounts[0])).toBe(1);
+      expect(manager.incrementAuthFailures(accounts[1])).toBe(2);
+
+      const disabledCount = manager.disableAccountsWithSameRefreshToken(accounts[0]);
+      expect(disabledCount).toBe(0);
+      expect(manager.getAccountsSnapshot()).toMatchObject([
+        {
+          accountId: "workspace-a",
+          enabled: false,
+          disabledReason: "user",
+          coolingDownUntil: now + 60_000,
+          cooldownReason: "network-error",
+        },
+        {
+          accountId: "workspace-b",
+          enabled: false,
+          disabledReason: "user",
+        },
+      ]);
+      expect(manager.incrementAuthFailures(accounts[0])).toBe(1);
+    });
+
     it("records disable reason when setAccountEnabled disables an account", () => {
       const now = Date.now();
       const stored = {

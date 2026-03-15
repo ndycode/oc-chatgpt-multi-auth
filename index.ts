@@ -204,6 +204,7 @@ import {
 // Shared across plugin instances so shutdown cleanup can flush debounced saves
 // even when multiple plugin objects coexist during reloads or tests.
 let accountManagerCleanupHook: (() => Promise<void>) | null = null;
+const activeAccountManagersForCleanup = new Set<AccountManager>();
 const trackedAccountManagersForCleanup = new Set<AccountManager>();
 
 // eslint-disable-next-line @typescript-eslint/require-await
@@ -1684,25 +1685,44 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		};
 
 		const setCachedAccountManager = (manager: AccountManager): AccountManager => {
+			const managerHasPendingSave = (candidate: AccountManager): boolean =>
+				typeof candidate.hasPendingSave === "function" ? candidate.hasPendingSave() : true;
 			if (cachedAccountManager && cachedAccountManager !== manager) {
-				trackedAccountManagersForCleanup.add(cachedAccountManager);
+				activeAccountManagersForCleanup.delete(cachedAccountManager);
+				if (managerHasPendingSave(cachedAccountManager)) {
+					trackedAccountManagersForCleanup.add(cachedAccountManager);
+				} else {
+					trackedAccountManagersForCleanup.delete(cachedAccountManager);
+				}
 			}
-			trackedAccountManagersForCleanup.add(manager);
+			activeAccountManagersForCleanup.add(manager);
+			trackedAccountManagersForCleanup.delete(manager);
 			cachedAccountManager = manager;
 			accountManagerPromise = Promise.resolve(manager);
 			return manager;
 		};
 
 		const invalidateAccountManagerCache = (): void => {
+			const managerHasPendingSave = (candidate: AccountManager): boolean =>
+				typeof candidate.hasPendingSave === "function" ? candidate.hasPendingSave() : true;
 			if (cachedAccountManager) {
-				trackedAccountManagersForCleanup.add(cachedAccountManager);
+				activeAccountManagersForCleanup.delete(cachedAccountManager);
+				if (managerHasPendingSave(cachedAccountManager)) {
+					trackedAccountManagersForCleanup.add(cachedAccountManager);
+				} else {
+					trackedAccountManagersForCleanup.delete(cachedAccountManager);
+				}
 			}
 			cachedAccountManager = null;
 			accountManagerPromise = null;
 		};
 
 		accountManagerCleanupHook ??= async () => {
-			for (const manager of [...trackedAccountManagersForCleanup]) {
+			const managersToFlush = new Set<AccountManager>([
+				...activeAccountManagersForCleanup,
+				...trackedAccountManagersForCleanup,
+			]);
+			for (const manager of managersToFlush) {
 				try {
 					await manager.flushPendingSave();
 				} catch (error) {
@@ -1710,6 +1730,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						error: error instanceof Error ? error.message : String(error),
 					});
 				} finally {
+					activeAccountManagersForCleanup.delete(manager);
 					trackedAccountManagersForCleanup.delete(manager);
 				}
 			}

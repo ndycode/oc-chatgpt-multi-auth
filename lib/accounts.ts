@@ -911,7 +911,8 @@ export class AccountManager {
 			disabledCount++;
 		}
 
-		// Clear stale auth failure state for this refresh token once the group is disabled.
+		// Reset any accumulated auth failures for this token, even if matching accounts
+		// were already manually disabled, so a later manual re-enable starts clean.
 		this.authFailuresByRefreshToken.delete(refreshToken);
 
 		return disabledCount;
@@ -1025,6 +1026,10 @@ export class AccountManager {
 		});
 		this.pendingSave = nextSave;
 		return nextSave;
+	}
+
+	hasPendingSave(): boolean {
+		return this.saveDebounceTimer !== null || this.pendingSave !== null;
 	}
 
 	saveToDiskDebounced(delayMs = 500): void {
