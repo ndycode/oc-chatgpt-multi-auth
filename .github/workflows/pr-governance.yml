@@ -152,6 +152,20 @@ jobs:
               } catch (error) {
                 if (error.status !== 404) throw error;
               }
+
+              if (maintainerLiveVerified) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner,
+                    repo,
+                    issue_number: issueNumber,
+                    name: maintainerVerifiedLabelName,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+                maintainerLiveVerified = false;
+              }
             }
 
             const failures = [];

@@ -1,11 +1,14 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 const tempRoots: string[] = [];
 const TEMP_CLEANUP_ATTEMPTS = 3;
 const TEMP_CLEANUP_DELAY_MS = 100;
+const execFileAsync = promisify(execFile);
 
 async function cleanupTempRoot(root: string) {
 	for (let attempt = 1; attempt <= TEMP_CLEANUP_ATTEMPTS; attempt += 1) {
@@ -28,7 +31,7 @@ afterEach(async () => {
 	await Promise.all(tempRoots.splice(0).map((root) => cleanupTempRoot(root)));
 });
 
-async function createDocsFixture(markdown = "# Guide\n") {
+async function createRepoFixture(files: Record<string, string>) {
 	// docs-check resolves local links against process.cwd(), so fixtures must live
 	// under the repo root for relative-link validation to exercise real behavior.
 	// .gitignore excludes tmp/ and tmp* so a leftover retry-cleanup fixture does
@@ -39,15 +42,22 @@ async function createDocsFixture(markdown = "# Guide\n") {
 	const root = await mkdtemp(path.join(repoTempDir, "docs-check-"));
 	tempRoots.push(root);
 
-	const docsDir = path.join(root, "docs");
-	const targetsDir = path.join(docsDir, "targets");
-	await mkdir(targetsDir, { recursive: true });
+	for (const [relativePath, contents] of Object.entries(files)) {
+		const absolutePath = path.join(root, relativePath);
+		await mkdir(path.dirname(absolutePath), { recursive: true });
+		await writeFile(absolutePath, contents, "utf8");
+	}
 
-	const docsFile = path.join(docsDir, "guide.md");
-	await writeFile(docsFile, markdown, "utf8");
+	return { root };
+}
 
-	const existingTarget = path.join(targetsDir, "exists.md");
-	await writeFile(existingTarget, "# Target\n", "utf8");
+async function createDocsFixture(markdown = "# Guide\n") {
+	const { root } = await createRepoFixture({
+		"docs/guide.md": markdown,
+		"docs/targets/exists.md": "# Target\n",
+	});
+
+	const docsFile = path.join(root, "docs", "guide.md");
 
 	return { docsFile, root };
 }
@@ -149,5 +159,86 @@ describe("docs-check script", () => {
 
 		expect(linkTarget).toBe("./targets/exists.md");
 		await expect(validateLink(docsFile, linkTarget)).resolves.toBeNull();
+	});
+
+	it("discovers default markdown files and skips ignored directories", async () => {
+		const { collectMarkdownFiles } = await import("../scripts/ci/docs-check.js");
+		const { root } = await createRepoFixture({
+			"README.md": "# Root\n",
+			"CONTRIBUTING.md": "# Contributing\n",
+			"SECURITY.md": "# Security\n",
+			"CHANGELOG.md": "# Changelog\n",
+			".github/pull_request_template.md": "# PR Template\n",
+			".github/workflows/ignored.md": "# Ignored workflow doc\n",
+			"config/README.md": "# Config\n",
+			"docs/guide.md": "# Guide\n",
+			"docs/sub/nested.markdown": "# Nested\n",
+			"test/AGENTS.md": "# Test instructions\n",
+			"notes/outside.md": "# Outside default dirs\n",
+			"tmp/ignored.md": "# Ignored temp\n",
+			"dist/ignored.md": "# Ignored dist\n",
+			"node_modules/pkg/ignored.md": "# Ignored dependency\n",
+		});
+
+		const discoveredFiles = await collectMarkdownFiles([], root);
+		const relativeDiscoveredFiles = discoveredFiles.map((filePath: string) =>
+			path.relative(root, filePath).replace(/\\/g, "/"),
+		);
+
+		expect(relativeDiscoveredFiles).toEqual([
+			".github/pull_request_template.md",
+			"CHANGELOG.md",
+			"CONTRIBUTING.md",
+			"README.md",
+			"SECURITY.md",
+			"config/README.md",
+			"docs/guide.md",
+			"docs/sub/nested.markdown",
+			"test/AGENTS.md",
+		]);
+	});
+
+	it("collects only explicitly requested markdown files or directories", async () => {
+		const { collectMarkdownFiles } = await import("../scripts/ci/docs-check.js");
+		const { root } = await createRepoFixture({
+			"README.md": "# Root\n",
+			"docs/guide.md": "# Guide\n",
+			"docs/sub/nested.markdown": "# Nested\n",
+			"notes/extra.md": "# Extra\n",
+		});
+
+		const explicitFile = await collectMarkdownFiles(["README.md"], root);
+		const explicitDirectory = await collectMarkdownFiles(["docs"], root);
+
+		expect(explicitFile.map((filePath: string) => path.relative(root, filePath).replace(/\\/g, "/"))).toEqual(["README.md"]);
+		expect(explicitDirectory.map((filePath: string) => path.relative(root, filePath).replace(/\\/g, "/"))).toEqual([
+			"docs/guide.md",
+			"docs/sub/nested.markdown",
+		]);
+	});
+
+	it("silently skips missing explicit paths", async () => {
+		const { collectMarkdownFiles } = await import("../scripts/ci/docs-check.js");
+		const { root } = await createRepoFixture({
+			"docs/guide.md": "# Guide\n",
+		});
+
+		await expect(collectMarkdownFiles(["missing.md", "missing-dir"], root)).resolves.toEqual([]);
+	});
+
+	it("runs the direct docs-check pipeline for an explicit fixture path", async () => {
+		const { root } = await createRepoFixture({
+			"docs/guide.md": "[Target](./targets/exists.md)\n",
+			"docs/targets/exists.md": "# Target\n",
+		});
+		const scriptPath = path.resolve(process.cwd(), "scripts/ci/docs-check.js");
+		const relativeFixtureRoot = path.relative(process.cwd(), root).replace(/\\/g, "/");
+
+		const { stdout, stderr } = await execFileAsync(process.execPath, [scriptPath, relativeFixtureRoot], {
+			cwd: process.cwd(),
+		});
+
+		expect(stdout).toContain("docs-check: verified 2 markdown file(s)");
+		expect(stderr).toBe("");
 	});
 });

@@ -89,7 +89,7 @@ async function walkMarkdownFiles(dirPath, rootDir = getRootDir()) {
 	return files;
 }
 
-async function collectMarkdownFiles(inputPaths, rootDir = getRootDir()) {
+export async function collectMarkdownFiles(inputPaths, rootDir = getRootDir()) {
 	const resolved = new Set();
 
 	if (inputPaths.length > 0) {
