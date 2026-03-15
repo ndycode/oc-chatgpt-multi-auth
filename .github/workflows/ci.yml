@@ -72,9 +72,10 @@ jobs:
           elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
             collect_changed_files "${BEFORE_SHA}...HEAD"
           else
-            while IFS= read -r file; do
-              files+=("${file}")
-            done < <(git ls-files)
+            # No reliable diff range is available on this event. docs_changed and
+            # code_changed are forced below, and workflow_changed intentionally
+            # stays false unless an actual diff classified workflow files.
+            :
           fi
 
           for file in "${files[@]}"; do

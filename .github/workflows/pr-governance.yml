@@ -86,6 +86,8 @@ jobs:
             const manualLiveChecked = /- \[x\] I manually tested with a real ChatGPT Plus\/Pro account\./i.test(body);
             const liveVerificationLabelName = "needs-live-verification";
             const maintainerVerifiedLabelName = "maintainer-live-verified";
+            const invalidateMaintainerVerification =
+              context.payload.action === "synchronize" || context.payload.action === "reopened";
             let maintainerLiveVerified = currentLabels.has(maintainerVerifiedLabelName);
 
             async function ensureLabel(name, color, description) {
@@ -128,7 +130,7 @@ jobs:
                 labels: [liveVerificationLabelName],
               });
 
-              if (context.payload.action === "synchronize" && maintainerLiveVerified) {
+              if (invalidateMaintainerVerification && maintainerLiveVerified) {
                 try {
                   await github.rest.issues.removeLabel({
                     owner,
@@ -153,7 +155,7 @@ jobs:
                 if (error.status !== 404) throw error;
               }
 
-              if (context.payload.action === "synchronize" && maintainerLiveVerified) {
+              if (invalidateMaintainerVerification && maintainerLiveVerified) {
                 try {
                   await github.rest.issues.removeLabel({
                     owner,

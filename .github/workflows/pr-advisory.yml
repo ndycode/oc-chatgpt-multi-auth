@@ -48,18 +48,32 @@ jobs:
           code_changed=false
           files=()
 
+          collect_changed_files() {
+            local range="$1"
+
+            while IFS=$'\t' read -r status first_path second_path; do
+              [[ -z "${status}" ]] && continue
+
+              case "${status}" in
+                R*|C*)
+                  [[ -n "${first_path}" ]] && files+=("${first_path}")
+                  [[ -n "${second_path}" ]] && files+=("${second_path}")
+                  ;;
+                *)
+                  [[ -n "${first_path}" ]] && files+=("${first_path}")
+                  ;;
+              esac
+            done < <(git diff --find-renames --name-status "${range}")
+          }
+
           if [[ "${EVENT_NAME}" == "schedule" || "${EVENT_NAME}" == "workflow_dispatch" ]]; then
             dependency_changed=true
             code_changed=true
           elif [[ "${EVENT_NAME}" == "pull_request" ]]; then
             git fetch --no-tags --depth=1 origin "${BASE_REF}"
-            while IFS= read -r file; do
-              files+=("${file}")
-            done < <(git diff --name-only "origin/${BASE_REF}...HEAD")
+            collect_changed_files "origin/${BASE_REF}...HEAD"
           elif [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
-            while IFS= read -r file; do
-              files+=("${file}")
-            done < <(git diff --name-only "${BEFORE_SHA}...HEAD")
+            collect_changed_files "${BEFORE_SHA}...HEAD"
           else
             dependency_changed=true
             code_changed=true

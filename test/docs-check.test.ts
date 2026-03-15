@@ -85,12 +85,13 @@ describe("docs-check script", () => {
 		expect(extractMarkdownLinks(markdown)).toEqual(["docs/guides/config(v2).md"]);
 	});
 
-	it("skips anchor-only and external links", async () => {
+	it("skips anchor-only, external, and site-root-prefixed links", async () => {
 		const { validateLink } = await import("../scripts/ci/docs-check.js");
 		const { docsFile } = await createDocsFixture();
 
 		await expect(validateLink(docsFile, "#section")).resolves.toBeNull();
 		await expect(validateLink(docsFile, "https://example.com/docs")).resolves.toBeNull();
+		await expect(validateLink(docsFile, "/docs/development/CONFIG_FIELDS.md")).resolves.toBeNull();
 	});
 
 	it("requires an absolute markdown file path", async () => {
