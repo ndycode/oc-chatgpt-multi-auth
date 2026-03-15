@@ -104,6 +104,8 @@ jobs:
           done
 
           if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            # Run full docs/code lanes on non-PR events, but keep workflow_changed
+            # diff-based so actionlint only runs when workflow files actually change.
             docs_changed=true
             code_changed=true
           fi

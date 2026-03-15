@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 const tempRoots: string[] = [];
-const TEMP_CLEANUP_ATTEMPTS = 3;
-const TEMP_CLEANUP_DELAY_MS = 100;
+const TEMP_CLEANUP_DELAYS_MS = [100, 500, 2000];
+const TEMP_CLEANUP_ATTEMPTS = TEMP_CLEANUP_DELAYS_MS.length + 1;
 const execFileAsync = promisify(execFile);
 
 async function cleanupTempRoot(root: string) {
@@ -22,7 +23,7 @@ async function cleanupTempRoot(root: string) {
 				return;
 			}
 
-			await delay(TEMP_CLEANUP_DELAY_MS);
+			await delay(TEMP_CLEANUP_DELAYS_MS[attempt - 1] ?? TEMP_CLEANUP_DELAYS_MS.at(-1) ?? 100);
 		}
 	}
 }
@@ -30,6 +31,16 @@ async function cleanupTempRoot(root: string) {
 afterEach(async () => {
 	await Promise.all(tempRoots.splice(0).map((root) => cleanupTempRoot(root)));
 });
+
+async function writeFixtureFiles(root: string, files: Record<string, string>) {
+	tempRoots.push(root);
+
+	for (const [relativePath, contents] of Object.entries(files)) {
+		const absolutePath = path.join(root, relativePath);
+		await mkdir(path.dirname(absolutePath), { recursive: true });
+		await writeFile(absolutePath, contents, "utf8");
+	}
+}
 
 async function createRepoFixture(files: Record<string, string>) {
 	// docs-check resolves local links against process.cwd(), so fixtures must live
@@ -40,13 +51,16 @@ async function createRepoFixture(files: Record<string, string>) {
 	await mkdir(repoTempDir, { recursive: true });
 
 	const root = await mkdtemp(path.join(repoTempDir, "docs-check-"));
-	tempRoots.push(root);
+	await writeFixtureFiles(root, files);
 
-	for (const [relativePath, contents] of Object.entries(files)) {
-		const absolutePath = path.join(root, relativePath);
-		await mkdir(path.dirname(absolutePath), { recursive: true });
-		await writeFile(absolutePath, contents, "utf8");
-	}
+	return { root };
+}
+
+async function createExternalFixture(files: Record<string, string>) {
+	// Workflow badge fallback tests need a directory outside the repo so the git
+	// remote lookup can cleanly fail when package metadata is absent.
+	const root = await mkdtemp(path.join(tmpdir(), "docs-check-external-"));
+	await writeFixtureFiles(root, files);
 
 	return { root };
 }
@@ -109,6 +123,77 @@ describe("docs-check script", () => {
 				"https://github.com/octocat/hello-world/actions/workflows/ci.yml/badge.svg",
 			),
 		).resolves.toBeNull();
+	});
+
+	it("uses package metadata to validate workflow badge targets when GitHub Actions context is unavailable", async () => {
+		const { validateLink } = await import("../scripts/ci/docs-check.js");
+		const { root } = await createExternalFixture({
+			"package.json": JSON.stringify(
+				{
+					name: "fixture-docs-check",
+					repository: {
+						type: "git",
+						url: "git+https://github.com/example/docs-fixture.git",
+					},
+				},
+				null,
+				2,
+			),
+			"docs/guide.md": "# Guide\n",
+			".github/workflows/ci.yml": "name: CI\non: push\n",
+		});
+		const docsFile = path.join(root, "docs", "guide.md");
+		const originalRepository = process.env.GITHUB_REPOSITORY;
+		delete process.env.GITHUB_REPOSITORY;
+
+		try {
+			await expect(
+				validateLink(
+					docsFile,
+					"https://github.com/example/docs-fixture/actions/workflows/ci.yml/badge.svg",
+					root,
+				),
+			).resolves.toBeNull();
+			await expect(
+				validateLink(
+					docsFile,
+					"https://github.com/example/docs-fixture/actions/workflows/missing.yml/badge.svg",
+					root,
+				),
+			).resolves.toBe("Missing workflow referenced by GitHub Actions badge/link: missing.yml");
+		} finally {
+			if (originalRepository === undefined) {
+				delete process.env.GITHUB_REPOSITORY;
+			} else {
+				process.env.GITHUB_REPOSITORY = originalRepository;
+			}
+		}
+	});
+
+	it("skips workflow badge validation when repository metadata cannot be resolved", async () => {
+		const { validateLink } = await import("../scripts/ci/docs-check.js");
+		const { root } = await createExternalFixture({
+			"docs/guide.md": "# Guide\n",
+		});
+		const docsFile = path.join(root, "docs", "guide.md");
+		const originalRepository = process.env.GITHUB_REPOSITORY;
+		delete process.env.GITHUB_REPOSITORY;
+
+		try {
+			await expect(
+				validateLink(
+					docsFile,
+					"https://github.com/example/docs-fixture/actions/workflows/ci.yml/badge.svg",
+					root,
+				),
+			).resolves.toBeNull();
+		} finally {
+			if (originalRepository === undefined) {
+				delete process.env.GITHUB_REPOSITORY;
+			} else {
+				process.env.GITHUB_REPOSITORY = originalRepository;
+			}
+		}
 	});
 
 	it("resolves relative local targets from the markdown file directory", async () => {

@@ -69,7 +69,7 @@ jobs:
             [[ -z "${file}" ]] && continue
             is_docs_markdown=false
 
-            if [[ "${file}" =~ ^[^/]+\.(md|markdown)$ ]] || [[ "${file}" =~ ^(\.github|config|docs|test)/.+\.(md|markdown)$ ]]; then
+            if [[ "${file}" =~ ^(README\.md|CONTRIBUTING\.md|CHANGELOG\.md|SECURITY\.md)$ ]] || [[ "${file}" =~ ^(\.github|config|docs|test)/.+\.(md|markdown)$ ]]; then
               is_docs_markdown=true
             fi
 

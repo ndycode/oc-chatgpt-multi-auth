@@ -68,11 +68,11 @@ jobs:
             const liveVerificationRequired = riskyPaths.length > 0;
 
             const requiredHeadings = [
-              /^## Summary$/m,
-              /^## Testing$/m,
-              /^## Docs Impact$/m,
-              /^## Compliance Confirmation$/m,
-              /^## Notes$/m,
+              /^## Summary\s*$/m,
+              /^## Testing\s*$/m,
+              /^## Docs Impact\s*$/m,
+              /^## Compliance Confirmation\s*$/m,
+              /^## Notes\s*$/m,
             ];
 
             const missingSections = requiredHeadings.filter((pattern) => !pattern.test(body));
