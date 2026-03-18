@@ -35,6 +35,7 @@ controls how much thinking the model does.
 | model | supported values |
 |-------|------------------|
 | `gpt-5.4` | none, low, medium, high, xhigh |
+| `gpt-5.4-mini` | none, low, medium, high, xhigh |
 | `gpt-5.4-pro` | low, medium, high, xhigh (optional/manual model) |
 | `gpt-5-codex` | low, medium, high (default: high) |
 | `gpt-5.3-codex` | low, medium, high, xhigh (legacy alias to `gpt-5-codex`) |
@@ -51,7 +52,7 @@ for context sizing, shipped templates use:
 - other shipped families: `context=272000`, `output=128000`
 
 model normalization aliases:
-- legacy `gpt-5`, `gpt-5-mini`, `gpt-5-nano` map to `gpt-5.4`
+- legacy `gpt-5`, `gpt-5-mini`, `gpt-5-nano` map to `gpt-5.4` (not to `gpt-5.4-mini`)
 - snapshot ids `gpt-5.4-2026-03-05*` and `gpt-5.4-pro-2026-03-05*` map to stable `gpt-5.4` / `gpt-5.4-pro`
 
 if your OpenCode runtime supports global compaction tuning, you can set:
