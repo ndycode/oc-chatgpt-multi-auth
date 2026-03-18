@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
     normalizeModel,
     getModelConfig,
+    getReasoningConfig,
     filterInput,
     addToolRemapMessage,
     isOpenCodeSystemPrompt,
@@ -115,6 +116,17 @@ describe('Request Transformer Module', () => {
 					expect(normalizeModel('gpt-5.4-pro-2026-03-05-high')).toBe('gpt-5.4-pro');
 			});
 
+			it('should normalize gpt-5.4-mini presets as a first-class family', async () => {
+					expect(normalizeModel('gpt-5.4-mini')).toBe('gpt-5.4-mini');
+					expect(normalizeModel('gpt-5.4-mini-none')).toBe('gpt-5.4-mini');
+					expect(normalizeModel('gpt-5.4-mini-low')).toBe('gpt-5.4-mini');
+					expect(normalizeModel('gpt-5.4-mini-medium')).toBe('gpt-5.4-mini');
+					expect(normalizeModel('gpt-5.4-mini-high')).toBe('gpt-5.4-mini');
+					expect(normalizeModel('gpt-5.4-mini-xhigh')).toBe('gpt-5.4-mini');
+					expect(normalizeModel('openai/gpt-5.4-mini-xhigh')).toBe('gpt-5.4-mini');
+					expect(normalizeModel('gpt-5.4-mini-2026-03-05-high')).toBe('gpt-5.4-mini');
+			});
+
 				it('should normalize gpt-5.3 codex presets', async () => {
 					expect(normalizeModel('gpt-5.3-codex')).toBe('gpt-5-codex');
 					expect(normalizeModel('gpt-5.3-codex-low')).toBe('gpt-5-codex');
@@ -150,7 +162,7 @@ describe('Request Transformer Module', () => {
 		});
 
 		// Edge case tests - legacy gpt-5 base aliases now map to gpt-5.4
-		describe('Edge cases', () => {
+			describe('Edge cases', () => {
 			it('should handle uppercase model names', async () => {
 				expect(normalizeModel('GPT-5-CODEX')).toBe('gpt-5-codex');
 				expect(normalizeModel('GPT-5-HIGH')).toBe('gpt-5.4');
@@ -164,6 +176,12 @@ describe('Request Transformer Module', () => {
 				// Boundary-aware matching avoids false 5.4-family matches, then generic GPT-5 fallback applies.
 				expect(normalizeModel('gpt-5.40')).toBe('gpt-5.4');
 				expect(normalizeModel('gpt-5.4pro')).toBe('gpt-5.4');
+			});
+
+			it('should prioritize gpt-5.4-mini over generic gpt-5.4 and lightweight fallback matching', async () => {
+				expect(normalizeModel('gpt-5.4-mini-high')).toBe('gpt-5.4-mini');
+				expect(normalizeModel('custom-gpt-5.4-mini-variant')).toBe('gpt-5.4-mini');
+				expect(normalizeModel('openai/gpt-5.4-mini')).not.toBe('gpt-5.4');
 			});
 
 			it('should handle mixed case', async () => {
@@ -188,7 +206,7 @@ describe('Request Transformer Module', () => {
 	});
 
 	describe('getModelConfig', () => {
-		describe('Per-model options (Bug Fix Verification)', () => {
+			describe('Per-model options (Bug Fix Verification)', () => {
 			it('should find per-model options using config key', async () => {
 				const userConfig: UserConfig = {
 					global: { reasoningEffort: 'medium' },
@@ -233,6 +251,39 @@ describe('Request Transformer Module', () => {
 				};
 
 				const result = getModelConfig('openai/gpt-5.2-codex-xhigh', userConfig);
+				expect(result.reasoningEffort).toBe('xhigh');
+				expect(result.reasoningSummary).toBe('detailed');
+			});
+
+			it('should resolve provider-prefixed gpt-5.4-mini ids to base-model config', async () => {
+				const userConfig: UserConfig = {
+					global: { reasoningEffort: 'medium' },
+					models: {
+						'gpt-5.4-mini': {
+							options: { reasoningEffort: 'high', reasoningSummary: 'concise' },
+						},
+					},
+				};
+
+				const result = getModelConfig('openai/gpt-5.4-mini', userConfig);
+				expect(result.reasoningEffort).toBe('high');
+				expect(result.reasoningSummary).toBe('concise');
+			});
+
+			it('should apply gpt-5.4-mini variant options from base-model config', async () => {
+				const userConfig: UserConfig = {
+					global: { reasoningEffort: 'medium', reasoningSummary: 'auto' },
+					models: {
+						'gpt-5.4-mini': {
+							options: { reasoningSummary: 'auto' },
+							variants: {
+								xhigh: { reasoningEffort: 'xhigh', reasoningSummary: 'detailed' },
+							},
+						},
+					},
+				};
+
+				const result = getModelConfig('openai/gpt-5.4-mini-xhigh', userConfig);
 				expect(result.reasoningEffort).toBe('xhigh');
 				expect(result.reasoningSummary).toBe('detailed');
 			});
@@ -332,7 +383,20 @@ describe('Request Transformer Module', () => {
 				expect(result).toEqual({});
 			});
 		});
-	});
+		});
+
+		describe('getReasoningConfig', () => {
+			it('should treat gpt-5.4-mini as first-class for none and xhigh support', async () => {
+				expect(getReasoningConfig('gpt-5.4-mini', {}).effort).toBe('high');
+				expect(getReasoningConfig('gpt-5.4-mini', { reasoningEffort: 'none' }).effort).toBe('none');
+				expect(getReasoningConfig('gpt-5.4-mini', { reasoningEffort: 'xhigh' }).effort).toBe('xhigh');
+			});
+
+			it('should keep gpt-5.4-mini distinct from unsupported lightweight fallbacks', async () => {
+				expect(getReasoningConfig('gpt-5.4-mini', { reasoningEffort: 'none' }).effort).toBe('none');
+				expect(getReasoningConfig('gpt-5-mini', { reasoningEffort: 'none' }).effort).toBe('low');
+			});
+		});
 
 	describe('filterInput', () => {
 		it('should keep items without IDs unchanged', async () => {
@@ -1625,6 +1689,58 @@ describe('Request Transformer Module', () => {
 			};
 			const result = await transformRequestBody(body, codexInstructions, userConfig);
 			expect(result.model).toBe('gpt-5.4-pro');
+			expect(result.reasoning?.effort).toBe('xhigh');
+			expect(result.reasoning?.summary).toBe('detailed');
+		});
+
+		it('should preserve provider-prefixed gpt-5.4-mini variants in transformRequestBody', async () => {
+			const body: RequestBody = {
+				model: 'openai/gpt-5.4-mini-xhigh',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { reasoningSummary: 'auto' },
+				models: {
+					'gpt-5.4-mini-xhigh': {
+						options: { reasoningEffort: 'xhigh', reasoningSummary: 'detailed' },
+					},
+				},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.model).toBe('gpt-5.4-mini');
+			expect(result.reasoning?.effort).toBe('xhigh');
+			expect(result.reasoning?.summary).toBe('detailed');
+		});
+
+		it('should preserve none for GPT-5.4-mini', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.4-mini-none',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { reasoningEffort: 'none' },
+				models: {},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.model).toBe('gpt-5.4-mini');
+			expect(result.reasoning?.effort).toBe('none');
+		});
+
+		it('should preserve xhigh for GPT-5.4-mini when requested', async () => {
+			const body: RequestBody = {
+				model: 'gpt-5.4-mini-xhigh',
+				input: [],
+			};
+			const userConfig: UserConfig = {
+				global: { reasoningSummary: 'auto' },
+				models: {
+					'gpt-5.4-mini-xhigh': {
+						options: { reasoningEffort: 'xhigh', reasoningSummary: 'detailed' },
+					},
+				},
+			};
+			const result = await transformRequestBody(body, codexInstructions, userConfig);
+			expect(result.model).toBe('gpt-5.4-mini');
 			expect(result.reasoning?.effort).toBe('xhigh');
 			expect(result.reasoning?.summary).toBe('detailed');
 		});

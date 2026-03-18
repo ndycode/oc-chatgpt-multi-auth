@@ -125,6 +125,68 @@ describe("GPT-5.4 Model Support", () => {
 		});
 	});
 
+	describe("GPT-5.4 Mini Model Normalization", () => {
+		it("should normalize gpt-5.4-mini base model", () => {
+			expect(normalizeModel("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+			expect(getNormalizedModel("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+		});
+
+		it("should normalize all gpt-5.4-mini reasoning effort variants", () => {
+			const variants = [
+				"gpt-5.4-mini-none",
+				"gpt-5.4-mini-low",
+				"gpt-5.4-mini-medium",
+				"gpt-5.4-mini-high",
+				"gpt-5.4-mini-xhigh",
+			];
+
+			for (const variant of variants) {
+				expect(normalizeModel(variant)).toBe("gpt-5.4-mini");
+				expect(getNormalizedModel(variant)).toBe("gpt-5.4-mini");
+			}
+		});
+
+		it("should handle gpt-5.4-mini with provider prefix", () => {
+			expect(normalizeModel("openai/gpt-5.4-mini")).toBe("gpt-5.4-mini");
+			expect(normalizeModel("openai/gpt-5.4-mini-high")).toBe("gpt-5.4-mini");
+		});
+
+		it("should handle gpt-5.4-mini with space separator", () => {
+			expect(normalizeModel("gpt 5.4 mini")).toBe("gpt-5.4-mini");
+			expect(normalizeModel("gpt 5.4 mini high")).toBe("gpt-5.4-mini");
+		});
+
+		it("should be case-insensitive for gpt-5.4-mini", () => {
+			expect(normalizeModel("GPT-5.4-MINI")).toBe("gpt-5.4-mini");
+			expect(normalizeModel("Gpt-5.4-Mini-High")).toBe("gpt-5.4-mini");
+			expect(getNormalizedModel("GPT-5.4-MINI-XHIGH")).toBe("gpt-5.4-mini");
+		});
+
+		it("should handle gpt-5.4-mini in MODEL_MAP", () => {
+			expect(MODEL_MAP["gpt-5.4-mini"]).toBe("gpt-5.4-mini");
+			expect(MODEL_MAP["gpt-5.4-mini-none"]).toBe("gpt-5.4-mini");
+			expect(MODEL_MAP["gpt-5.4-mini-low"]).toBe("gpt-5.4-mini");
+			expect(MODEL_MAP["gpt-5.4-mini-medium"]).toBe("gpt-5.4-mini");
+			expect(MODEL_MAP["gpt-5.4-mini-high"]).toBe("gpt-5.4-mini");
+			expect(MODEL_MAP["gpt-5.4-mini-xhigh"]).toBe("gpt-5.4-mini");
+			expect(MODEL_MAP[`gpt-5.4-mini-${SNAPSHOT}`]).toBe("gpt-5.4-mini");
+			expect(MODEL_MAP[`gpt-5.4-mini-${SNAPSHOT}-low`]).toBe("gpt-5.4-mini");
+		});
+
+		it("should normalize GPT-5.4-mini snapshot aliases", () => {
+			expect(normalizeModel(`gpt-5.4-mini-${SNAPSHOT}`)).toBe("gpt-5.4-mini");
+			expect(normalizeModel(`gpt-5.4-mini-${SNAPSHOT}-high`)).toBe("gpt-5.4-mini");
+			expect(getNormalizedModel(`gpt-5.4-mini-${SNAPSHOT}-medium`)).toBe("gpt-5.4-mini");
+		});
+
+		it("should prioritize -mini suffix over base gpt-5.4", () => {
+			expect(normalizeModel("gpt-5.4-mini-high")).toBe("gpt-5.4-mini");
+			expect(normalizeModel("gpt-5.4-high")).toBe("gpt-5.4");
+			// Ensure mini is not confused with base model
+			expect(normalizeModel("gpt-5.4-mini")).not.toBe("gpt-5.4");
+		});
+	});
+
 	describe("GPT-5.4 Model Family Detection", () => {
 		it("should detect gpt-5.4 model family", () => {
 			expect(getModelFamily("gpt-5.4")).toBe("gpt-5.4");
@@ -148,6 +210,27 @@ describe("GPT-5.4 Model Support", () => {
 			expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.4-pro");
 			expect(getModelFamily(`gpt-5.4-${SNAPSHOT}`)).toBe("gpt-5.4");
 			expect(getModelFamily(`gpt-5.4-pro-${SNAPSHOT}`)).toBe("gpt-5.4-pro");
+		});
+
+		it("should detect gpt-5.4-mini model family", () => {
+			expect(getModelFamily("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+			expect(getModelFamily("gpt-5.4-mini-low")).toBe("gpt-5.4-mini");
+			expect(getModelFamily("gpt-5.4-mini-high")).toBe("gpt-5.4-mini");
+			expect(getModelFamily("gpt-5.4-mini-xhigh")).toBe("gpt-5.4-mini");
+		});
+
+		it("should detect gpt-5.4-mini with space separator", () => {
+			expect(getModelFamily("gpt 5.4 mini")).toBe("gpt-5.4-mini");
+			expect(getModelFamily("gpt 5.4 mini high")).toBe("gpt-5.4-mini");
+		});
+
+		it("should isolate gpt-5.4-mini family from gpt-5.4 and gpt-5.4-pro", () => {
+			expect(getModelFamily("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+			expect(getModelFamily("gpt-5.4")).toBe("gpt-5.4");
+			expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.4-pro");
+			// Ensure distinct families
+			expect(getModelFamily("gpt-5.4-mini")).not.toBe("gpt-5.4");
+			expect(getModelFamily("gpt-5.4-mini")).not.toBe("gpt-5.4-pro");
 		});
 
 		it("should not confuse gpt-5.4 with gpt-5.3 or gpt-5.2", () => {
@@ -195,6 +278,30 @@ describe("GPT-5.4 Model Support", () => {
 
 		it("should support xhigh reasoning for gpt-5.4-pro", () => {
 			const config = getReasoningConfig("gpt-5.4-pro", { reasoningEffort: "xhigh" });
+			expect(config.effort).toBe("xhigh");
+		});
+
+		it("should support gpt-5.4-mini reasoning configuration", () => {
+			const config = getReasoningConfig("gpt-5.4-mini", { reasoningEffort: "high" });
+			expect(config.effort).toBe("high");
+		});
+
+		it("should support all reasoning effort levels for gpt-5.4-mini", () => {
+			const efforts = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+			for (const effort of efforts) {
+				const config = getReasoningConfig("gpt-5.4-mini", { reasoningEffort: effort });
+				expect(config.effort).toBe(effort);
+			}
+		});
+
+		it("should default to 'high' for gpt-5.4-mini when not specified", () => {
+			const config = getReasoningConfig("gpt-5.4-mini", {});
+			expect(config.effort).toBe("high");
+		});
+
+		it("should support xhigh reasoning for gpt-5.4-mini", () => {
+			const config = getReasoningConfig("gpt-5.4-mini", { reasoningEffort: "xhigh" });
 			expect(config.effort).toBe("xhigh");
 		});
 
@@ -258,6 +365,25 @@ describe("GPT-5.4 Model Support", () => {
 			expect(normalizeModel("gpt-5.4-pro-high")).toBe("gpt-5.4-pro");
 			expect(normalizeModel("gpt-5.4-high")).toBe("gpt-5.4");
 		});
+
+		it("should distinguish gpt-5.4-mini from gpt-5.4 and gpt-5.4-pro", () => {
+			expect(normalizeModel("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+			expect(normalizeModel("gpt-5.4-mini-high")).toBe("gpt-5.4-mini");
+			// Ensure mini is not confused with base or pro
+			expect(normalizeModel("gpt-5.4-mini")).not.toBe("gpt-5.4");
+			expect(normalizeModel("gpt-5.4-mini")).not.toBe("gpt-5.4-pro");
+			expect(normalizeModel("gpt-5.4")).not.toBe("gpt-5.4-mini");
+			expect(normalizeModel("gpt-5.4-pro")).not.toBe("gpt-5.4-mini");
+		});
+
+		it("should prioritize longer suffixes correctly (-pro > -mini > base)", () => {
+			expect(normalizeModel("gpt-5.4-pro")).toBe("gpt-5.4-pro");
+			expect(normalizeModel("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+			expect(normalizeModel("gpt-5.4")).toBe("gpt-5.4");
+			// Ensure pro doesn't match mini and vice versa
+			expect(normalizeModel("gpt-5.4-pro")).not.toBe("gpt-5.4-mini");
+			expect(normalizeModel("gpt-5.4-mini")).not.toBe("gpt-5.4-pro");
+		});
 	});
 
 	describe("GPT-5.4 Integration with Existing Models", () => {
@@ -303,6 +429,26 @@ describe("GPT-5.4 Model Support", () => {
 			expect(config54.effort).toBe("none");
 			expect(config52.effort).toBe("none");
 		});
+
+		it("should coexist with gpt-5.4-mini model", () => {
+			expect(normalizeModel("gpt-5.4")).toBe("gpt-5.4");
+			expect(normalizeModel("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+			expect(getModelFamily("gpt-5.4")).toBe("gpt-5.4");
+			expect(getModelFamily("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+		});
+
+		it("should have same reasoning capabilities across gpt-5.4 variants", () => {
+			const config54 = getReasoningConfig("gpt-5.4", { reasoningEffort: "xhigh" });
+			const config54Mini = getReasoningConfig("gpt-5.4-mini", { reasoningEffort: "xhigh" });
+			expect(config54.effort).toBe("xhigh");
+			expect(config54Mini.effort).toBe("xhigh");
+		});
+
+		it("should not map gpt-5.4-mini to gpt-5.4 (distinct models)", () => {
+			expect(normalizeModel("gpt-5.4-mini")).not.toBe("gpt-5.4");
+			expect(normalizeModel("gpt-5.4-mini-high")).not.toBe("gpt-5.4");
+			expect(getNormalizedModel("gpt-5.4-mini")).not.toBe("gpt-5.4");
+		});
 	});
 
 	describe("GPT-5.4 Model Count", () => {
@@ -320,6 +466,13 @@ describe("GPT-5.4 Model Support", () => {
 			expect(gpt54ProVariants.length).toBeGreaterThanOrEqual(6); // base + none/low/medium/high/xhigh
 		});
 
+		it("should have all gpt-5.4-mini variants in MODEL_MAP", () => {
+			const gpt54MiniVariants = Object.keys(MODEL_MAP).filter((key) =>
+				key.startsWith("gpt-5.4-mini")
+			);
+			expect(gpt54MiniVariants.length).toBeGreaterThanOrEqual(6); // base + none/low/medium/high/xhigh
+		});
+
 		it("should ensure all gpt-5.4 variants map to correct normalized name", () => {
 			const gpt54Keys = Object.keys(MODEL_MAP).filter((key) =>
 				key.startsWith("gpt-5.4")
@@ -327,7 +480,7 @@ describe("GPT-5.4 Model Support", () => {
 
 			for (const key of gpt54Keys) {
 				const normalized = MODEL_MAP[key];
-				expect(normalized).toMatch(/^gpt-5\.4(-pro)?$/);
+				expect(normalized).toMatch(/^gpt-5\.4(-pro|-mini)?$/);
 			}
 		});
 	});
