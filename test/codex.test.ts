@@ -127,10 +127,21 @@ import { getModelFamily } from "../lib/prompts/codex.js";
 				expect(getModelFamily("gpt-5.4-2026-03-05-high")).toBe("gpt-5.4");
 			});
 
+			it("should return gpt-5.4-mini for gpt-5.4-mini models", () => {
+				expect(getModelFamily("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+				expect(getModelFamily("gpt-5.4-mini-2026-03-05-high")).toBe("gpt-5.4-mini");
+				expect(getModelFamily("gpt 5.4 mini high")).toBe("gpt-5.4-mini");
+			});
+
 			it("should return gpt-5.4-pro for gpt-5.4-pro models", () => {
 				expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.4-pro");
 				expect(getModelFamily("gpt-5.4-pro-2026-03-05-high")).toBe("gpt-5.4-pro");
 				expect(getModelFamily("gpt 5.4 pro high")).toBe("gpt-5.4-pro");
+			});
+
+			it("should keep gpt-5.4-mini separate from base and pro families", () => {
+				expect(getModelFamily("gpt-5.4-mini-high")).not.toBe("gpt-5.4");
+				expect(getModelFamily("gpt-5.4-mini-high")).not.toBe("gpt-5.4-pro");
 			});
 		});
 

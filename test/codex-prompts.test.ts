@@ -31,12 +31,13 @@ describe("Codex Prompts Module", () => {
 		global.fetch = originalFetch;
 	});
 
-		describe("MODEL_FAMILIES constant", () => {
+			describe("MODEL_FAMILIES constant", () => {
 			it("should export all model families", () => {
 				expect(MODEL_FAMILIES).toContain("gpt-5-codex");
 				expect(MODEL_FAMILIES).toContain("codex-max");
 				expect(MODEL_FAMILIES).toContain("codex");
 				expect(MODEL_FAMILIES).toContain("gpt-5.4");
+				expect(MODEL_FAMILIES).toContain("gpt-5.4-mini");
 				expect(MODEL_FAMILIES).toContain("gpt-5.4-pro");
 				expect(MODEL_FAMILIES).toContain("gpt-5.2");
 				expect(MODEL_FAMILIES).toContain("gpt-5.1");
@@ -44,7 +45,7 @@ describe("Codex Prompts Module", () => {
 
 			it("should be a readonly array", () => {
 				expect(Array.isArray(MODEL_FAMILIES)).toBe(true);
-				expect(MODEL_FAMILIES.length).toBeGreaterThanOrEqual(7);
+				expect(MODEL_FAMILIES.length).toBeGreaterThanOrEqual(8);
 				expect(new Set(MODEL_FAMILIES).size).toBe(MODEL_FAMILIES.length);
 			});
 		});
@@ -78,11 +79,14 @@ describe("Codex Prompts Module", () => {
 		});
 	});
 
-		describe("getModelFamily", () => {
-			it("should detect gpt-5.4 and gpt-5.4-pro", () => {
+			describe("getModelFamily", () => {
+			it("should detect gpt-5.4, gpt-5.4-mini, and gpt-5.4-pro", () => {
 				expect(getModelFamily("gpt-5.4")).toBe("gpt-5.4");
 				expect(getModelFamily("gpt-5.4-high")).toBe("gpt-5.4");
 				expect(getModelFamily("gpt-5.4-2026-03-05-high")).toBe("gpt-5.4");
+				expect(getModelFamily("gpt-5.4-mini")).toBe("gpt-5.4-mini");
+				expect(getModelFamily("gpt 5.4 mini high")).toBe("gpt-5.4-mini");
+				expect(getModelFamily("gpt-5.4-mini-2026-03-05-high")).toBe("gpt-5.4-mini");
 				expect(getModelFamily("gpt-5.4-pro")).toBe("gpt-5.4-pro");
 				expect(getModelFamily("gpt 5.4 pro")).toBe("gpt-5.4-pro");
 				expect(getModelFamily("gpt-5.4-pro-2026-03-05-high")).toBe("gpt-5.4-pro");
@@ -504,6 +508,35 @@ describe("Codex Prompts Module", () => {
 					expect(writeTargets.some((target) => target.includes("gpt-5.4-pro-instructions.md"))).toBe(true);
 					expect(
 						writeTargets.some((target) => /gpt-5\.4-instructions\.md$/.test(target)),
+					).toBe(false);
+				});
+
+				it("should map gpt-5.4-mini prompts to gpt_5_2 prompt file with isolated cache key", async () => {
+					mockedReadFile.mockRejectedValue(new Error("ENOENT"));
+					mockFetch.mockResolvedValue({
+						ok: true,
+						json: () => Promise.resolve({ tag_name: "rust-v0.111.0" }),
+						text: () => Promise.resolve("content"),
+						headers: { get: () => "etag" },
+					});
+					mockedMkdir.mockResolvedValue(undefined);
+					mockedWriteFile.mockResolvedValue(undefined);
+
+					await getCodexInstructions("gpt-5.4-mini");
+					const fetchCalls = mockFetch.mock.calls;
+					const rawGitHubCall = fetchCalls.find(
+						(call) =>
+							typeof call[0] === "string" &&
+							call[0].includes("raw.githubusercontent.com"),
+					);
+					const writeTargets = mockedWriteFile.mock.calls.map(([target]) => String(target));
+					expect(rawGitHubCall?.[0]).toContain("gpt_5_2_prompt.md");
+					expect(writeTargets.some((target) => target.includes("gpt-5.4-mini-instructions.md"))).toBe(true);
+					expect(
+						writeTargets.some((target) => /gpt-5\.4-instructions\.md$/.test(target)),
+					).toBe(false);
+					expect(
+						writeTargets.some((target) => /gpt-5\.4-pro-instructions\.md$/.test(target)),
 					).toBe(false);
 				});
 
