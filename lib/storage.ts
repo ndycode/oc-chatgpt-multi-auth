@@ -923,6 +923,9 @@ function normalizeFlaggedStorage(data: unknown): FlaggedAccountStorageV1 {
 
 	const normalizeFlaggedIdentityPart = (value: unknown): string | undefined =>
 		typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+	// Flagged storage must keep sibling workspace entries separate when they share an
+	// organization but have different accountIds, so this key is more specific than
+	// the normal account identity collapse used in active storage.
 	const getFlaggedIdentityKey = (account: {
 		organizationId?: string;
 		accountId?: string;

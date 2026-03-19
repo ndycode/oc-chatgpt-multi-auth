@@ -3071,6 +3071,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 										lastError = new Error("Codex response did not include quota headers");
 									} catch (error) {
 										lastError = error instanceof Error ? error : new Error(String(error));
+										if (lastError.message === "deactivated_workspace") {
+											throw lastError;
+										}
 									}
 								}
 
@@ -3291,27 +3294,27 @@ while (attempted.size < Math.max(1, accountCount)) {
 											console.log(
 												`[${i + 1}/${total}] ${label}: ${formatCodexQuotaLine(snapshot)}`,
 											);
-											} catch (error) {
-												errors += 1;
-												const message = error instanceof Error ? error.message : String(error);
-												if (message.includes("deactivated_workspace")) {
-													const flaggedRecord: FlaggedAccountMetadataV1 = {
-														...account,
-														flaggedAt: Date.now(),
-														flaggedReason: "workspace-deactivated",
-														lastError: message,
-													};
-													flaggedUpdates.set(
-														getWorkspaceIdentityKey(flaggedRecord),
-														flaggedRecord,
-													);
-													removeFromActive.add(getWorkspaceIdentityKey(account));
-													flaggedChanged = true;
-												}
-												console.log(
-													`[${i + 1}/${total}] ${label}: ERROR (${message.slice(0, 160)})`,
+										} catch (error) {
+											errors += 1;
+											const message = error instanceof Error ? error.message : String(error);
+											if (message === "deactivated_workspace") {
+												const flaggedRecord: FlaggedAccountMetadataV1 = {
+													...account,
+													flaggedAt: Date.now(),
+													flaggedReason: "workspace-deactivated",
+													lastError: message,
+												};
+												flaggedUpdates.set(
+													getWorkspaceIdentityKey(flaggedRecord),
+													flaggedRecord,
 												);
+												removeFromActive.add(getWorkspaceIdentityKey(account));
+												flaggedChanged = true;
 											}
+											console.log(
+												`[${i + 1}/${total}] ${label}: ERROR (${message.slice(0, 160)})`,
+											);
+										}
 									} catch (error) {
 										errors += 1;
 										const message = error instanceof Error ? error.message : String(error);
@@ -3369,6 +3372,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 									const flagged = flaggedStorage.accounts[i];
 									if (!flagged) continue;
 									const label = flagged.email ?? flagged.accountLabel ?? `Flagged ${i + 1}`;
+									if (flagged.flaggedReason === "workspace-deactivated") {
+										console.log(
+											`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: STILL FLAGGED (workspace deactivated)`,
+										);
+										remaining.push(flagged);
+										continue;
+									}
 									try {
 										const cached = await lookupCodexCliTokensByEmail(flagged.email);
 										const now = Date.now();

@@ -186,10 +186,21 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 		refreshAndUpdateToken: vi.fn(async (auth: unknown) => auth),
 		createCodexHeaders: vi.fn(() => new Headers()),
 		handleErrorResponse: vi.fn(async (response: Response) => ({ response })),
-		isDeactivatedWorkspaceError: vi.fn((errorBody: unknown, status?: number) =>
-			status === 402 &&
-			(errorBody as { error?: { code?: string } })?.error?.code === "deactivated_workspace",
-		),
+		isDeactivatedWorkspaceError: vi.fn((errorBody: unknown, status?: number) => {
+			if (status !== 402 || !errorBody || typeof errorBody !== "object") return false;
+			const body = errorBody as {
+				code?: unknown;
+				detail?: { code?: unknown } | undefined;
+				error?: { code?: unknown; type?: unknown } | undefined;
+			};
+			const code =
+				(typeof body.code === "string" && body.code) ||
+				(typeof body.detail?.code === "string" && body.detail.code) ||
+				(typeof body.error?.code === "string" && body.error.code) ||
+				(typeof body.error?.type === "string" && body.error.type) ||
+				undefined;
+			return code === "deactivated_workspace";
+		}),
 	getUnsupportedCodexModelInfo: vi.fn(() => ({ isUnsupported: false })),
 	resolveUnsupportedCodexFallbackModel: vi.fn(() => undefined),
 	shouldFallbackToGpt52OnUnsupportedGpt53: vi.fn(() => false),
@@ -3495,6 +3506,56 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith({
 			version: 1,
 			accounts: [],
+		});
+	});
+
+	it("keeps workspace-deactivated flagged entries out of verify-flagged restore", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const storageModule = await import("../lib/storage.js");
+		const refreshQueueModule = await import("../lib/refresh-queue.js");
+
+		mockFlaggedStorage.accounts = [
+			{
+				refreshToken: "flagged-refresh-dead",
+				organizationId: "org-dead",
+				accountId: "workspace-dead",
+				accountIdSource: "manual",
+				accountLabel: "Dead Workspace",
+				email: "dead@example.com",
+				flaggedAt: Date.now() - 500,
+				flaggedReason: "workspace-deactivated",
+				lastError: "deactivated_workspace",
+				addedAt: Date.now() - 500,
+				lastUsed: Date.now() - 500,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "verify-flagged" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		expect(vi.mocked(refreshQueueModule.queuedRefresh)).not.toHaveBeenCalled();
+		expect(mockStorage.accounts).toHaveLength(0);
+		expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith({
+			version: 1,
+			accounts: expect.arrayContaining([
+				expect.objectContaining({
+					accountId: "workspace-dead",
+					flaggedReason: "workspace-deactivated",
+				}),
+			]),
 		});
 	});
 
