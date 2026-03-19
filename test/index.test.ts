@@ -186,7 +186,8 @@ vi.mock("../lib/request/rate-limit-backoff.js", () => ({
 		refreshAndUpdateToken: vi.fn(async (auth: unknown) => auth),
 		createCodexHeaders: vi.fn(() => new Headers()),
 		handleErrorResponse: vi.fn(async (response: Response) => ({ response })),
-		isDeactivatedWorkspaceError: vi.fn((errorBody: unknown) =>
+		isDeactivatedWorkspaceError: vi.fn((errorBody: unknown, status?: number) =>
+			status === 402 &&
 			(errorBody as { error?: { code?: string } })?.error?.code === "deactivated_workspace",
 		),
 	getUnsupportedCodexModelInfo: vi.fn(() => ({ isUnsupported: false })),
@@ -224,6 +225,40 @@ const cloneMockStorage = () => ({
 	...mockStorage,
 	accounts: mockStorage.accounts.map(cloneAccount),
 	activeIndexByFamily: { ...mockStorage.activeIndexByFamily },
+});
+
+const mockFlaggedStorage = {
+	version: 1 as const,
+	accounts: [] as Array<{
+		accountId?: string;
+		organizationId?: string;
+		accountIdSource?: string;
+		accountLabel?: string;
+		email?: string;
+		refreshToken: string;
+		flaggedAt: number;
+		flaggedReason?: string;
+		lastError?: string;
+		addedAt?: number;
+		lastUsed?: number;
+	}>,
+};
+
+const cloneFlaggedAccount = (account: (typeof mockFlaggedStorage.accounts)[number]) =>
+	structuredClone(account);
+
+const cloneMockFlaggedStorage = () => ({
+	...mockFlaggedStorage,
+	accounts: mockFlaggedStorage.accounts.map(cloneFlaggedAccount),
+});
+
+const persistMockFlaggedStorage = async (nextStorage: typeof mockFlaggedStorage) => {
+	mockFlaggedStorage.version = nextStorage.version;
+	mockFlaggedStorage.accounts = nextStorage.accounts.map(cloneFlaggedAccount);
+};
+
+const mockSaveFlaggedAccounts = vi.fn(async (nextStorage: typeof mockFlaggedStorage) => {
+	await persistMockFlaggedStorage(nextStorage);
 });
 
 vi.mock("../lib/storage.js", () => ({
@@ -264,8 +299,22 @@ vi.mock("../lib/storage.js", () => ({
 	})),
 	previewImportAccounts: vi.fn(async () => ({ imported: 2, skipped: 1, total: 5 })),
 	createTimestampedBackupPath: vi.fn((prefix?: string) => `/tmp/${prefix ?? "codex-backup"}-20260101-000000.json`),
-	loadFlaggedAccounts: vi.fn(async () => ({ version: 1, accounts: [] })),
-	saveFlaggedAccounts: vi.fn(async () => {}),
+	loadFlaggedAccounts: vi.fn(async () => cloneMockFlaggedStorage()),
+	saveFlaggedAccounts: mockSaveFlaggedAccounts,
+	withFlaggedAccountStorageTransaction: vi.fn(
+		async <T>(
+			callback: (
+				loadedStorage: typeof mockFlaggedStorage,
+				persist: (nextStorage: typeof mockFlaggedStorage) => Promise<void>,
+			) => Promise<T>,
+		) => {
+			const loadedStorage = cloneMockFlaggedStorage();
+			const persist = async (nextStorage: typeof mockFlaggedStorage) => {
+				await mockSaveFlaggedAccounts(nextStorage);
+			};
+			return await callback(loadedStorage, persist);
+		},
+	),
 	clearFlaggedAccounts: vi.fn(async () => {}),
 	StorageError: class StorageError extends Error {
 		hint: string;
@@ -441,6 +490,7 @@ describe("OpenAIOAuthPlugin", () => {
 		mockStorage.accounts = [];
 		mockStorage.activeIndex = 0;
 		mockStorage.activeIndexByFamily = {};
+		mockFlaggedStorage.accounts = [];
 
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
@@ -3446,6 +3496,78 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 			version: 1,
 			accounts: [],
 		});
+	});
+
+	it("removes only the token-invalid org-scoped workspace during deep-check cleanup", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const refreshQueueModule = await import("../lib/refresh-queue.js");
+		const storageModule = await import("../lib/storage.js");
+
+		mockStorage.accounts = [
+			{
+				refreshToken: "shared-refresh",
+				organizationId: "org-shared",
+				accountId: "workspace-dead",
+				accountIdSource: "manual",
+				email: "dead@example.com",
+				addedAt: 1,
+				lastUsed: 1,
+			},
+			{
+				refreshToken: "shared-refresh",
+				organizationId: "org-shared",
+				accountId: "workspace-live",
+				accountIdSource: "manual",
+				email: "live@example.com",
+				addedAt: 2,
+				lastUsed: 2,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "deep-check" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		vi.mocked(refreshQueueModule.queuedRefresh)
+			.mockResolvedValueOnce({
+				type: "failed",
+				reason: "http_error",
+				statusCode: 400,
+				message: "invalid_grant",
+			} as const)
+			.mockResolvedValueOnce({
+				type: "success",
+				access: "access-live",
+				refresh: "shared-refresh",
+				expires: Date.now() + 300_000,
+			});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts.some((account) => account.accountId === "workspace-dead")).toBe(false);
+		expect(mockStorage.accounts[0]?.organizationId).toBe("org-shared");
+		expect(mockStorage.accounts[0]?.refreshToken).toBe("shared-refresh");
+		expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accounts: expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "workspace-dead",
+						organizationId: "org-shared",
+						flaggedReason: "token-invalid",
+					}),
+				]),
+			}),
+		);
 	});
 });
 

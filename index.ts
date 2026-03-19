@@ -117,6 +117,7 @@ import {
 	createTimestampedBackupPath,
 	loadFlaggedAccounts,
 	saveFlaggedAccounts,
+	withFlaggedAccountStorageTransaction,
 	clearFlaggedAccounts,
 	StorageError,
 	formatStorageErrorHint,
@@ -189,9 +190,16 @@ function getWorkspaceIdentityKey(account: {
 	accountId?: string;
 	refreshToken: string;
 }): string {
-	if (account.organizationId) return `organizationId:${account.organizationId}`;
-	if (account.accountId) return `accountId:${account.accountId}`;
-	return `refreshToken:${account.refreshToken}`;
+	const organizationId = account.organizationId?.trim();
+	const accountId = account.accountId?.trim();
+	const refreshToken = account.refreshToken.trim();
+	if (organizationId) {
+		return accountId
+			? `organizationId:${organizationId}|accountId:${accountId}`
+			: `organizationId:${organizationId}`;
+	}
+	if (accountId) return `accountId:${accountId}`;
+	return `refreshToken:${refreshToken}`;
 }
 
 function matchesWorkspaceIdentity(
@@ -203,6 +211,21 @@ function matchesWorkspaceIdentity(
 	identityKey: string,
 ): boolean {
 	return getWorkspaceIdentityKey(account) === identityKey;
+}
+
+function upsertFlaggedAccountRecord(
+	accounts: FlaggedAccountMetadataV1[],
+	record: FlaggedAccountMetadataV1,
+): void {
+	const identityKey = getWorkspaceIdentityKey(record);
+	const existingIndex = accounts.findIndex((flagged) =>
+		matchesWorkspaceIdentity(flagged, identityKey),
+	);
+	if (existingIndex >= 0) {
+		accounts[existingIndex] = record;
+		return;
+	}
+	accounts.push(record);
 }
 
 /**
@@ -2382,7 +2405,6 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 			const workspaceDeactivated = isDeactivatedWorkspaceError(errorBody, response.status);
 			if (workspaceDeactivated) {
-				const identityKey = getWorkspaceIdentityKey(account);
 				const accountLabel = formatAccountLabel(account, account.index);
 				accountManager.refundToken(account, modelFamily, model);
 				accountManager.recordFailure(account, modelFamily, model);
@@ -2393,22 +2415,20 @@ while (attempted.size < Math.max(1, accountCount)) {
 				runtimeMetrics.lastErrorCategory = "workspace-deactivated";
 
 				try {
-					const flaggedStorage = await loadFlaggedAccounts();
 					const flaggedRecord: FlaggedAccountMetadataV1 = {
 						...account,
 						flaggedAt: Date.now(),
 						flaggedReason: "workspace-deactivated",
 						lastError: "deactivated_workspace",
 					};
-					const existingIndex = flaggedStorage.accounts.findIndex((flagged) =>
-						matchesWorkspaceIdentity(flagged, identityKey),
-					);
-					if (existingIndex >= 0) {
-						flaggedStorage.accounts[existingIndex] = flaggedRecord;
-					} else {
-						flaggedStorage.accounts.push(flaggedRecord);
-					}
-					await saveFlaggedAccounts(flaggedStorage);
+					await withFlaggedAccountStorageTransaction(async (current, persist) => {
+						const nextStorage: typeof current = {
+							...current,
+							accounts: current.accounts.map((flagged) => ({ ...flagged })),
+						};
+						upsertFlaggedAccountRecord(nextStorage.accounts, flaggedRecord);
+						await persist(nextStorage);
+					});
 				} catch (flagError) {
 					logWarn(
 						`Failed to persist deactivated workspace flag for ${accountLabel}: ${flagError instanceof Error ? flagError.message : String(flagError)}`,
@@ -3074,9 +3094,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 									return;
 								}
 
-								const flaggedStorage = await loadFlaggedAccounts();
 								let storageChanged = false;
 								let flaggedChanged = false;
+								const flaggedUpdates = new Map<string, FlaggedAccountMetadataV1>();
 								const removeFromActive = new Set<string>();
 								const total = workingStorage.accounts.length;
 								let ok = 0;
@@ -3182,21 +3202,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 													refreshResult.message ?? refreshResult.reason ?? "refresh failed";
 												console.log(`[${i + 1}/${total}] ${label}: ERROR (${message})`);
 												if (deepProbe && isFlaggableFailure(refreshResult)) {
-													const existingIndex = flaggedStorage.accounts.findIndex(
-														(flagged) => flagged.refreshToken === account.refreshToken,
-													);
 													const flaggedRecord: FlaggedAccountMetadataV1 = {
 														...account,
 														flaggedAt: Date.now(),
 														flaggedReason: "token-invalid",
 														lastError: message,
 													};
-													if (existingIndex >= 0) {
-														flaggedStorage.accounts[existingIndex] = flaggedRecord;
-													} else {
-														flaggedStorage.accounts.push(flaggedRecord);
-													}
-													removeFromActive.add(`refreshToken:${account.refreshToken}`);
+													flaggedUpdates.set(
+														getWorkspaceIdentityKey(flaggedRecord),
+														flaggedRecord,
+													);
+													removeFromActive.add(getWorkspaceIdentityKey(account));
 													flaggedChanged = true;
 												}
 												continue;
@@ -3279,20 +3295,16 @@ while (attempted.size < Math.max(1, accountCount)) {
 												errors += 1;
 												const message = error instanceof Error ? error.message : String(error);
 												if (message.includes("deactivated_workspace")) {
-													const existingIndex = flaggedStorage.accounts.findIndex((flagged) =>
-														matchesWorkspaceIdentity(flagged, getWorkspaceIdentityKey(account)),
-													);
 													const flaggedRecord: FlaggedAccountMetadataV1 = {
 														...account,
 														flaggedAt: Date.now(),
 														flaggedReason: "workspace-deactivated",
 														lastError: message,
 													};
-													if (existingIndex >= 0) {
-														flaggedStorage.accounts[existingIndex] = flaggedRecord;
-													} else {
-														flaggedStorage.accounts.push(flaggedRecord);
-													}
+													flaggedUpdates.set(
+														getWorkspaceIdentityKey(flaggedRecord),
+														flaggedRecord,
+													);
 													removeFromActive.add(getWorkspaceIdentityKey(account));
 													flaggedChanged = true;
 												}
@@ -3320,7 +3332,16 @@ while (attempted.size < Math.max(1, accountCount)) {
 									invalidateAccountManagerCache();
 								}
 								if (flaggedChanged) {
-									await saveFlaggedAccounts(flaggedStorage);
+									await withFlaggedAccountStorageTransaction(async (current, persist) => {
+										const nextStorage: typeof current = {
+											...current,
+											accounts: current.accounts.map((flagged) => ({ ...flagged })),
+										};
+										for (const flaggedRecord of flaggedUpdates.values()) {
+											upsertFlaggedAccountRecord(nextStorage.accounts, flaggedRecord);
+										}
+										await persist(nextStorage);
+									});
 								}
 
 								console.log("");
@@ -3524,7 +3545,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 												await saveFlaggedAccounts({
 													version: 1,
 													accounts: flaggedStorage.accounts.filter(
-														(flagged) => flagged.refreshToken !== target.refreshToken,
+														(flagged) =>
+															!matchesWorkspaceIdentity(
+																flagged,
+																getWorkspaceIdentityKey(target),
+															),
 													),
 												});
 												invalidateAccountManagerCache();

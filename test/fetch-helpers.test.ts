@@ -22,9 +22,9 @@ import type { Auth } from '../lib/types.js';
 import { URL_PATHS, OPENAI_HEADERS, OPENAI_HEADER_VALUES, CODEX_BASE_URL } from '../lib/constants.js';
 
 describe('Fetch Helpers Module', () => {
-		afterEach(() => {
-			vi.restoreAllMocks();
-		});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
 
 	describe('shouldRefreshToken', () => {
 		it('should return true for non-oauth auth', () => {
