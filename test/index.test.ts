@@ -272,7 +272,10 @@ const mockSaveFlaggedAccounts = vi.fn(async (nextStorage: typeof mockFlaggedStor
 	await persistMockFlaggedStorage(nextStorage);
 });
 
-vi.mock("../lib/storage.js", () => ({
+vi.mock("../lib/storage.js", async () => {
+	const actual = await vi.importActual<typeof import("../lib/storage.js")>("../lib/storage.js");
+
+	return {
 	getStoragePath: () => "/mock/path/accounts.json",
 	loadAccounts: vi.fn(async () => cloneMockStorage()),
 	saveAccounts: vi.fn(async (nextStorage: typeof mockStorage) => {
@@ -311,6 +314,7 @@ vi.mock("../lib/storage.js", () => ({
 	previewImportAccounts: vi.fn(async () => ({ imported: 2, skipped: 1, total: 5 })),
 	createTimestampedBackupPath: vi.fn((prefix?: string) => `/tmp/${prefix ?? "codex-backup"}-20260101-000000.json`),
 	loadFlaggedAccounts: vi.fn(async () => cloneMockFlaggedStorage()),
+	getWorkspaceIdentityKey: vi.fn(actual.getWorkspaceIdentityKey),
 	saveFlaggedAccounts: mockSaveFlaggedAccounts,
 	withFlaggedAccountStorageTransaction: vi.fn(
 		async <T>(
@@ -335,7 +339,8 @@ vi.mock("../lib/storage.js", () => ({
 		}
 	},
 	formatStorageErrorHint: () => "Check file permissions",
-}));
+	};
+});
 
 vi.mock("../lib/accounts.js", () => {
 	class MockAccountManager {
@@ -438,12 +443,15 @@ vi.mock("../lib/accounts.js", () => {
 		),
 		extractAccountEmail: vi.fn(() => "user@example.com"),
 		extractAccountId: vi.fn(() => "account-1"),
-		resolveRequestAccountId: (_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) => tokenId,
+		resolveRequestAccountId: vi.fn(
+			(_storedId: string | undefined, _source: string | undefined, tokenId: string | undefined) =>
+				tokenId,
+		),
 		formatAccountLabel: (_account: unknown, index: number) => `Account ${index + 1}`,
 		formatCooldown: () => null,
 		formatWaitTime: (ms: number) => `${Math.round(ms / 1000)}s`,
 		sanitizeEmail: (email: string) => email,
-		shouldUpdateAccountIdFromToken: () => true,
+		shouldUpdateAccountIdFromToken: vi.fn(() => true),
 		parseRateLimitReason: () => "unknown",
 		lookupCodexCliTokensByEmail: vi.fn(async () => null),
 	};
@@ -2639,18 +2647,16 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			expect(removeAccount).toHaveBeenCalledTimes(1);
 			expect(removeAccountsWithSameRefreshToken).not.toHaveBeenCalled();
 			expect(accounts.map((account) => account.accountId)).toEqual(["org-live"]);
-			expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledTimes(1);
-			expect(vi.mocked(storageModule.saveFlaggedAccounts).mock.calls[0]?.[0]).toEqual(
-				expect.objectContaining({
-					accounts: expect.arrayContaining([
-						expect.objectContaining({
-							accountId: "org-dead",
-							organizationId: "org-dead",
-							flaggedReason: "workspace-deactivated",
-							lastError: "deactivated_workspace",
-						}),
-					]),
-				}),
+			expect(vi.mocked(storageModule.withFlaggedAccountStorageTransaction)).toHaveBeenCalledTimes(1);
+			expect(mockFlaggedStorage.accounts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						accountId: "org-dead",
+						organizationId: "org-dead",
+						flaggedReason: "workspace-deactivated",
+						lastError: "deactivated_workspace",
+					}),
+				]),
 			);
 		});
 
@@ -3618,16 +3624,137 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		expect(mockStorage.accounts.some((account) => account.accountId === "workspace-dead")).toBe(false);
 		expect(mockStorage.accounts[0]?.organizationId).toBe("org-shared");
 		expect(mockStorage.accounts[0]?.refreshToken).toBe("shared-refresh");
-		expect(vi.mocked(storageModule.saveFlaggedAccounts)).toHaveBeenCalledWith(
-			expect.objectContaining({
-				accounts: expect.arrayContaining([
-					expect.objectContaining({
-						accountId: "workspace-dead",
-						organizationId: "org-shared",
-						flaggedReason: "token-invalid",
-					}),
-				]),
-			}),
+		expect(vi.mocked(storageModule.withFlaggedAccountStorageTransaction)).toHaveBeenCalled();
+		expect(mockFlaggedStorage.accounts).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					accountId: "workspace-dead",
+					organizationId: "org-shared",
+					flaggedReason: "token-invalid",
+				}),
+			]),
+		);
+	});
+
+	it("removes only the deactivated org-scoped workspace during quota-check cleanup", async () => {
+		const accountsModule = await import("../lib/accounts.js");
+		const cliModule = await import("../lib/cli.js");
+		const refreshQueueModule = await import("../lib/refresh-queue.js");
+		const fetchHelpersModule = await import("../lib/request/fetch-helpers.js");
+		const storageModule = await import("../lib/storage.js");
+
+		mockStorage.accounts = [
+			{
+				refreshToken: "shared-refresh",
+				organizationId: "org-shared",
+				accountId: "workspace-dead",
+				accountIdSource: "manual",
+				email: "dead@example.com",
+				addedAt: 1,
+				lastUsed: 1,
+			},
+			{
+				refreshToken: "shared-refresh",
+				organizationId: "org-shared",
+				accountId: "workspace-live",
+				accountIdSource: "manual",
+				email: "live@example.com",
+				addedAt: 2,
+				lastUsed: 2,
+			},
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockResolvedValueOnce({ mode: "check" })
+			.mockResolvedValueOnce({ mode: "cancel" });
+		vi.mocked(accountsModule.shouldUpdateAccountIdFromToken).mockImplementation(
+			(source: string | undefined, currentAccountId?: string) => {
+				if (!currentAccountId) return true;
+				if (!source) return true;
+				return source === "token" || source === "id_token";
+			},
+		);
+		vi.mocked(accountsModule.resolveRequestAccountId).mockImplementation(
+			(storedId: string | undefined, source: string | undefined, tokenId: string | undefined) => {
+				if (!storedId) return tokenId;
+				if (!accountsModule.shouldUpdateAccountIdFromToken(source, storedId)) {
+					return storedId;
+				}
+				return tokenId ?? storedId;
+			},
+		);
+		vi.mocked(refreshQueueModule.queuedRefresh)
+			.mockResolvedValueOnce({
+				type: "success",
+				access: "access-dead",
+				refresh: "shared-refresh",
+				expires: Date.now() + 300_000,
+			})
+			.mockResolvedValueOnce({
+				type: "success",
+				access: "access-live",
+				refresh: "shared-refresh",
+				expires: Date.now() + 300_000,
+			});
+		vi.mocked(fetchHelpersModule.createCodexHeaders).mockImplementation(
+			(_requestId, _accountId, accessToken) => {
+				const headers = new Headers();
+				if (typeof accessToken === "string" && accessToken.length > 0) {
+					headers.set("x-test-access-token", accessToken);
+				}
+				return headers;
+			},
+		);
+		globalThis.fetch = vi.fn(async (_url, init) => {
+			const headers = new Headers(init?.headers);
+			const accessToken = headers.get("x-test-access-token");
+			if (accessToken === "access-dead") {
+				return new Response(JSON.stringify({ error: { code: "deactivated_workspace", message: "workspace dead" } }), {
+					status: 402,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return new Response("", {
+				status: 200,
+				headers: {
+					"x-codex-primary-used-percent": "20",
+					"x-codex-primary-window-minutes": "180",
+					"x-codex-primary-reset-after-seconds": "900",
+					"x-codex-secondary-used-percent": "10",
+					"x-codex-secondary-window-minutes": "10080",
+					"x-codex-secondary-reset-after-seconds": "86400",
+					"x-codex-plan-type": "plus",
+					"x-codex-active-limit": "40",
+				},
+			});
+		});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		const authResult = await autoMethod.authorize();
+		expect(authResult.instructions).toBe("Authentication cancelled");
+
+		expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+		expect(mockStorage.accounts).toHaveLength(1);
+		expect(mockStorage.accounts.some((account) => account.accountId === "workspace-dead")).toBe(false);
+		expect(mockStorage.accounts[0]?.accountId).toBe("workspace-live");
+		expect(vi.mocked(storageModule.withFlaggedAccountStorageTransaction)).toHaveBeenCalled();
+		expect(mockFlaggedStorage.accounts).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					accountId: "workspace-dead",
+					organizationId: "org-shared",
+					flaggedReason: "workspace-deactivated",
+					lastError: "deactivated_workspace",
+				}),
+			]),
 		);
 	});
 });
