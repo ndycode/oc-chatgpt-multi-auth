@@ -119,8 +119,19 @@ export function applyAccountSelectionFallbacks(
 	fallbacks: AccountSelectionFallbacks,
 ): AccountSelectionResult {
 	const primary = { ...selection.primary };
+	const primaryAccountId = selection.primary.accountIdOverride?.trim();
+	const primaryOrganizationId = selection.primary.organizationIdOverride?.trim();
+	const shouldReusePrimaryVariant =
+		(primaryAccountId?.length ?? 0) > 0 || (primaryOrganizationId?.length ?? 0) > 0;
+	// Callers may deep-clone `selection.primary`, so reuse the updated primary by
+	// persisted account identity instead of relying on object aliasing.
 	let variantsForPersistence = selection.variantsForPersistence.map((variant) =>
-		variant === selection.primary ? primary : { ...variant },
+		variant === selection.primary ||
+		(shouldReusePrimaryVariant &&
+			(variant.accountIdOverride?.trim() ?? "") === (primaryAccountId ?? "") &&
+			(variant.organizationIdOverride?.trim() ?? "") === (primaryOrganizationId ?? ""))
+			? primary
+			: { ...variant },
 	);
 
 	const accountIdOverride = fallbacks.accountIdOverride?.trim();

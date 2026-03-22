@@ -8,6 +8,7 @@ import {
 	persistResolvedAccountSelection,
 	resolveAccountSelection,
 	resolveAndPersistAccountSelection,
+	type AccountSelectionResult,
 	type TokenSuccessWithAccount,
 } from "../lib/auth/login-runner.js";
 import { loadAccounts, setStoragePathDirect } from "../lib/storage.js";
@@ -123,6 +124,34 @@ describe("login-runner selection finalization", () => {
 		expect(updated.primary.organizationIdOverride).toBe("resolved-org");
 		expect(updated.primary.accountLabel).toBe("Resolved label");
 		expect(updated.variantsForPersistence).toHaveLength(selection.variantsForPersistence.length);
+	});
+
+	it("updates cloned primary variants without relying on object identity", () => {
+		const primary: TokenSuccessWithAccount = {
+			type: "success",
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			idToken: "id-token",
+			accountIdOverride: "resolved-account",
+			accountIdSource: "token",
+		};
+		const selection: AccountSelectionResult = {
+			primary,
+			variantsForPersistence: [{ ...primary }],
+		};
+
+		const updated = applyAccountSelectionFallbacks(selection, {
+			organizationIdOverride: "resolved-org",
+			accountLabel: "Resolved label",
+		});
+
+		expect(updated.primary.organizationIdOverride).toBe("resolved-org");
+		expect(updated.primary.accountLabel).toBe("Resolved label");
+		expect(updated.variantsForPersistence).toHaveLength(1);
+		expect(updated.variantsForPersistence[0]).toBe(updated.primary);
+		expect(updated.variantsForPersistence[0]?.organizationIdOverride).toBe("resolved-org");
+		expect(updated.variantsForPersistence[0]?.accountLabel).toBe("Resolved label");
 	});
 
 	it("resolves and persists the selected variants through the shared callback", async () => {
