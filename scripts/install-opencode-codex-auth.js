@@ -105,6 +105,30 @@ function formatJson(obj) {
 	return `${JSON.stringify(obj, null, 2)}\n`;
 }
 
+function mergeFullTemplate(modernTemplate, legacyTemplate) {
+	const modernModels = modernTemplate.provider?.openai?.models ?? {};
+	const legacyModels = legacyTemplate.provider?.openai?.models ?? {};
+	const overlappingKeys = Object.keys(modernModels).filter((key) => Object.hasOwn(legacyModels, key));
+
+	if (overlappingKeys.length > 0) {
+		throw new Error(`Full config template collision for model keys: ${overlappingKeys.join(", ")}`);
+	}
+
+	return {
+		...modernTemplate,
+		provider: {
+			...modernTemplate.provider,
+			openai: {
+				...modernTemplate.provider.openai,
+				models: {
+					...modernModels,
+					...legacyModels,
+				},
+			},
+		},
+	};
+}
+
 async function readJson(filePath) {
 	const content = await readFile(filePath, "utf-8");
 	return JSON.parse(content);
@@ -161,19 +185,29 @@ async function loadTemplate(mode, paths) {
 		readJson(paths.legacyTemplatePath),
 	]);
 
-	return {
-		...modernTemplate,
-		provider: {
-			...modernTemplate.provider,
-			openai: {
-				...modernTemplate.provider.openai,
-				models: {
-					...modernTemplate.provider.openai.models,
-					...legacyTemplate.provider.openai.models,
-				},
-			},
-		},
-	};
+	return mergeFullTemplate(modernTemplate, legacyTemplate);
+}
+
+async function copyFileWithWindowsRetry(sourcePath, destinationPath) {
+	let lastError = null;
+
+	for (let attempt = 0; attempt < WINDOWS_RENAME_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await copyFile(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			if (isWindowsLockError(error)) {
+				lastError = error;
+				await delay(WINDOWS_RENAME_RETRY_BASE_DELAY_MS * 2 ** attempt);
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	if (lastError) {
+		throw lastError;
+	}
 }
 
 async function backupConfig(sourcePath, dryRun) {
@@ -184,7 +218,7 @@ async function backupConfig(sourcePath, dryRun) {
 		.replace("Z", "");
 	const backupPath = `${sourcePath}.bak-${timestamp}`;
 	if (!dryRun) {
-		await copyFile(sourcePath, backupPath);
+		await copyFileWithWindowsRetry(sourcePath, backupPath);
 	}
 	return backupPath;
 }
@@ -331,6 +365,9 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 
 export const __test = {
 	buildPaths,
+	backupConfig,
+	copyFileWithWindowsRetry,
+	mergeFullTemplate,
 	parseCliArgs,
 	writeFileAtomic,
 	renameWithWindowsRetry,

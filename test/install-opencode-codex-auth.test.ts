@@ -3,6 +3,14 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+type OpenAiTemplate = {
+	provider: {
+		openai: {
+			models: Record<string, unknown>;
+		};
+	};
+};
+
 async function createTempHome() {
 	return mkdtemp(join(tmpdir(), "oc-chatgpt-install-"));
 }
@@ -12,6 +20,7 @@ describe("install-opencode-codex-auth script", () => {
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
+		vi.doUnmock("node:fs/promises");
 		if (tempHome) {
 			await rm(tempHome, { recursive: true, force: true });
 			tempHome = null;
@@ -84,7 +93,15 @@ describe("install-opencode-codex-auth script", () => {
 		expect(saved.customSetting).toBe(true);
 		expect(saved.plugin).toEqual(["existing-plugin", "oc-chatgpt-multi-auth"]);
 		expect(saved.provider.anthropic).toEqual({ baseURL: "https://example.invalid" });
-		expect(Object.keys(saved.provider.openai.models)).toHaveLength(43);
+		const modernTemplate = JSON.parse(
+			await readFile(new URL("../config/opencode-modern.json", import.meta.url), "utf-8"),
+		) as OpenAiTemplate;
+		const legacyTemplate = JSON.parse(
+			await readFile(new URL("../config/opencode-legacy.json", import.meta.url), "utf-8"),
+		) as OpenAiTemplate;
+		const expectedCount = Object.keys(modernTemplate.provider.openai.models).length
+			+ Object.keys(legacyTemplate.provider.openai.models).length;
+		expect(Object.keys(saved.provider.openai.models)).toHaveLength(expectedCount);
 		expect(saved.provider.openai.models["gpt-5.4"]).toBeDefined();
 		expect(saved.provider.openai.models["gpt-5.4-high"]).toBeDefined();
 		const configEntries = await readdir(configDir);
@@ -147,5 +164,79 @@ describe("install-opencode-codex-auth script", () => {
 		};
 		expect(cachePackage.dependencies["oc-chatgpt-multi-auth"]).toBeUndefined();
 		expect(cachePackage.dependencies.other).toBe("^1.0.0");
+	});
+
+	it("rejects full-mode merges when modern and legacy templates overlap", async () => {
+		vi.resetModules();
+		const { __test } = await import("../scripts/install-opencode-codex-auth.js");
+
+		const modernTemplate = {
+			provider: {
+				openai: {
+					models: {
+						"gpt-5.4": { name: "base" },
+					},
+				},
+			},
+		};
+		const legacyTemplate = {
+			provider: {
+				openai: {
+					models: {
+						"gpt-5.4": { name: "preset" },
+					},
+				},
+			},
+		};
+
+		expect(() => __test.mergeFullTemplate(modernTemplate, legacyTemplate)).toThrow(
+			/Full config template collision/,
+		);
+	});
+
+	it("retries backup copies after transient Windows lock errors", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const sourcePath = join(tempHome, "opencode.json");
+		const copyFileMock = vi.fn()
+			.mockRejectedValueOnce(Object.assign(new Error("busy"), { code: "EBUSY" }))
+			.mockResolvedValue(undefined);
+
+		vi.doMock("node:fs/promises", async () => {
+			const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+			return {
+				...actual,
+				copyFile: copyFileMock,
+			};
+		});
+
+		const { __test } = await import("../scripts/install-opencode-codex-auth.js");
+		const backupPath = await __test.backupConfig(sourcePath, false);
+
+		expect(copyFileMock).toHaveBeenCalledTimes(2);
+		expect(copyFileMock).toHaveBeenNthCalledWith(1, sourcePath, backupPath);
+		expect(copyFileMock).toHaveBeenNthCalledWith(2, sourcePath, backupPath);
+		expect(backupPath).toMatch(/opencode\.json\.bak-/);
+	});
+
+	it("retries atomic rename after transient Windows lock errors", async () => {
+		vi.resetModules();
+		const renameMock = vi.fn()
+			.mockRejectedValueOnce(Object.assign(new Error("locked"), { code: "EPERM" }))
+			.mockResolvedValue(undefined);
+
+		vi.doMock("node:fs/promises", async () => {
+			const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+			return {
+				...actual,
+				rename: renameMock,
+			};
+		});
+
+		const { __test } = await import("../scripts/install-opencode-codex-auth.js");
+		await expect(__test.renameWithWindowsRetry("from.tmp", "to.json")).resolves.toBeUndefined();
+		expect(renameMock).toHaveBeenCalledTimes(2);
+		expect(renameMock).toHaveBeenNthCalledWith(1, "from.tmp", "to.json");
+		expect(renameMock).toHaveBeenNthCalledWith(2, "from.tmp", "to.json");
 	});
 });
