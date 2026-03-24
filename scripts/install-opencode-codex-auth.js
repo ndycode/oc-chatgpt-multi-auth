@@ -14,7 +14,7 @@ if (args.has("--help") || args.has("-h")) {
 	console.log(`Usage: ${PLUGIN_NAME} [--modern|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
 		"Default behavior:\n" +
 		"  - Installs/updates global config at ~/.config/opencode/opencode.json\n" +
-		"  - Uses modern config (variants) by default\n" +
+		"  - Uses modern config (9 base models + 34 presets via --variant) by default\n" +
 		"  - Ensures plugin is unpinned (latest)\n" +
 		"  - Clears OpenCode plugin cache\n\n" +
 		"Options:\n" +
@@ -182,6 +182,9 @@ async function main() {
 
 	log("\nDone. Restart OpenCode to (re)install the plugin.");
 	log("Example: opencode");
+	if (useModern) {
+		log("Note: Modern config intentionally shows 9 base model entries; use --variant to access all 34 shipped presets.");
+	}
 	if (useLegacy) {
 		log("Note: Legacy config requires OpenCode v1.0.209 or older.");
 	}

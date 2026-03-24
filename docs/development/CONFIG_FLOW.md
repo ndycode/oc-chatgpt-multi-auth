@@ -65,9 +65,10 @@ Important detail:
 
 It currently ships:
 
-- 7 base model families
-- 26 total variants
-- `gpt-5.4` and `gpt-5.4-mini` at 1,000,000 context / 128,000 output
+- 9 base model families
+- 34 total variants
+- `gpt-5.4` and `gpt-5.4-pro` at 1,050,000 context / 128,000 output
+- `gpt-5.4-mini`, `gpt-5.4-nano`, and Codex families at 400,000 context / 128,000 output
 - `store: false` plus `include: ["reasoning.encrypted_content"]`
 
 Example shape:
