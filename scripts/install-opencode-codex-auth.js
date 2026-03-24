@@ -1,53 +1,95 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir, copyFile, rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PLUGIN_NAME = "oc-chatgpt-multi-auth";
+const WINDOWS_RENAME_RETRY_ATTEMPTS = 5;
+const WINDOWS_RENAME_RETRY_BASE_DELAY_MS = 10;
 
-const args = new Set(process.argv.slice(2));
-
-if (args.has("--help") || args.has("-h")) {
+function printHelp() {
 	console.log(`Usage: ${PLUGIN_NAME} [--modern|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
 		"Default behavior:\n" +
 		"  - Installs/updates global config at ~/.config/opencode/opencode.json\n" +
-		"  - Uses modern config (variants) by default\n" +
+		"  - Uses full catalog config by default (9 base models + 34 explicit presets)\n" +
 		"  - Ensures plugin is unpinned (latest)\n" +
 		"  - Clears OpenCode plugin cache\n\n" +
 		"Options:\n" +
-		"  --modern           Force modern config (default)\n" +
-		"  --legacy           Use legacy config (older OpenCode versions)\n" +
+		"  --modern           Force compact modern config (9 base models + --variant presets)\n" +
+		"  --legacy           Force explicit legacy config (34 preset model entries)\n" +
 		"  --dry-run          Show actions without writing\n" +
 		"  --no-cache-clear   Skip clearing OpenCode cache\n"
 	);
-	process.exit(0);
 }
-
-const useLegacy = args.has("--legacy");
-const useModern = args.has("--modern") || !useLegacy;
-const dryRun = args.has("--dry-run");
-const skipCacheClear = args.has("--no-cache-clear");
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
-const templatePath = join(
-	repoRoot,
-	"config",
-	useLegacy ? "opencode-legacy.json" : "opencode-modern.json"
-);
-
-const configDir = join(homedir(), ".config", "opencode");
-const configPath = join(configDir, "opencode.json");
-const cacheDir = join(homedir(), ".cache", "opencode");
-const cacheNodeModules = join(cacheDir, "node_modules", PLUGIN_NAME);
-const cacheBunLock = join(cacheDir, "bun.lock");
-const cachePackageJson = join(cacheDir, "package.json");
+const modernTemplatePath = join(repoRoot, "config", "opencode-modern.json");
+const legacyTemplatePath = join(repoRoot, "config", "opencode-legacy.json");
 
 function log(message) {
 	console.log(message);
+}
+
+function delay(ms) {
+	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function isWindowsLockError(error) {
+	const code = error?.code;
+	return code === "EPERM" || code === "EBUSY";
+}
+
+function formatErrorForLog(error) {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	return String(error);
+}
+
+function resolveHomeDirectory(env = process.env) {
+	return env.HOME || env.USERPROFILE || homedir();
+}
+
+function buildPaths(homeDir) {
+	const configDir = join(homeDir, ".config", "opencode");
+	const cacheDir = join(homeDir, ".cache", "opencode");
+	return {
+		configDir,
+		configPath: join(configDir, "opencode.json"),
+		cacheDir,
+		cacheNodeModules: join(cacheDir, "node_modules", PLUGIN_NAME),
+		cacheBunLock: join(cacheDir, "bun.lock"),
+		cachePackageJson: join(cacheDir, "package.json"),
+		modernTemplatePath,
+		legacyTemplatePath,
+	};
+}
+
+function parseCliArgs(argv = process.argv.slice(2)) {
+	const args = new Set(argv);
+	if (args.has("--help") || args.has("-h")) {
+		return {
+			wantsHelp: true,
+		};
+	}
+
+	const requestedModern = args.has("--modern");
+	const requestedLegacy = args.has("--legacy");
+
+	if (requestedModern && requestedLegacy) {
+		throw new Error("Choose only one of --modern or --legacy.");
+	}
+
+	return {
+		wantsHelp: false,
+		dryRun: args.has("--dry-run"),
+		skipCacheClear: args.has("--no-cache-clear"),
+		configMode: requestedModern ? "modern" : requestedLegacy ? "legacy" : "full",
+	};
 }
 
 function normalizePluginList(list) {
@@ -63,12 +105,112 @@ function formatJson(obj) {
 	return `${JSON.stringify(obj, null, 2)}\n`;
 }
 
+function mergeFullTemplate(modernTemplate, legacyTemplate) {
+	const modernModels = modernTemplate.provider?.openai?.models ?? {};
+	const legacyModels = legacyTemplate.provider?.openai?.models ?? {};
+	const overlappingKeys = Object.keys(modernModels).filter((key) => Object.hasOwn(legacyModels, key));
+
+	if (overlappingKeys.length > 0) {
+		throw new Error(`Full config template collision for model keys: ${overlappingKeys.join(", ")}`);
+	}
+
+	return {
+		...modernTemplate,
+		provider: {
+			...(modernTemplate.provider ?? {}),
+			openai: {
+				...(modernTemplate.provider?.openai ?? {}),
+				models: {
+					...modernModels,
+					...legacyModels,
+				},
+			},
+		},
+	};
+}
+
 async function readJson(filePath) {
 	const content = await readFile(filePath, "utf-8");
 	return JSON.parse(content);
 }
 
-async function backupConfig(sourcePath) {
+async function renameWithWindowsRetry(sourcePath, destinationPath) {
+	let lastError = null;
+
+	for (let attempt = 0; attempt < WINDOWS_RENAME_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await rename(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			if (isWindowsLockError(error)) {
+				// Windows desktop installs often see brief AV/indexer locks on config
+				// files, so retry the atomic rename before surfacing a hard failure.
+				lastError = error;
+				await delay(WINDOWS_RENAME_RETRY_BASE_DELAY_MS * 2 ** attempt);
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	if (lastError) {
+		throw lastError;
+	}
+}
+
+async function writeFileAtomic(filePath, content) {
+	const uniqueSuffix = `${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+	const tempPath = `${filePath}.${uniqueSuffix}.tmp`;
+
+	try {
+		await mkdir(dirname(filePath), { recursive: true });
+		await writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+		await renameWithWindowsRetry(tempPath, filePath);
+	} catch (error) {
+		await rm(tempPath, { force: true }).catch(() => {});
+		throw error;
+	}
+}
+
+async function loadTemplate(mode, paths) {
+	if (mode === "modern") {
+		return readJson(paths.modernTemplatePath);
+	}
+	if (mode === "legacy") {
+		return readJson(paths.legacyTemplatePath);
+	}
+
+	const [modernTemplate, legacyTemplate] = await Promise.all([
+		readJson(paths.modernTemplatePath),
+		readJson(paths.legacyTemplatePath),
+	]);
+
+	return mergeFullTemplate(modernTemplate, legacyTemplate);
+}
+
+async function copyFileWithWindowsRetry(sourcePath, destinationPath) {
+	let lastError = null;
+
+	for (let attempt = 0; attempt < WINDOWS_RENAME_RETRY_ATTEMPTS; attempt += 1) {
+		try {
+			await copyFile(sourcePath, destinationPath);
+			return;
+		} catch (error) {
+			if (isWindowsLockError(error)) {
+				lastError = error;
+				await delay(WINDOWS_RENAME_RETRY_BASE_DELAY_MS * 2 ** attempt);
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	if (lastError) {
+		throw lastError;
+	}
+}
+
+async function backupConfig(sourcePath, dryRun) {
 	const timestamp = new Date()
 		.toISOString()
 		.replace(/[:.]/g, "-")
@@ -76,21 +218,21 @@ async function backupConfig(sourcePath) {
 		.replace("Z", "");
 	const backupPath = `${sourcePath}.bak-${timestamp}`;
 	if (!dryRun) {
-		await copyFile(sourcePath, backupPath);
+		await copyFileWithWindowsRetry(sourcePath, backupPath);
 	}
 	return backupPath;
 }
 
-async function removePluginFromCachePackage() {
-	if (!existsSync(cachePackageJson)) {
+async function removePluginFromCachePackage(paths, dryRun) {
+	if (!existsSync(paths.cachePackageJson)) {
 		return;
 	}
 
 	let cacheData;
 	try {
-		cacheData = await readJson(cachePackageJson);
+		cacheData = await readJson(paths.cachePackageJson);
 	} catch (error) {
-		log(`Warning: Could not parse ${cachePackageJson} (${error}). Skipping.`);
+		log(`Warning: Could not parse ${paths.cachePackageJson} (${formatErrorForLog(error)}). Skipping.`);
 		return;
 	}
 
@@ -115,45 +257,63 @@ async function removePluginFromCachePackage() {
 	}
 
 	if (dryRun) {
-		log(`[dry-run] Would update ${cachePackageJson} to remove ${PLUGIN_NAME}`);
+		log(`[dry-run] Would update ${paths.cachePackageJson} to remove ${PLUGIN_NAME}`);
 		return;
 	}
 
-	await writeFile(cachePackageJson, formatJson(cacheData), "utf-8");
+	await writeFileAtomic(paths.cachePackageJson, formatJson(cacheData));
 }
 
-async function clearCache() {
+async function clearCache(paths, dryRun, skipCacheClear) {
 	if (skipCacheClear) {
 		log("Skipping cache clear (--no-cache-clear).");
+		await removePluginFromCachePackage(paths, dryRun);
 		return;
 	}
 
 	if (dryRun) {
-		log(`[dry-run] Would remove ${cacheNodeModules}`);
-		log(`[dry-run] Would remove ${cacheBunLock}`);
+		log(`[dry-run] Would remove ${paths.cacheNodeModules}`);
+		log(`[dry-run] Would remove ${paths.cacheBunLock}`);
 	} else {
-		await rm(cacheNodeModules, { recursive: true, force: true });
-		await rm(cacheBunLock, { force: true });
+		await rm(paths.cacheNodeModules, { recursive: true, force: true });
+		await rm(paths.cacheBunLock, { force: true });
 	}
 
-	await removePluginFromCachePackage();
+	await removePluginFromCachePackage(paths, dryRun);
 }
 
-async function main() {
-	if (!existsSync(templatePath)) {
-		throw new Error(`Config template not found at ${templatePath}`);
+export async function runInstaller(argv = process.argv.slice(2), options = {}) {
+	const parsed = parseCliArgs(argv);
+	if (parsed.wantsHelp) {
+		printHelp();
+		return { exitCode: 0, action: "help" };
 	}
 
-	const template = await readJson(templatePath);
+	const { env = process.env } = options;
+	const { configMode, dryRun, skipCacheClear } = parsed;
+	const paths = buildPaths(resolveHomeDirectory(env));
+	const requiredTemplatePaths = configMode === "modern"
+		? [paths.modernTemplatePath]
+		: configMode === "legacy"
+			? [paths.legacyTemplatePath]
+			: [paths.modernTemplatePath, paths.legacyTemplatePath];
+
+	for (const templatePath of requiredTemplatePaths) {
+		if (!existsSync(templatePath)) {
+			throw new Error(`Config template not found at ${templatePath}`);
+		}
+	}
+
+	const template = await loadTemplate(configMode, paths);
 	template.plugin = [PLUGIN_NAME];
 
 	let nextConfig = template;
-	if (existsSync(configPath)) {
-		const backupPath = await backupConfig(configPath);
+	if (existsSync(paths.configPath)) {
+		const backupPath = await backupConfig(paths.configPath, dryRun);
 		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
 
 		try {
-			const existing = await readJson(configPath);
+			const existing = await readJson(paths.configPath);
 			const merged = { ...existing };
 			merged.plugin = normalizePluginList(existing.plugin);
 			const provider = (existing.provider && typeof existing.provider === "object")
@@ -163,7 +323,9 @@ async function main() {
 			merged.provider = provider;
 			nextConfig = merged;
 		} catch (error) {
-			log(`Warning: Could not parse existing config (${error}). Replacing with template.`);
+			// Only log the filesystem/parser message. Never echo config bodies because
+			// opencode.json may carry provider credentials or tokens.
+			log(`Warning: Could not parse existing config (${formatErrorForLog(error)}). Replacing with template.`);
 			nextConfig = template;
 		}
 	} else {
@@ -171,23 +333,50 @@ async function main() {
 	}
 
 	if (dryRun) {
-		log(`[dry-run] Would write ${configPath} using ${useLegacy ? "legacy" : "modern"} config`);
+		log(`[dry-run] Would write ${paths.configPath} using ${configMode} config`);
 	} else {
-		await mkdir(configDir, { recursive: true });
-		await writeFile(configPath, formatJson(nextConfig), "utf-8");
-		log(`Wrote ${configPath} (${useLegacy ? "legacy" : "modern"} config)`);
+		// Persist through a temp file plus rename so Windows AV/file locks do not
+		// leave a truncated opencode.json behind during installer updates.
+		await writeFileAtomic(paths.configPath, formatJson(nextConfig));
+		log(`Wrote ${paths.configPath} (${configMode} config)`);
 	}
 
-	await clearCache();
+	await clearCache(paths, dryRun, skipCacheClear);
 
 	log("\nDone. Restart OpenCode to (re)install the plugin.");
 	log("Example: opencode");
-	if (useLegacy) {
-		log("Note: Legacy config requires OpenCode v1.0.209 or older.");
+	if (configMode === "modern") {
+		log("Note: Modern config intentionally shows 9 base model entries; use --variant to access all 34 shipped presets.");
 	}
+	if (configMode === "legacy") {
+		log("Note: Legacy config writes 34 explicit preset entries and is also safe for older OpenCode versions.");
+	}
+	if (configMode === "full") {
+		log("Note: Full config installs both modern base models and explicit preset entries so the full shipped catalog is visible by default.");
+	}
+
+	return {
+		exitCode: 0,
+		action: "install",
+		configMode,
+		configPath: paths.configPath,
+	};
 }
 
-main().catch((error) => {
-	console.error(`Installer failed: ${error instanceof Error ? error.message : error}`);
-	process.exit(1);
-});
+export const __test = {
+	buildPaths,
+	backupConfig,
+	copyFileWithWindowsRetry,
+	mergeFullTemplate,
+	parseCliArgs,
+	writeFileAtomic,
+	renameWithWindowsRetry,
+	resolveHomeDirectory,
+};
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	runInstaller().catch((error) => {
+		console.error(`Installer failed: ${formatErrorForLog(error)}`);
+		process.exit(1);
+	});
+}

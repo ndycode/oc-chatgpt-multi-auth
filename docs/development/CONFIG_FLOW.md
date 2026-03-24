@@ -47,7 +47,7 @@ That file controls plugin behavior such as retry policy, beginner safe mode, fal
 
 `scripts/install-opencode-codex-auth.js` performs these steps:
 
-1. Load the selected template (`config/opencode-modern.json` by default, `config/opencode-legacy.json` with `--legacy`).
+1. Load the selected template set (`full` by default, `config/opencode-modern.json` with `--modern`, `config/opencode-legacy.json` with `--legacy`).
 2. Back up an existing `~/.config/opencode/opencode.json`.
 3. Normalize the plugin list so it ends with plain `oc-chatgpt-multi-auth`.
 4. Replace `provider.openai` with the selected shipped template block.
@@ -56,19 +56,31 @@ That file controls plugin behavior such as retry policy, beginner safe mode, fal
 Important detail:
 
 - The installer intentionally writes the plugin entry as `oc-chatgpt-multi-auth`, not `oc-chatgpt-multi-auth@latest`.
+- The default `full` install mode merges the modern base-model template with the explicit legacy preset entries so users can access `--variant` workflows and still see the full shipped preset catalog directly.
 
 ## Shipped Template Structure
 
 ### Modern template
 
-`config/opencode-modern.json` is the default for OpenCode `v1.0.210+`.
+`config/opencode-modern.json` is the compact variant-based template for OpenCode `v1.0.210+`.
 
 It currently ships:
 
-- 7 base model families
-- 26 total variants
-- `gpt-5.4` and `gpt-5.4-mini` at 1,000,000 context / 128,000 output
+- 9 base model families
+- 34 total variants
+- `gpt-5.4` and `gpt-5.4-pro` at 1,050,000 context / 128,000 output
+- `gpt-5.4-mini`, `gpt-5.4-nano`, and Codex families at 400,000 context / 128,000 output
+- `gpt-5.1` at 272,000 context / 128,000 output
 - `store: false` plus `include: ["reasoning.encrypted_content"]`
+
+### Full installer mode
+
+The default installer mode combines:
+
+- the 9 modern base model entries from `config/opencode-modern.json`
+- the 34 explicit preset entries from `config/opencode-legacy.json`
+
+That hybrid install mode is what fixes the "only 9 models" complaint without removing `--variant` support.
 
 Example shape:
 
@@ -110,7 +122,7 @@ opencode run "task" --model=openai/gpt-5.4 --variant=high
 
 It currently ships:
 
-- 26 explicit model entries
+- 34 explicit model entries
 - separate model IDs such as `gpt-5.4-high` and `gpt-5.4-mini-xhigh`
 - the same OpenAI provider defaults (`store: false`, `reasoning.encrypted_content`)
 
