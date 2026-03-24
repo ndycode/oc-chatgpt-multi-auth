@@ -101,9 +101,11 @@ The repository ships two supported templates:
 | `v1.0.209` and earlier | [`config/opencode-legacy.json`](../config/opencode-legacy.json) |
 
 The templates include the supported GPT-5/Codex families, required `store: false` handling, and `reasoning.encrypted_content` for multi-turn sessions.
-Current templates expose 7 shipped base model families and 26 shipped presets overall (26 modern variants or 26 legacy explicit entries), including `gpt-5.4-mini`.
+Current templates expose 9 shipped base model families and 34 shipped presets overall (34 modern variants or 34 legacy explicit entries).
 
-Optional model IDs such as `gpt-5.4-pro` or entitlement-gated Spark variants should be added manually only when your workspace supports them.
+On OpenCode `v1.0.210+`, the modern template intentionally shows 9 base model entries because the additional presets are selected through `--variant` instead of separate model keys.
+
+`gpt-5.4-pro` ships in the templates but can still be entitlement-gated by your workspace. Add entitlement-gated Spark variants manually only when your workspace supports them.
 
 ## Verify the Setup
 
