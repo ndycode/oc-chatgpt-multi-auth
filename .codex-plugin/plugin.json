@@ -1,0 +1,6 @@
+{
+  "name": "oc-chatgpt-multi-auth",
+  "version": "5.4.9",
+  "description": "Install and operate oc-chatgpt-multi-auth for OpenCode with ChatGPT Plus/Pro OAuth, GPT-5 and Codex model presets, and multi-account failover.",
+  "skills": "./skills/"
+}
