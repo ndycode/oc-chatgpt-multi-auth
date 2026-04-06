@@ -18,7 +18,7 @@
  * For production applications, use the OpenAI Platform API: https://platform.openai.com/
  *
  * @license MIT (see LICENSE file)
- * @author numman-ali
+ * @author ndycode
  * @repository https://github.com/ndycode/oc-codex-multi-auth
 
  */
