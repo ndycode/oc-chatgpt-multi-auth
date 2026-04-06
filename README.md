@@ -133,7 +133,7 @@ This release intentionally breaks the old package line and moves the runtime to 
 
 - Rename the GitHub repository to `ndycode/oc-codex-multi-auth`
 - Publish `oc-codex-multi-auth@6.0.0`
-- Deprecate `oc-chatgpt-multi-auth` on npm with a pointer to the new package
+- Deprecate the legacy npm package with a pointer to the new package
 - Verify docs, badges, repo links, and OpenCode config examples all resolve to `oc-codex-multi-auth`
 - rerun `opencode auth login`
 - inspect `~/.opencode/logs/codex-plugin/` after running one request with `ENABLE_PLUGIN_REQUEST_LOGGING=1`

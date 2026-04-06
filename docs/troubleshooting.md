@@ -47,7 +47,7 @@ if (plugin.includes("opencode-openai-codex-auth") || plugin.includes("opencode-c
 
 **Resolution:**
 
-The package was renamed from `opencode-openai-codex-auth-multi` to `oc-chatgpt-multi-auth`, and now to `oc-codex-multi-auth`, which remains the supported package line.
+This package previously shipped under older names. `oc-codex-multi-auth` is the supported package line.
 
 **If you were using the old package:**
 

@@ -41,4 +41,4 @@ Start with [Troubleshooting](troubleshooting.md), rerun `opencode auth login`, a
 
 ## I used the old package name. What changed?
 
-The package was renamed from `opencode-openai-codex-auth-multi` to `oc-chatgpt-multi-auth`, and now from `oc-chatgpt-multi-auth` to `oc-codex-multi-auth`. If you still reference either older name in your OpenCode config, replace it with `oc-codex-multi-auth`.
+This package has gone through earlier naming changes. If you still reference any older package name in your OpenCode config, replace it with `oc-codex-multi-auth`.
