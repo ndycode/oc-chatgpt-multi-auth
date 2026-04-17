@@ -16,7 +16,10 @@
  * See `docs/audits/07-refactoring-plan.md#rc-1` and `lib/tools/AGENTS.md`.
  */
 
-import type { AccountManager } from "../accounts.js";
+import type {
+	AccountManager,
+	AccountSelectionExplainability,
+} from "../accounts.js";
 import type {
 	AccountStorageV3,
 	FlaggedAccountMetadataV1,
@@ -34,6 +37,21 @@ import type { ToolDefinition } from "@opencode-ai/plugin/tool";
 import { createCodexHelpTool } from "./codex-help.js";
 import { createCodexNextTool } from "./codex-next.js";
 import { createCodexSetupTool } from "./codex-setup.js";
+import { createCodexListTool } from "./codex-list.js";
+import { createCodexSwitchTool } from "./codex-switch.js";
+import { createCodexStatusTool } from "./codex-status.js";
+import { createCodexLimitsTool } from "./codex-limits.js";
+import { createCodexMetricsTool } from "./codex-metrics.js";
+import { createCodexDoctorTool } from "./codex-doctor.js";
+import { createCodexLabelTool } from "./codex-label.js";
+import { createCodexTagTool } from "./codex-tag.js";
+import { createCodexNoteTool } from "./codex-note.js";
+import { createCodexDashboardTool } from "./codex-dashboard.js";
+import { createCodexHealthTool } from "./codex-health.js";
+import { createCodexRemoveTool } from "./codex-remove.js";
+import { createCodexRefreshTool } from "./codex-refresh.js";
+import { createCodexExportTool } from "./codex-export.js";
+import { createCodexImportTool } from "./codex-import.js";
 
 /**
  * Mutable reference wrapper.
@@ -134,7 +152,7 @@ export interface ToolContext {
 		effectiveModel?: string | null;
 		quotaKey?: string | null;
 		selectedAccountIndex?: number | null;
-		selectionExplainability?: unknown;
+		selectionExplainability?: AccountSelectionExplainability[];
 	}) => RoutingVisibilitySnapshot;
 	appendRoutingVisibilityText: (
 		lines: string[],
@@ -202,8 +220,23 @@ export type CodexToolRegistry = Record<string, ToolDefinition>;
 
 export function createToolRegistry(ctx: ToolContext): CodexToolRegistry {
 	return {
+		"codex-list": createCodexListTool(ctx),
+		"codex-switch": createCodexSwitchTool(ctx),
+		"codex-status": createCodexStatusTool(ctx),
+		"codex-limits": createCodexLimitsTool(ctx),
+		"codex-metrics": createCodexMetricsTool(ctx),
 		"codex-help": createCodexHelpTool(ctx),
-		"codex-next": createCodexNextTool(ctx),
 		"codex-setup": createCodexSetupTool(ctx),
+		"codex-doctor": createCodexDoctorTool(ctx),
+		"codex-next": createCodexNextTool(ctx),
+		"codex-label": createCodexLabelTool(ctx),
+		"codex-tag": createCodexTagTool(ctx),
+		"codex-note": createCodexNoteTool(ctx),
+		"codex-dashboard": createCodexDashboardTool(ctx),
+		"codex-health": createCodexHealthTool(ctx),
+		"codex-remove": createCodexRemoveTool(ctx),
+		"codex-refresh": createCodexRefreshTool(ctx),
+		"codex-export": createCodexExportTool(ctx),
+		"codex-import": createCodexImportTool(ctx),
 	};
 }
