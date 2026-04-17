@@ -109,6 +109,76 @@ function formatJson(obj) {
 	return `${JSON.stringify(obj, null, 2)}\n`;
 }
 
+// Top-level keys inside `provider.openai` that the installer owns absolutely.
+// These are always sourced from the template (overwritten or removed) so the
+// plugin's required runtime shape is authoritative. Any OTHER key the user has
+// placed under `provider.openai` is preserved as-is. `models` is handled
+// separately because it's a map where user-added model ids must survive while
+// template-shipped ids win on collision.
+const MANAGED_OPENAI_KEYS = new Set(["baseURL", "apiKey", "options"]);
+
+function isPlainObject(value) {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Deep-merge `provider.openai` preserving unknown user keys while letting the
+// installer overwrite the managed shape it ships. This replaces the earlier
+// wholesale overwrite which clobbered custom user-added keys (see audit top-20
+// #6).
+function mergeOpenaiProvider(existingOpenai, templateOpenai) {
+	const existingSafe = isPlainObject(existingOpenai) ? existingOpenai : {};
+	const templateSafe = isPlainObject(templateOpenai) ? templateOpenai : {};
+
+	const result = {};
+
+	// 1. Start with the user's non-managed keys (unknown-to-installer settings).
+	for (const [key, value] of Object.entries(existingSafe)) {
+		if (MANAGED_OPENAI_KEYS.has(key)) continue;
+		if (key === "models") continue; // handled explicitly below
+		result[key] = value;
+	}
+
+	// 2. Apply template-managed keys. Installer is source of truth for these.
+	for (const [key, value] of Object.entries(templateSafe)) {
+		if (key === "models") continue; // handled explicitly below
+		result[key] = value;
+	}
+
+	// 3. Merge `models` by id: template wins on collision, user-added ids survive.
+	const existingModels = isPlainObject(existingSafe.models) ? existingSafe.models : {};
+	const templateModels = isPlainObject(templateSafe.models) ? templateSafe.models : {};
+	const mergedModels = { ...existingModels, ...templateModels };
+	if (Object.keys(mergedModels).length > 0) {
+		result.models = mergedModels;
+	}
+
+	return result;
+}
+
+// Naive line-by-line diff for displaying config changes in dry-run. Good enough
+// for eyeballing; not intended to be parsed or round-tripped.
+function formatConfigDiff(existingConfig, nextConfig) {
+	const oldText = existingConfig === undefined ? "" : formatJson(existingConfig);
+	const newText = formatJson(nextConfig);
+	if (oldText === newText) {
+		return "(no changes)";
+	}
+	const lines = [];
+	lines.push("--- existing");
+	lines.push("+++ proposed");
+	if (existingConfig === undefined) {
+		lines.push("- (no existing config)");
+	} else {
+		for (const line of oldText.split("\n")) {
+			lines.push(`- ${line}`);
+		}
+	}
+	for (const line of newText.split("\n")) {
+		lines.push(`+ ${line}`);
+	}
+	return lines.join("\n");
+}
+
 function mergeFullTemplate(modernTemplate, legacyTemplate) {
 	const modernModels = modernTemplate.provider?.openai?.models ?? {};
 	const legacyModels = legacyTemplate.provider?.openai?.models ?? {};
@@ -318,32 +388,39 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 	template.plugin = [PACKAGE_NAME];
 
 	let nextConfig = template;
+	let existingConfig;
 	if (existsSync(paths.configPath)) {
 		const backupPath = await backupConfig(paths.configPath, dryRun);
 		log(`${dryRun ? "[dry-run] Would create backup" : "Backup created"}: ${backupPath}`);
 
 		try {
 			const existing = await readJson(paths.configPath);
+			existingConfig = existing;
 			const merged = { ...existing };
 			merged.plugin = normalizePluginList(existing.plugin);
 			const provider = (existing.provider && typeof existing.provider === "object")
 				? { ...existing.provider }
 				: {};
-			provider.openai = template.provider.openai;
+			provider.openai = mergeOpenaiProvider(existing.provider?.openai, template.provider?.openai);
 			merged.provider = provider;
 			nextConfig = merged;
 		} catch (error) {
 			log(`Warning: Could not parse existing config (${formatErrorForLog(error)}). Replacing with template.`);
+			existingConfig = undefined;
 			nextConfig = template;
 		}
 	} else {
 		log("No existing config found. Creating new global config.");
 	}
 
+	let wrote = false;
 	if (dryRun) {
 		log(`[dry-run] Would write ${paths.configPath} using ${configMode} config`);
+		log(`[dry-run] Diff for ${paths.configPath}:`);
+		log(formatConfigDiff(existingConfig, nextConfig));
 	} else {
 		await writeFileAtomic(paths.configPath, formatJson(nextConfig));
+		wrote = true;
 		log(`Wrote ${paths.configPath} (${configMode} config)`);
 	}
 
@@ -366,6 +443,8 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 		action: "install",
 		configMode,
 		configPath: paths.configPath,
+		dryRun: Boolean(dryRun),
+		wrote,
 	};
 }
 
@@ -373,7 +452,9 @@ export const __test = {
 	buildPaths,
 	backupConfig,
 	copyFileWithWindowsRetry,
+	formatConfigDiff,
 	mergeFullTemplate,
+	mergeOpenaiProvider,
 	parseCliArgs,
 	writeFileAtomic,
 	renameWithWindowsRetry,
