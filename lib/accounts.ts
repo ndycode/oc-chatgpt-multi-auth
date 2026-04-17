@@ -215,6 +215,13 @@ export class AccountManager {
 	private saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingSave: Promise<void> | null = null;
 	private authFailuresByRefreshToken: Map<string, number> = new Map();
+	/**
+	 * Per-refresh-token promise chain used to serialize concurrent
+	 * `incrementAuthFailures` calls. Prevents lost updates when two org-variant
+	 * accounts that share a refresh token observe an auth failure at once — see
+	 * audit finding `docs/audits/03-critical-issues.md` (ledger id `47`).
+	 */
+	private incrementAuthFailuresChain: Map<string, Promise<number>> = new Map();
 
 	static async loadFromDisk(authFallback?: OAuthAuthDetails): Promise<AccountManager> {
 		const stored = await loadAccounts();
@@ -725,11 +732,46 @@ export class AccountManager {
 		delete account.cooldownReason;
 	}
 
-	incrementAuthFailures(account: ManagedAccount): number {
-		const currentFailures = this.authFailuresByRefreshToken.get(account.refreshToken) ?? 0;
-		const newFailures = currentFailures + 1;
-		this.authFailuresByRefreshToken.set(account.refreshToken, newFailures);
-		return newFailures;
+	/**
+	 * Atomically increment the auth-failure counter for the account's refresh
+	 * token and return the post-increment value.
+	 *
+	 * The read-modify-write is serialized through a per-refresh-token promise
+	 * chain so that concurrent callers (for example, two org-variant accounts
+	 * sharing a refresh token that fail auth simultaneously) cannot lose an
+	 * increment. Without serialization both callers could read the same stale
+	 * value, both compute `+1`, and both write the same result — masking a hard
+	 * auth failure and causing the manager to keep hammering a dead token.
+	 *
+	 * Callers must `await` the returned promise before branching on the
+	 * threshold (see `index.ts` auth-refresh failure path).
+	 */
+	async incrementAuthFailures(account: ManagedAccount): Promise<number> {
+		const key = account.refreshToken;
+		const prev = this.incrementAuthFailuresChain.get(key) ?? Promise.resolve(0);
+		const next = prev.then(() => {
+			const currentFailures = this.authFailuresByRefreshToken.get(key) ?? 0;
+			const newFailures = currentFailures + 1;
+			this.authFailuresByRefreshToken.set(key, newFailures);
+			return newFailures;
+		});
+		this.incrementAuthFailuresChain.set(key, next);
+		try {
+			return await next;
+		} finally {
+			// Drop the chain entry only if no later caller has already replaced it.
+			if (this.incrementAuthFailuresChain.get(key) === next) {
+				this.incrementAuthFailuresChain.delete(key);
+			}
+		}
+	}
+
+	/**
+	 * Return the current auth-failure counter for the account's refresh token
+	 * without mutating state. Intended for tests and diagnostics.
+	 */
+	getAuthFailures(account: ManagedAccount): number {
+		return this.authFailuresByRefreshToken.get(account.refreshToken) ?? 0;
 	}
 
 	/**

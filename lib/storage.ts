@@ -59,7 +59,17 @@ export function getWorkspaceIdentityKey(account: {
 	return `refreshToken:${refreshToken}`;
 }
 
-export type ImportBackupMode = "none" | "best-effort" | "required";
+/**
+ * Backup policy for `importAccounts`.
+ *
+ * - `none`: do not create a pre-import backup (destructive; opt-in only).
+ * - `timestamped`: create a timestamped pre-import backup, continue on failure.
+ *   This is the default — see audit finding `docs/audits/04-high-priority.md`.
+ * - `best-effort`: legacy alias for `timestamped`, retained for callers that
+ *   were written against the prior enum.
+ * - `required`: backup must succeed or the import aborts.
+ */
+export type ImportBackupMode = "none" | "timestamped" | "best-effort" | "required";
 
 export interface ImportAccountsOptions {
 	/**
@@ -68,10 +78,9 @@ export interface ImportAccountsOptions {
 	 */
 	preImportBackupPrefix?: string;
 	/**
-	 * Backup policy before import apply:
-	 * - none: do not create a pre-import backup
-	 * - best-effort: attempt backup, continue on failure
-	 * - required: backup must succeed or import aborts
+	 * Backup policy before import apply. Defaults to `"timestamped"` so that the
+	 * prior on-disk state is preserved unless the caller explicitly opts out via
+	 * `{ backupMode: "none" }`.
 	 */
 	backupMode?: ImportBackupMode;
 }
@@ -1302,15 +1311,28 @@ export async function previewImportAccounts(
 
 /**
  * Exports current accounts to a JSON file for backup/migration.
- * @param filePath - Destination file path
- * @param force - If true, overwrite existing file (default: true)
- * @throws Error if file exists and force is false, or if no accounts to export
+ *
+ * Safety default (audit `docs/audits/04-high-priority.md`):
+ * `force` defaults to `false` so an existing export file is never silently
+ * overwritten. Callers that need the prior destructive behaviour must opt in
+ * via `exportAccounts(path, true)`.
+ *
+ * @param filePath - Destination file path.
+ * @param force - If true, overwrite any existing file at `filePath`. Defaults to
+ *   `false`; when false and the file exists, a `StorageError` is thrown.
+ * @throws StorageError if the file already exists and `force` is `false`.
+ * @throws Error if there are no accounts to export.
  */
-export async function exportAccounts(filePath: string, force = true): Promise<void> {
+export async function exportAccounts(filePath: string, force = false): Promise<void> {
   const resolvedPath = resolvePath(filePath);
-  
+
   if (!force && existsSync(resolvedPath)) {
-    throw new Error(`File already exists: ${resolvedPath}`);
+    throw new StorageError(
+      `Refusing to overwrite existing export file: ${resolvedPath}. Pass force=true to overwrite.`,
+      "EEXIST",
+      resolvedPath,
+      "Re-run the export with force=true if you intend to replace the existing file, or choose a new path.",
+    );
   }
   
   const storage = await withAccountStorageTransaction((current) => Promise.resolve(current));
@@ -1329,6 +1351,12 @@ export async function exportAccounts(filePath: string, force = true): Promise<vo
  * Imports accounts from a JSON file, merging with existing accounts.
  * Deduplicates by identity key first (organizationId -> accountId -> refreshToken),
  * then applies legacy email dedupe only to entries without organizationId/accountId.
+ *
+ * Safety default (audit `docs/audits/04-high-priority.md`):
+ * `options.backupMode` defaults to `"timestamped"` so a pre-import snapshot of
+ * the existing accounts file is always written before apply. Callers that need
+ * the prior destructive default must pass `{ backupMode: "none" }` explicitly.
+ *
  * @param filePath - Source file path
  * @throws Error if file is invalid or would exceed MAX_ACCOUNTS
  */
@@ -1337,7 +1365,7 @@ export async function importAccounts(
 	options: ImportAccountsOptions = {},
 ): Promise<ImportAccountsResult> {
   const { resolvedPath, normalized } = await readAndNormalizeImportFile(filePath);
-  const backupMode = options.backupMode ?? "none";
+  const backupMode = options.backupMode ?? "timestamped";
   const backupPrefix = options.preImportBackupPrefix ?? "codex-pre-import-backup";
   
   const {

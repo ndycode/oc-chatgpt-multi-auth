@@ -757,7 +757,7 @@ describe("AccountManager", () => {
   });
 
   describe("auth failure tracking", () => {
-    it("increments consecutive auth failures", () => {
+    it("increments consecutive auth failures", async () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -769,13 +769,13 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
-      
-      expect(manager.incrementAuthFailures(account)).toBe(1);
-      expect(manager.incrementAuthFailures(account)).toBe(2);
-      expect(manager.incrementAuthFailures(account)).toBe(3);
+
+      expect(await manager.incrementAuthFailures(account)).toBe(1);
+      expect(await manager.incrementAuthFailures(account)).toBe(2);
+      expect(await manager.incrementAuthFailures(account)).toBe(3);
     });
 
-    it("clears auth failures", () => {
+    it("clears auth failures", async () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -789,17 +789,17 @@ describe("AccountManager", () => {
       const account = manager.getCurrentAccount()!;
 
       // Increment failures twice
-      expect(manager.incrementAuthFailures(account)).toBe(1);
-      expect(manager.incrementAuthFailures(account)).toBe(2);
+      expect(await manager.incrementAuthFailures(account)).toBe(1);
+      expect(await manager.incrementAuthFailures(account)).toBe(2);
 
       // Clear failures
       manager.clearAuthFailures(account);
 
       // After clearing, increment should start from 0 (returning 1)
-      expect(manager.incrementAuthFailures(account)).toBe(1);
+      expect(await manager.incrementAuthFailures(account)).toBe(1);
     });
 
-    it("tracks failures per refreshToken across multiple accounts", () => {
+    it("tracks failures per refreshToken across multiple accounts", async () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -820,13 +820,14 @@ describe("AccountManager", () => {
       const account3 = accounts[2];
       const account4 = accounts[3];
 
-      // Increment failures on first account (token-1)
-      expect(manager.incrementAuthFailures(account1)).toBe(1);
-      expect(manager.incrementAuthFailures(account2)).toBe(2);
-      expect(manager.incrementAuthFailures(account3)).toBe(3);
+      // Increment failures on first account (token-1). Calls are issued
+      // sequentially (serial awaits) so the counter advances deterministically.
+      expect(await manager.incrementAuthFailures(account1)).toBe(1);
+      expect(await manager.incrementAuthFailures(account2)).toBe(2);
+      expect(await manager.incrementAuthFailures(account3)).toBe(3);
 
       // Different token should start from 0
-      expect(manager.incrementAuthFailures(account4)).toBe(1);
+      expect(await manager.incrementAuthFailures(account4)).toBe(1);
     });
 
     it("removes all accounts with the same refreshToken", () => {
@@ -856,7 +857,7 @@ describe("AccountManager", () => {
       expect(manager.getAccountsSnapshot()[0].refreshToken).toBe("token-2");
     });
 
-    it("clears auth failure counter when removing accounts with same refreshToken", () => {
+    it("clears auth failure counter when removing accounts with same refreshToken", async () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -873,12 +874,12 @@ describe("AccountManager", () => {
       const account1 = accounts[0];
 
       // Increment auth failures for token-1
-      expect(manager.incrementAuthFailures(account1)).toBe(1);
-      expect(manager.incrementAuthFailures(account1)).toBe(2);
-      expect(manager.incrementAuthFailures(accounts[1])).toBe(3);
+      expect(await manager.incrementAuthFailures(account1)).toBe(1);
+      expect(await manager.incrementAuthFailures(account1)).toBe(2);
+      expect(await manager.incrementAuthFailures(accounts[1])).toBe(3);
 
       // Verify failures are tracked
-      expect(manager.incrementAuthFailures(account1)).toBe(4);
+      expect(await manager.incrementAuthFailures(account1)).toBe(4);
 
       // Remove all accounts with token-1
       const removedCount = manager.removeAccountsWithSameRefreshToken(account1);
@@ -889,7 +890,7 @@ describe("AccountManager", () => {
         "authFailuresByRefreshToken",
       ) as Map<string, number>;
       expect(failuresByRefreshToken.has("token-1")).toBe(false);
-      expect(manager.incrementAuthFailures(account1)).toBe(1);
+      expect(await manager.incrementAuthFailures(account1)).toBe(1);
     });
   });
 
@@ -1065,7 +1066,7 @@ describe("AccountManager", () => {
       expect(account.accountIdSource).toBe("org");
     });
 
-    it("clears stale auth failure state when refresh token rotates", () => {
+    it("clears stale auth failure state when refresh token rotates", async () => {
       const now = Date.now();
       const stored = {
         version: 3 as const,
@@ -1077,7 +1078,7 @@ describe("AccountManager", () => {
 
       const manager = new AccountManager(undefined, stored);
       const account = manager.getCurrentAccount()!;
-      expect(manager.incrementAuthFailures(account)).toBe(1);
+      expect(await manager.incrementAuthFailures(account)).toBe(1);
 
       const newAuth: OAuthAuthDetails = {
         type: "oauth",
@@ -1093,7 +1094,7 @@ describe("AccountManager", () => {
         "authFailuresByRefreshToken",
       ) as Map<string, number>;
       expect(failuresByRefreshToken.has("old-token")).toBe(false);
-      expect(manager.incrementAuthFailures(account)).toBe(1);
+      expect(await manager.incrementAuthFailures(account)).toBe(1);
     });
   });
 
@@ -2077,5 +2078,71 @@ describe("AccountManager", () => {
       expect(byIndex.get(3)?.eligible).toBe(true);
       expect(byIndex.get(3)?.reasons).toEqual(["eligible"]);
     });
+  });
+});
+
+describe("incrementAuthFailures serialization (audit ledger 47)", () => {
+  it("accumulates exactly N when N concurrent increments race on a shared refresh token", async () => {
+    const now = Date.now();
+    // Two org-variant accounts sharing the same refresh token — the exact
+    // topology that triggers the audited CRITICAL race.
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        { refreshToken: "shared-token", addedAt: now, lastUsed: now },
+        {
+          refreshToken: "shared-token",
+          organizationId: "org-a",
+          addedAt: now,
+          lastUsed: now,
+        },
+      ],
+    };
+
+    const manager = new AccountManager(undefined, stored);
+    const snapshot = manager.getAccountsSnapshot();
+    const a1 = snapshot[0];
+    const a2 = snapshot[1];
+
+    const concurrentCalls = 100;
+    const results = await Promise.all(
+      Array.from({ length: concurrentCalls }, (_, idx) =>
+        // Alternate callers to simulate both org variants hitting the method
+        manager.incrementAuthFailures(idx % 2 === 0 ? a1 : a2),
+      ),
+    );
+
+    expect(manager.getAuthFailures(a1)).toBe(concurrentCalls);
+    // Both accounts see the same counter since they share refreshToken.
+    expect(manager.getAuthFailures(a2)).toBe(concurrentCalls);
+
+    // Every resolved value must be distinct and cover 1..N contiguously.
+    const sorted = [...results].sort((x, y) => x - y);
+    for (let i = 0; i < concurrentCalls; i += 1) {
+      expect(sorted[i]).toBe(i + 1);
+    }
+  });
+
+  it("keeps counters isolated per refresh token under concurrent load", async () => {
+    const now = Date.now();
+    const stored = {
+      version: 3 as const,
+      activeIndex: 0,
+      accounts: [
+        { refreshToken: "token-A", addedAt: now, lastUsed: now },
+        { refreshToken: "token-B", addedAt: now, lastUsed: now },
+      ],
+    };
+    const manager = new AccountManager(undefined, stored);
+    const [accA, accB] = manager.getAccountsSnapshot();
+
+    await Promise.all([
+      ...Array.from({ length: 50 }, () => manager.incrementAuthFailures(accA)),
+      ...Array.from({ length: 25 }, () => manager.incrementAuthFailures(accB)),
+    ]);
+
+    expect(manager.getAuthFailures(accA)).toBe(50);
+    expect(manager.getAuthFailures(accB)).toBe(25);
   });
 });

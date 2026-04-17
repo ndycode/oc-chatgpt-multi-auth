@@ -153,7 +153,29 @@ describe("storage", () => {
     it("should fail export if file exists and force is false", async () => {
       await fs.writeFile(exportPath, "exists");
 
-      await expect(exportAccounts(exportPath, false)).rejects.toThrow(/already exists/);
+      await expect(exportAccounts(exportPath, false)).rejects.toThrow(StorageError);
+      await expect(exportAccounts(exportPath, false)).rejects.toThrow(/Refusing to overwrite/);
+    });
+
+    it("defaults to non-destructive export (force=false) and refuses to overwrite", async () => {
+      // Arrange: populate storage and a pre-existing export target.
+      const storage = {
+        version: 3,
+        activeIndex: 0,
+        accounts: [{ accountId: "test", refreshToken: "ref", addedAt: 1, lastUsed: 2 }],
+      };
+      await saveAccounts(storage);
+      await fs.writeFile(exportPath, "pre-existing");
+
+      // Act + assert: no `force` argument → must refuse.
+      await expect(exportAccounts(exportPath)).rejects.toThrow(StorageError);
+      // File contents preserved (not overwritten by a silent export).
+      expect(await fs.readFile(exportPath, "utf-8")).toBe("pre-existing");
+
+      // Explicit opt-in (force=true) is required to overwrite.
+      await exportAccounts(exportPath, true);
+      const overwritten = JSON.parse(await fs.readFile(exportPath, "utf-8"));
+      expect(overwritten.accounts[0].accountId).toBe("test");
     });
 
     it("should import accounts from a file and merge", async () => {
@@ -765,6 +787,73 @@ describe("storage", () => {
       const loaded = await loadAccounts();
       expect(loaded?.accounts).toHaveLength(1);
       expect(loaded?.accounts[0]?.accountId).toBe("existing");
+    });
+
+    it("defaults to a timestamped pre-import backup when no backupMode is supplied", async () => {
+      // Arrange: existing storage so there is something to back up.
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          { accountId: "existing", refreshToken: "ref-existing", addedAt: 1, lastUsed: 1 },
+        ],
+      });
+
+      await fs.writeFile(
+        exportPath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            { accountId: "imported", refreshToken: "ref-imported", addedAt: 2, lastUsed: 2 },
+          ],
+        }),
+      );
+
+      // Act: call with NO backupMode option — must default to a safe backup.
+      const result = await importAccounts(exportPath, {
+        preImportBackupPrefix: "codex-pre-import-backup-default",
+      });
+
+      // Assert: backup was created; path filename carries the prefix used above.
+      expect(result.backupStatus).toBe("created");
+      expect(result.backupPath).toBeDefined();
+      expect(result.backupPath).toMatch(/codex-pre-import-backup-default/);
+      // Backup file exists on disk and is readable JSON representing prior state.
+      expect(existsSync(result.backupPath!)).toBe(true);
+      const backupContent = JSON.parse(await fs.readFile(result.backupPath!, "utf-8"));
+      expect(backupContent.accounts[0].accountId).toBe("existing");
+
+      // And the import itself applied as expected.
+      const loaded = await loadAccounts();
+      expect(loaded?.accounts.map((a) => a.accountId)).toContain("imported");
+      expect(loaded?.accounts.map((a) => a.accountId)).toContain("existing");
+    });
+
+    it("honours backupMode: 'none' opt-out for callers that want the legacy behaviour", async () => {
+      await saveAccounts({
+        version: 3,
+        activeIndex: 0,
+        accounts: [
+          { accountId: "existing", refreshToken: "ref-existing", addedAt: 1, lastUsed: 1 },
+        ],
+      });
+
+      await fs.writeFile(
+        exportPath,
+        JSON.stringify({
+          version: 3,
+          activeIndex: 0,
+          accounts: [
+            { accountId: "imported", refreshToken: "ref-imported", addedAt: 2, lastUsed: 2 },
+          ],
+        }),
+      );
+
+      const result = await importAccounts(exportPath, { backupMode: "none" });
+
+      expect(result.backupStatus).toBe("skipped");
+      expect(result.backupPath).toBeUndefined();
     });
   });
 

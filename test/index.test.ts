@@ -510,7 +510,7 @@ type PluginType = {
 		"codex-note": ToolExecute<{ index?: number; note: string }>;
 		"codex-dashboard": OptionalToolExecute<{ format?: string; includeSensitive?: boolean }>;
 		"codex-health": OptionalToolExecute<{ format?: string; includeSensitive?: boolean }>;
-		"codex-remove": OptionalToolExecute<{ index?: number }>;
+		"codex-remove": OptionalToolExecute<{ index?: number; confirm?: boolean }>;
 		"codex-refresh": ToolExecute;
 		"codex-export": ToolExecute<{ path?: string; force?: boolean; timestamped?: boolean }>;
 		"codex-import": ToolExecute<{ path: string; dryRun?: boolean }>;
@@ -1958,20 +1958,20 @@ describe("OpenAIOAuthPlugin", () => {
 	describe("codex-remove tool", () => {
 		it("returns error when no accounts", async () => {
 			mockStorage.accounts = [];
-			const result = await plugin.tool["codex-remove"].execute({ index: 1 });
+			const result = await plugin.tool["codex-remove"].execute({ index: 1, confirm: true });
 			expect(result).toContain("No Codex accounts configured");
 		});
 
 		it("returns guidance when index is omitted in non-interactive mode", async () => {
 			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
-			const result = await plugin.tool["codex-remove"].execute();
+			const result = await plugin.tool["codex-remove"].execute({ confirm: true });
 			expect(result).toContain("Missing account number");
 			expect(result).toContain("codex-remove index=2");
 		});
 
 		it("returns error for invalid index", async () => {
 			mockStorage.accounts = [{ refreshToken: "r1" }];
-			const result = await plugin.tool["codex-remove"].execute({ index: 5 });
+			const result = await plugin.tool["codex-remove"].execute({ index: 5, confirm: true });
 			expect(result).toContain("Invalid account number");
 		});
 
@@ -1980,16 +1980,48 @@ describe("OpenAIOAuthPlugin", () => {
 				{ refreshToken: "r1", email: "user1@example.com" },
 				{ refreshToken: "r2", email: "user2@example.com" },
 			];
-			const result = await plugin.tool["codex-remove"].execute({ index: 1 });
+			const result = await plugin.tool["codex-remove"].execute({ index: 1, confirm: true });
 			expect(result).toContain("Removed");
 			expect(mockStorage.accounts).toHaveLength(1);
 		});
 
 		it("handles removal of last account", async () => {
 			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
-			const result = await plugin.tool["codex-remove"].execute({ index: 1 });
+			const result = await plugin.tool["codex-remove"].execute({ index: 1, confirm: true });
 			expect(result).toContain("Removed");
 			expect(result).toContain("No accounts remaining");
+		});
+
+		it("refuses to remove without confirm=true (destructive-default guard)", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "r1", email: "user1@example.com" },
+				{ refreshToken: "r2", email: "user2@example.com" },
+			];
+			// No args at all: no account touched.
+			const noArgsResult = await plugin.tool["codex-remove"].execute();
+			expect(noArgsResult).toContain("confirm=true");
+			expect(mockStorage.accounts).toHaveLength(2);
+
+			// Explicit confirm=false: still no-op.
+			const falseConfirmResult = await plugin.tool["codex-remove"].execute({
+				index: 1,
+				confirm: false,
+			});
+			expect(falseConfirmResult).toContain("confirm=true");
+			expect(mockStorage.accounts).toHaveLength(2);
+
+			// Valid index but no confirm: still no-op.
+			const missingConfirmResult = await plugin.tool["codex-remove"].execute({ index: 1 });
+			expect(missingConfirmResult).toContain("confirm=true");
+			expect(mockStorage.accounts).toHaveLength(2);
+
+			// Finally, pass confirm=true and verify removal proceeds.
+			const confirmedResult = await plugin.tool["codex-remove"].execute({
+				index: 1,
+				confirm: true,
+			});
+			expect(confirmedResult).toContain("Removed");
+			expect(mockStorage.accounts).toHaveLength(1);
 		});
 	});
 
@@ -2284,7 +2316,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
-		const result = await plugin.tool["codex-remove"].execute({ index: 1 });
+		const result = await plugin.tool["codex-remove"].execute({ index: 1, confirm: true });
 		expect(result).toContain("failed to persist");
 	});
 
@@ -2304,7 +2336,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
-		await plugin.tool["codex-remove"].execute({ index: 1 });
+		await plugin.tool["codex-remove"].execute({ index: 1, confirm: true });
 		// After removing account at 0-based index 0, length is 2.
 		// activeIndex (2) >= length (2), so it resets to 0
 		expect(mockStorage.activeIndex).toBe(0);
@@ -2324,7 +2356,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
-		await plugin.tool["codex-remove"].execute({ index: 2 });
+		await plugin.tool["codex-remove"].execute({ index: 2, confirm: true });
 		expect(mockStorage.activeIndex).toBe(0);
 	});
 });
