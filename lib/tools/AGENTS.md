@@ -2,20 +2,19 @@
 
 Per-tool modules for the 18 `codex-*` tools registered by the plugin.
 
-## Status — RC-1 Phase 2 (incremental)
+## Status — RC-1 complete
 
-RC-1 (see `docs/audits/07-refactoring-plan.md#rc-1`) targets extracting every
-inline tool from `index.ts` into its own file here. The current commit lands
-the closure-free scaffolding — `lib/runtime.ts` holds pure helpers and types
-used by every tool, and `lib/tools/_shared.ts` re-exports them — but leaves
-the 18 inline tool definitions in `index.ts` for a follow-up PR.
+All 18 inline tools from `index.ts` have been extracted here. `index.ts`
+now builds a `ToolContext` and passes it to `createToolRegistry(ctx)` from
+`./index.ts` which wires every `codex-*` tool.
 
-## Target layout
+## Layout
 
 ```
 lib/tools/
+  AGENTS.md
   _shared.ts              # re-exports closure-free helpers from lib/runtime.ts
-  index.ts                # barrel: (ctx) => ({ "codex-list": ..., ... })
+  index.ts                # ToolContext type + createToolRegistry(ctx) barrel
   codex-list.ts           # one file per tool
   codex-switch.ts
   codex-status.ts
@@ -36,40 +35,51 @@ lib/tools/
   codex-import.ts
 ```
 
-## Factory pattern (to apply in follow-up PR)
+## Factory pattern
 
-Every tool in `index.ts` captures plugin closure state (`cachedAccountManager`,
-`accountManagerPromise`, `runtimeMetrics`) and a large family of local
-helpers (`resolveUiRuntime`, `formatCommandAccountLabel`,
-`promptAccountIndexSelection`, …). To move them out without changing
-behaviour, each tool should be rewritten as:
+Every tool is exported as a factory function that takes a `ToolContext`
+and returns a `ToolDefinition`:
 
 ```ts
 // lib/tools/codex-refresh.ts
-import { tool } from "@opencode-ai/plugin/tool";
+import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import type { ToolContext } from "./index.js";
 
-export const createCodexRefreshTool = (ctx: ToolContext) =>
-  tool({
+export function createCodexRefreshTool(ctx: ToolContext): ToolDefinition {
+  const { resolveUiRuntime, formatCommandAccountLabel } = ctx;
+  return tool({
     description: "…",
     args: {},
     async execute() {
-      const ui = ctx.resolveUiRuntime();
-      const storage = await ctx.loadAccounts();
+      const ui = resolveUiRuntime();
       // …
     },
   });
+}
 ```
 
-`ToolContext` (declared in `lib/tools/index.ts`) will expose the closure
-state and helpers the tools need. `index.ts` will then shrink to wiring:
-build the context, call `createToolRegistry(ctx)`, register it.
+`ToolContext` (declared in `lib/tools/index.ts`) exposes:
 
-## Why this is split into two PRs
+- **Mutable plugin-closure refs** (`cachedAccountManagerRef`,
+  `accountManagerPromiseRef`) wrapping `let` bindings in `index.ts` via
+  getter/setter `.current` so factory writes propagate to the outer
+  closure.
+- **Read-only runtime handles** (`runtimeMetrics`, `beginnerSafeModeRef`).
+- **Helper functions** captured from the plugin closure
+  (`resolveUiRuntime`, `formatCommandAccountLabel`,
+  `promptAccountIndexSelection`, `buildRoutingVisibilitySnapshot`, …).
 
-Moving 2 870 lines of closely-coupled tool code in one commit risks breaking
-the 2 088-test suite in ways that are hard to review. This commit:
+Tool schema factories (`toolOutputFormatSchema`, `toolSensitiveJsonSchema`)
+are **inlined** in each tool that needs them rather than threaded through
+`ToolContext`, because their inferred Zod return type cannot be named
+across the module boundary without leaking the plugin's bundled `zod`
+copy (TS2742).
 
-1. Establishes the directory + module conventions.
-2. Proves the import path works against `lib/runtime.ts`.
-3. Leaves a clean starting point for the per-tool extraction follow-up.
+## Adding a new codex-* tool
+
+1. Create `lib/tools/codex-<name>.ts` exporting `createCodex<Name>Tool(ctx)`.
+2. Import the factory in `lib/tools/index.ts` and add a wiring entry to
+   `createToolRegistry`.
+3. If the tool needs a new plugin-closure helper, add a field to
+   `ToolContext` and wire it up in the `ctx` builder inside
+   `index.ts` (search for `const ctx: ToolContext = {`).
