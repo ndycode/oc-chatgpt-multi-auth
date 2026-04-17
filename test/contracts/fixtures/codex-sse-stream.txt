@@ -1,0 +1,12 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_FAKE_sse","object":"response","model":"gpt-5-codex","status":"in_progress"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hello"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":" from contract fixture"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_FAKE_sse","object":"response","model":"gpt-5-codex","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello from contract fixture"}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15},"reasoning":{"encrypted_content":"FAKE_ENCRYPTED_REASONING_BLOB"},"metadata":{}}}
+

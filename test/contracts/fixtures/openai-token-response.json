@@ -1,0 +1,8 @@
+{
+  "access_token": "FAKE_ACCESS_TOKEN_FOR_CONTRACT_TESTS",
+  "refresh_token": "FAKE_REFRESH_TOKEN_FOR_CONTRACT_TESTS",
+  "id_token": "FAKE.JWT.FOR_CONTRACT_TESTS",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "openid profile email offline_access"
+}
