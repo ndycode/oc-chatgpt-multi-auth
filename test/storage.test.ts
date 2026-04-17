@@ -1082,8 +1082,12 @@ describe("storage", () => {
       expect(normalizeAccountStorage([])).toBeNull();
     });
 
-    it("returns null for invalid version", () => {
-      const result = normalizeAccountStorage({ version: 2, accounts: [] });
+    it("returns null for invalid version (non-V2, non-V1, non-V3)", () => {
+      // V2 used to fall into this bucket and silently returned null; it is
+      // now explicitly rejected (see test/storage-v2-migration.test.ts) so
+      // this case must use a different unknown version to exercise the
+      // generic unknown-version path.
+      const result = normalizeAccountStorage({ version: 42, accounts: [] });
       expect(result).toBeNull();
     });
 
