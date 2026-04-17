@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "include-v-in-tag": true,
+  "changelog-path": "CHANGELOG.md",
+  "pull-request-header": "Release candidate for `oc-codex-multi-auth`. Squash-merge to cut the release.",
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "package-name": "oc-codex-multi-auth",
+      "bootstrap-sha": "6ba5df19741f057b722d755271e4c9a22b6709bc",
+      "initial-version": "6.0.0",
+      "changelog-path": "CHANGELOG.md",
+      "changelog-sections": [
+        { "type": "feat", "section": "Added" },
+        { "type": "fix", "section": "Fixed" },
+        { "type": "perf", "section": "Changed" },
+        { "type": "refactor", "section": "Changed" },
+        { "type": "revert", "section": "Removed" },
+        { "type": "docs", "section": "Documentation", "hidden": false },
+        { "type": "ci", "section": "Internal", "hidden": true },
+        { "type": "test", "section": "Internal", "hidden": true },
+        { "type": "build", "section": "Internal", "hidden": true },
+        { "type": "chore", "section": "Internal", "hidden": true }
+      ]
+    }
+  }
+}
