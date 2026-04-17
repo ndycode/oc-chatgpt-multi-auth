@@ -10,6 +10,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (placeholder for next release)
 
+## [6.1.0] - 2026-04-17
+
+### Added
+- `codex-keychain` opt-in OS-keychain credential backend via `CODEX_KEYCHAIN=1` (macOS Keychain / Windows Credential Manager / Linux libsecret) (#132, #133, #134)
+- `codex-diag` redacted diagnostics snapshot tool for bug reports (#126)
+- `codex-diff` redacted config/account comparator (#129)
+- `NO_COLOR` and `FORCE_COLOR` environment-variable support in UI rendering (#126)
+- Multi-worktree collision detection with non-blocking warning (#130)
+- Circuit-breaker half-open gate wired into request pipeline (#123)
+- 20-scenario chaos fault-injection test suite (#128)
+- Contract tests pinning OpenAI OAuth, Codex chat, and Codex SSE response shapes (#131)
+- Dependabot, OpenSSF Scorecard, commit-msg hook, and release-please automation (#125, #127)
+- CI matrix: Node 18/20/22 on Ubuntu + Node 20 on Windows (#111)
+- Typed error hierarchy (BaseError + domain classes) in `lib/errors.ts` (#120)
+
+### Changed
+- Refactor: `index.ts` reduced from 5975 to 3425 lines; all 18 tools extracted to `lib/tools/*` (#115, #121)
+- Refactor: `lib/storage.ts` split from 1419 to 79 lines across 12 submodules under `lib/storage/` (#116)
+- Refactor: `AccountManager` split into 4 domain services (state, persistence, rotation, recovery) (#122)
+- Refactor: `lib/recovery.ts` consolidated to barrel pattern (#117)
+- Refactor: renamed `lib/runtime-contracts.ts` into `lib/oauth-constants.ts` + `lib/error-sentinels.ts` (#118)
+- Refactor: Zod-validate remaining process boundaries (#119)
+- Removed dead modules `lib/auth-rate-limit.ts` and `lib/audit.ts` (854 lines total) (#109)
+
+### Fixed
+- **CRITICAL**: Serialize `incrementAuthFailures` via per-refresh-token promise chain to prevent lost auth-failure counts across shared refresh tokens (#108)
+- Destructive defaults: `importAccounts` defaults to timestamped backup; `exportAccounts` defaults to `force: false`; `codex-remove` tool requires explicit `confirm: true` (#108)
+- Shutdown SIGINT/SIGTERM now awaits debounced `flushPendingSave`, preventing lost rotations (#110)
+- `schemaVersion > 3` now throws `StorageError(UNSUPPORTED_SCHEMA_VERSION)` instead of silently nulling data (#110)
+- V2 storage files are detected and either migrated or rejected explicitly (no more silent drop) (#113)
+- Credential merge: `||` → `??` prevents empty-string tokens resurrecting stale older values (#112)
+- `REDIRECT_URI` uses `127.0.0.1` literal for RFC 8252 compliance (#112)
+- Codex-CLI cross-process JSON now Zod-validated before merging (#112)
+- Logger `TOKEN_PATTERNS` extended to cover OpenAI opaque refresh/access/id tokens (#112, #126)
+- Installer `scripts/install-oc-codex-multi-auth-core.js` deep-merges `provider.openai` instead of clobbering user customizations; added `--dry-run` (#114)
+- F1 keychain post-merge: partial-migration staleness + `clearAccounts` ordering + rollback silent-clobber + lexicographic-sort bug (#133, #134)
+
+### Documentation
+- Full-repository audit delivered in `docs/audits/` (#107)
+- README: added CI, Node, Scorecard, npm, license badges; new `Credential Storage` section (#124, #132)
+- CONTRIBUTING: local development, contract-fixture update, real-keychain testing sections (#124, #131, #132)
+- SECURITY: backend threat-model update (#132)
+- ARCHITECTURE.md refreshed to reflect v6 module layout (#124)
+- CHANGELOG: restructured to Keep-a-Changelog v1.1.0 (#124)
+
+### Internal
+- Per-file coverage floor (70%) for `lib/**` and `index.ts` in `vitest.config.ts` (#125)
+- Test count: 2088 → 2234 (+146 regression + chaos + contract tests)
+
 ## [6.0.0] - 2026-04-06
 
 ### Added
