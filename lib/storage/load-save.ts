@@ -28,6 +28,7 @@ import { getConfigDir } from "./paths.js";
 import {
   getCurrentLegacyProjectStoragePath,
   getCurrentProjectRoot,
+  getCurrentProjectStorageKey,
   getCurrentStoragePath,
   getStoragePath,
   withStorageLock,
@@ -38,6 +39,12 @@ import {
   type AccountStorageV3,
 } from "./migrations.js";
 import { acquireOrDetectLock } from "./worktree-lock.js";
+import {
+  isKeychainOptInEnabled,
+  readFromKeychain,
+  writeToKeychain,
+  deleteFromKeychain,
+} from "./keychain.js";
 import os from "node:os";
 
 const log = createLogger("storage");
@@ -285,6 +292,40 @@ async function loadAccountsInternal(
   // block. Must come before the try/catch so a genuine storage error still
   // takes precedence over any lock-related log output below.
   await checkWorktreeLockForCurrentStorage("load");
+
+  // Opt-in keychain backend. When `CODEX_KEYCHAIN=1` is set, the keychain
+  // holds the authoritative V3 JSON blob and the on-disk file (if any) is
+  // only kept as a post-migration rollback artefact. If the keychain lookup
+  // fails for any reason (native module missing, keychain locked, no entry
+  // yet) we fall through to the existing JSON load path so the plugin never
+  // silently loses credentials. This preserves the default-off contract
+  // documented in docs/audits/13-phased-roadmap.md#phase-4-f1.
+  if (isKeychainOptInEnabled()) {
+    const projectKey = getCurrentProjectStorageKey();
+    try {
+      const blob = await readFromKeychain(projectKey);
+      if (blob !== null) {
+        try {
+          const parsed = JSON.parse(blob) as unknown;
+          const normalized = normalizeAccountStorage(parsed, "<keychain>");
+          if (normalized) return normalized;
+        } catch (parseErr) {
+          // Corrupt keychain entry: log but fall through to JSON so the
+          // user can recover from their on-disk backup.
+          log.warn("keychain: stored payload failed to parse; falling back to JSON", {
+            error: String(parseErr),
+          });
+        }
+      } else {
+        log.info("keychain: no entry found; falling back to JSON read");
+      }
+    } catch (err) {
+      log.warn("keychain: read failed; falling back to JSON", {
+        error: String(err),
+      });
+    }
+  }
+
   try {
     const path = getStoragePath();
     const content = await fs.readFile(path, "utf-8");
@@ -453,11 +494,62 @@ async function writeAccountsToPathUnlocked(path: string, storage: AccountStorage
   }
 }
 
+/**
+ * Post-keychain-write migration helper: if a legacy on-disk JSON file still
+ * exists for the current storage path, rename it with a timestamped
+ * `.migrated-to-keychain.<ts>` suffix instead of deleting it. Preserving the
+ * original file as a rollback artefact is load-bearing: it is the user's
+ * explicit escape hatch if the keychain backend turns out to be unreliable
+ * on their platform. Failure to rename is logged and swallowed because the
+ * authoritative copy now lives in the keychain; a missed rename means at
+ * worst a duplicate JSON file on disk.
+ */
+async function migrateOnDiskJsonToKeychainBackup(path: string): Promise<void> {
+  try {
+    await fs.access(path);
+  } catch {
+    return; // No legacy file to migrate.
+  }
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backup = `${path}.migrated-to-keychain.${timestamp}`;
+  try {
+    await fs.rename(path, backup);
+    log.info("keychain: migrated on-disk JSON to keychain; original preserved for rollback", {
+      from: path,
+      backup,
+    });
+  } catch (err) {
+    log.warn("keychain: failed to rename on-disk JSON after successful keychain write", {
+      path,
+      error: String(err),
+    });
+  }
+}
+
 async function saveAccountsUnlocked(storage: AccountStorageV3): Promise<void> {
   // Refresh our lock (or surface a collision) on every write. This also
   // bumps `lastActive`, which is the stale-detection timestamp read by
   // other worktrees on their next acquire.
   await checkWorktreeLockForCurrentStorage("save");
+
+  if (isKeychainOptInEnabled()) {
+    // Normalize before serializing so the keychain receives the same shape
+    // the JSON backend would have written. Using the same JSON format keeps
+    // migration and rollback symmetric: a rolled-back JSON file is valid
+    // input for a future opt-in migration in either direction.
+    const normalizedStorage = normalizeAccountStorage(storage) ?? storage;
+    const blob = JSON.stringify(normalizedStorage, null, 2);
+    const projectKey = getCurrentProjectStorageKey();
+    const result = await writeToKeychain(projectKey, blob);
+    if (result.ok) {
+      await migrateOnDiskJsonToKeychainBackup(getStoragePath());
+      return;
+    }
+    log.warn("keychain: write failed; falling back to JSON for this save", {
+      error: result.error,
+    });
+  }
+
   await writeAccountsToPathUnlocked(getStoragePath(), storage);
 }
 
@@ -509,6 +601,20 @@ export async function saveAccounts(storage: AccountStorageV3): Promise<void> {
  */
 export async function clearAccounts(): Promise<void> {
   return withStorageLock(async () => {
+    // Clear the keychain entry as well when the opt-in backend is active,
+    // otherwise a subsequent load would resurrect the "deleted" accounts
+    // from the keychain copy. Failures here are non-fatal: a stale
+    // keychain entry is cleaned up on the next successful write.
+    if (isKeychainOptInEnabled()) {
+      try {
+        const projectKey = getCurrentProjectStorageKey();
+        await deleteFromKeychain(projectKey);
+      } catch (err) {
+        log.warn("keychain: delete during clearAccounts failed", {
+          error: String(err),
+        });
+      }
+    }
     try {
       const path = getStoragePath();
       await fs.unlink(path);

@@ -24,6 +24,7 @@ import {
   getConfigDir,
   getProjectConfigDir,
   getProjectGlobalConfigDir,
+  getProjectStorageKey,
 } from "./paths.js";
 
 let storageMutex: Promise<void> = Promise.resolve();
@@ -96,4 +97,20 @@ export function getCurrentLegacyProjectStoragePath(): string | null {
 
 export function getCurrentProjectRoot(): string | null {
   return currentProjectRoot;
+}
+
+/**
+ * Returns the project storage key (e.g. `my-project-abc123def456`) that the
+ * active project storage path is rooted under, or `null` when no per-project
+ * root is active (global storage is in use). Used by the opt-in keychain
+ * backend as the account identifier so each project's credentials live
+ * under a distinct (service, account) pair in the OS keychain.
+ *
+ * When `setStoragePathDirect` overrode the path to something outside the
+ * standard per-project layout (tests, custom CLI override), we fall back to
+ * `null` because there is no meaningful project identity to key off.
+ */
+export function getCurrentProjectStorageKey(): string | null {
+  if (!currentProjectRoot) return null;
+  return getProjectStorageKey(currentProjectRoot);
 }
