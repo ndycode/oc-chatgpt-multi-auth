@@ -1871,7 +1871,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 				runtimeMetrics.accountRotations++;
 				runtimeMetrics.lastError = (err as Error)?.message ?? String(err);
 				runtimeMetrics.lastErrorCategory = "auth-refresh";
-				const failures = accountManager.incrementAuthFailures(account);
+				const failures = await accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index);
 				
 				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL) {
@@ -5993,14 +5993,41 @@ while (attempted.size < Math.max(1, accountCount)) {
 				},
 			}),
 			"codex-remove": tool({
-				description: "Remove one Codex account entry by index (1-based) or interactive picker when index is omitted.",
+				description:
+					"Remove one Codex account entry by index (1-based) or interactive picker when index is omitted. " +
+					"Requires confirm=true to proceed; this is a destructive operation and OAuth state cannot be recovered.",
 				args: {
 					index: tool.schema.number().optional().describe(
 						"Account number to remove (1-based, e.g., 1 for first account)",
 					),
+					confirm: tool.schema.boolean().optional().describe(
+						"Must be set to true to actually remove the account. " +
+							"When omitted or false, the tool is a no-op and returns a guidance message. " +
+							"This guard prevents silent loss of OAuth credentials from a mistyped index.",
+					),
 				},
-				async execute({ index }: { index?: number } = {}) {
+				async execute({ index, confirm }: { index?: number; confirm?: boolean } = {}) {
 					const ui = resolveUiRuntime();
+					// Destructive-operation guard: require explicit `confirm: true`.
+					// Rationale: audit `docs/audits/04-high-priority.md` (codex-remove
+					// has no confirmation step) — removing an account deletes OAuth
+					// refresh-token material, which is unrecoverable without a fresh
+					// `opencode auth login`.
+					if (confirm !== true) {
+						const guidance =
+							"codex-remove requires confirm=true to proceed. " +
+							"Removing an account deletes its OAuth credentials and cannot be undone. " +
+							"Re-run as: codex-remove index=<N> confirm=true";
+						if (ui.v2Enabled) {
+							return [
+								...formatUiHeader(ui, "Remove account"),
+								"",
+								formatUiItem(ui, "Confirmation required.", "warning"),
+								formatUiItem(ui, guidance, "muted"),
+							].join("\n");
+						}
+						return guidance;
+					}
 					const storage = await loadAccounts();
 					if (!storage || storage.accounts.length === 0) {
 						if (ui.v2Enabled) {
