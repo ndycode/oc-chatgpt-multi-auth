@@ -53,8 +53,10 @@ import { createCodexRefreshTool } from "./codex-refresh.js";
 import { createCodexExportTool } from "./codex-export.js";
 import { createCodexImportTool } from "./codex-import.js";
 import { createCodexDiagTool } from "./codex-diag.js";
+import { createCodexDiffTool } from "./codex-diff.js";
 
 export { createCodexDiagTool } from "./codex-diag.js";
+export { createCodexDiffTool } from "./codex-diff.js";
 
 /**
  * Mutable reference wrapper.
@@ -242,5 +244,6 @@ export function createToolRegistry(ctx: ToolContext): CodexToolRegistry {
 		"codex-export": createCodexExportTool(ctx),
 		"codex-import": createCodexImportTool(ctx),
 		"codex-diag": createCodexDiagTool(ctx),
+		"codex-diff": createCodexDiffTool(ctx),
 	};
 }
