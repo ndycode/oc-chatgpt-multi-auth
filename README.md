@@ -161,6 +161,10 @@ Contributions are welcome if they keep the project accurate, maintainable, and a
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Security Policy](SECURITY.md)
 
+## Releases
+
+Releases are automated via [release-please](https://github.com/googleapis/release-please). Conventional Commits landed on `main` drive version bumps and CHANGELOG entries; merging the open "Release candidate" PR cuts a tagged release. Manual `npm publish` is not required for routine releases.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

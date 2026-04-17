@@ -1,0 +1,30 @@
+name: Release-please
+
+on:
+  push:
+    branches: [main]
+
+# Prevent overlapping release-please runs on rapid main pushes. The action
+# is idempotent (updates the same release PR), but serializing keeps logs
+# easier to follow and avoids transient GitHub API races.
+concurrency:
+  group: release-please-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Release PR maintenance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run release-please
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          # Default GITHUB_TOKEN is sufficient for opening/updating the
+          # release PR and cutting tags/releases on merge.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
