@@ -170,6 +170,23 @@ git commit --no-verify -m "..."
 ### How to add a test
 Match the closest existing test file under `test/`. For a new `lib/<module>.ts`, add `test/<module>.test.ts`. Follow the Vitest + Zod + fake-timer conventions in existing tests (see `test/rotation.test.ts` for a mid-complexity example).
 
+### Updating API contract fixtures
+
+Contract tests in `test/contracts/` pin external API response shapes (OAuth token endpoint, Codex non-streaming chat-completions, Codex SSE stream). They read sanitized fixtures from `test/contracts/fixtures/` and feed them through the SAME production parsers and schemas the plugin uses at runtime (`OAuthTokenResponseSchema`, `isEmptyResponse`, `convertSseToJson`). A failing contract test means the upstream shape drifted or the parser was changed in a way that no longer accepts a known-good response.
+
+**When to update:**
+- An upstream API release changes the response shape.
+- You want to capture a new edge case (e.g., a new `reasoning.encrypted_content` variant or a new SSE event).
+
+**How to update:**
+1. Capture a real response from the live endpoint while debugging. **Sanitize every token, account id, organization id, email, and JWT** — replace them with `FAKE_*` placeholders matching the style of the existing fixtures.
+2. Update the fixture file under `test/contracts/fixtures/` with the sanitized payload.
+3. Run the contract test (`npx vitest run test/contracts/`). A pass means the new fixture is compatible with production parsers; a failure means either the fixture or the parser needs to change.
+4. If the upstream added a new optional field, no code change is required — the existing schema will accept it and the test will still pass.
+5. If the upstream change is backward-incompatible, update the production parser AND the contract test in the same commit so the two stay in sync.
+
+**Never commit real tokens, real account ids, real organization ids, real JWT payloads, or any PII in fixtures.** The fixtures live in version control; treat them as public.
+
 ### Debug OAuth flow locally
 Set `CODEX_DEBUG_AUTH=1` in your shell before running. See `docs/development/AUTH_FLOW.md` (if present) for protocol details.
 
