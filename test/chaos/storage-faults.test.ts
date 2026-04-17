@@ -77,14 +77,31 @@ describe("chaos/storage-faults — real fault injection", () => {
 
 	describe("scenario 1: ENOSPC on save", () => {
 		it("saveAccounts throws StorageError with ENOSPC hint, then recovers on next attempt", async () => {
-			// Inject ENOSPC on the first writeFile; let the second one proceed
-			// so we can assert clean recovery on the next save.
+			// Inject ENOSPC on the first accounts-file write; let the second
+			// one proceed so we can assert clean recovery on the next save.
+			// Phase 4 F2 added a worktree lock sidecar write on every save;
+			// it piggybacks on the same fs.writeFile surface, so we filter
+			// the fault injection by target path to keep the chaos scenario
+			// focused on the actual storage write rather than the lock.
 			const originalWriteFile = fs.writeFile.bind(fs);
-			let call = 0;
+			const isAccountsWrite = (target: unknown): boolean => {
+				const p = typeof target === "string" ? target : String(target);
+				// Lock file writes always land on `<storage>.lock`; the
+				// accounts write targets the atomic tmp file alongside it.
+				return !p.endsWith(".lock");
+			};
+			let accountsWriteCalls = 0;
 			const spy = vi.spyOn(fs, "writeFile").mockImplementation(
 				async (path, data, options) => {
-					call += 1;
-					if (call === 1) {
+					if (!isAccountsWrite(path)) {
+						return originalWriteFile(
+							path as Parameters<typeof originalWriteFile>[0],
+							data as Parameters<typeof originalWriteFile>[1],
+							options as Parameters<typeof originalWriteFile>[2],
+						);
+					}
+					accountsWriteCalls += 1;
+					if (accountsWriteCalls === 1) {
 						const err = Object.assign(
 							new Error("ENOSPC: no space left on device") as NodeJS.ErrnoException,
 							{ code: "ENOSPC" },
@@ -121,7 +138,11 @@ describe("chaos/storage-faults — real fault injection", () => {
 				accounts: Array<{ refreshToken: string }>;
 			};
 			expect(persisted.accounts[0]?.refreshToken).toBe("token-2");
-			expect(spy).toHaveBeenCalledTimes(2);
+			// Exactly two accounts-file writes: the ENOSPC failure and the
+			// successful recovery. Lock-file writes are counted separately
+			// and not asserted here.
+			expect(accountsWriteCalls).toBe(2);
+			expect(spy).toHaveBeenCalled();
 		});
 	});
 
