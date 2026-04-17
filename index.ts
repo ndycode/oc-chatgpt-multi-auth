@@ -167,7 +167,6 @@ import {
 	RetryBudgetTracker,
 	resolveRetryBudgetLimits,
 	type RetryBudgetClass,
-	type RetryBudgetLimits,
 } from "./lib/request/retry-budget.js";
 import { addJitter } from "./lib/rotation.js";
 import { buildTableHeader, buildTableRow, type TableOptions } from "./lib/table-formatter.js";
@@ -203,32 +202,18 @@ import {
 	detectErrorType,
 	getRecoveryToastContent,
 } from "./lib/recovery.js";
-
-function matchesWorkspaceIdentity(
-	account: {
-		organizationId?: string;
-		accountId?: string;
-		refreshToken: string;
-	},
-	identityKey: string,
-): boolean {
-	return getWorkspaceIdentityKey(account) === identityKey;
-}
-
-function upsertFlaggedAccountRecord(
-	accounts: FlaggedAccountMetadataV1[],
-	record: FlaggedAccountMetadataV1,
-): void {
-	const identityKey = getWorkspaceIdentityKey(record);
-	const existingIndex = accounts.findIndex((flagged) =>
-		matchesWorkspaceIdentity(flagged, identityKey),
-	);
-	if (existingIndex >= 0) {
-		accounts[existingIndex] = record;
-		return;
-	}
-	accounts.push(record);
-}
+import {
+	matchesWorkspaceIdentity,
+	upsertFlaggedAccountRecord,
+	normalizeToolOutputFormat,
+	renderJsonOutput,
+	createRetryBudgetUsage,
+	serializeSelectionExplainability,
+	formatRoutingValue,
+	formatExplainabilitySummary,
+	type RoutingVisibilitySnapshot,
+	type RuntimeMetrics,
+} from "./lib/runtime.js";
 
 /**
  * OpenAI Codex OAuth authentication plugin for opencode
@@ -256,91 +241,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	let startupPreflightShown = false;
 	let beginnerSafeModeEnabled = false;
 	const MIN_BACKOFF_MS = 100;
-
-	type SelectionSnapshot = {
-		timestamp: number;
-		family: ModelFamily;
-		model: string | null;
-		requestedModel: string | null;
-		effectiveModel: string | null;
-		selectedAccountIndex: number | null;
-		quotaKey: string;
-		explainability: AccountSelectionExplainability[];
-		fallbackApplied: boolean;
-		fallbackFrom: string | null;
-		fallbackTo: string | null;
-		fallbackReason: string | null;
-	};
-
-	type ToolOutputFormat = "text" | "json";
-
-	type SerializedSelectionExplainability = {
-		index: number;
-		zeroBasedIndex: number;
-		enabled: boolean;
-		isCurrentForFamily: boolean;
-		eligible: boolean;
-		reasons: string[];
-		healthScore: number;
-		tokensAvailable: number;
-		rateLimitedUntil: number | null;
-		coolingDownUntil: number | null;
-		cooldownReason: string | null;
-		lastUsed: number;
-	};
-
-	type RoutingVisibilitySnapshot = {
-		requestedModel: string | null;
-		effectiveModel: string | null;
-		modelFamily: ModelFamily | null;
-		quotaKey: string | null;
-		selectedAccountIndex: number | null;
-		zeroBasedSelectedAccountIndex: number | null;
-		lastErrorCategory: string | null;
-		fallbackApplied: boolean;
-		fallbackFrom: string | null;
-		fallbackTo: string | null;
-		fallbackReason: string | null;
-		selectionExplainability: SerializedSelectionExplainability[];
-	};
-
-	const createRetryBudgetUsage = (): Record<RetryBudgetClass, number> => ({
-		authRefresh: 0,
-		network: 0,
-		server: 0,
-		rateLimitShort: 0,
-		rateLimitGlobal: 0,
-		emptyResponse: 0,
-	});
-
-	type RuntimeMetrics = {
-		startedAt: number;
-		totalRequests: number;
-		successfulRequests: number;
-		failedRequests: number;
-		rateLimitedResponses: number;
-		serverErrors: number;
-		networkErrors: number;
-		authRefreshFailures: number;
-		emptyResponseRetries: number;
-		accountRotations: number;
-		cumulativeLatencyMs: number;
-		retryBudgetExhaustions: number;
-		retryBudgetUsage: Record<RetryBudgetClass, number>;
-		retryBudgetLimits: RetryBudgetLimits;
-		retryProfile: string;
-		lastRetryBudgetExhaustedClass: RetryBudgetClass | null;
-		lastRetryBudgetReason: string | null;
-		lastRequestAt: number | null;
-		lastError: string | null;
-		lastErrorCategory: string | null;
-		promptCacheEnabledRequests: number;
-		promptCacheMissingRequests: number;
-		lastPromptCacheKey: string | null;
-		lastSelectedAccountIndex: number | null;
-		lastQuotaKey: string | null;
-		lastSelectionSnapshot: SelectionSnapshot | null;
-	};
 
 	const runtimeMetrics: RuntimeMetrics = {
 		startedAt: Date.now(),
@@ -371,6 +271,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		lastSelectionSnapshot: null,
 	};
 
+	// Tool schema factories — kept in the closure because their inferred zod
+	// return type cannot be named outside this module without leaking the
+	// plugin's bundled zod copy into the emitted declarations. See TS2742.
 	const toolOutputFormatSchema = () =>
 		tool.schema
 			.string()
@@ -384,35 +287,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			.describe(
 				"Include raw account labels, emails, and account IDs in JSON output. Defaults to false.",
 			);
-
-	const normalizeToolOutputFormat = (format?: string): ToolOutputFormat => {
-		if (format === undefined) return "text";
-		if (format === "text" || format === "json") return format;
-		throw new Error(`Invalid format "${format}". Expected "text" or "json".`);
-	};
-
-	const renderJsonOutput = (payload: unknown): string =>
-		JSON.stringify(payload, null, 2);
-
-	const serializeSelectionExplainability = (
-		entries: AccountSelectionExplainability[],
-	): SerializedSelectionExplainability[] =>
-		entries.map((entry) => ({
-			index: entry.index + 1,
-			zeroBasedIndex: entry.index,
-			enabled: entry.enabled,
-			isCurrentForFamily: entry.isCurrentForFamily,
-			eligible: entry.eligible,
-			reasons: [...entry.reasons],
-			healthScore: entry.healthScore,
-			tokensAvailable: entry.tokensAvailable,
-			rateLimitedUntil:
-				typeof entry.rateLimitedUntil === "number" ? entry.rateLimitedUntil : null,
-			coolingDownUntil:
-				typeof entry.coolingDownUntil === "number" ? entry.coolingDownUntil : null,
-			cooldownReason: entry.cooldownReason ?? null,
-			lastUsed: entry.lastUsed,
-		}));
 
 	const buildRoutingVisibilitySnapshot = (
 		options: {
@@ -449,19 +323,6 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			),
 		};
 	};
-
-	const formatRoutingValue = (
-		value: string | number | boolean | null | undefined,
-	): string => {
-		if (typeof value === "boolean") return value ? "yes" : "no";
-		if (value === null || value === undefined || value === "") return "-";
-		return String(value);
-	};
-
-	const formatExplainabilitySummary = (
-		entry: SerializedSelectionExplainability,
-	): string =>
-		`Account ${entry.index}: ${entry.eligible ? "eligible" : "blocked"} | health=${Math.round(entry.healthScore)} | tokens=${entry.tokensAvailable.toFixed(1)} | ${entry.reasons.join(", ")}`;
 
 	const buildJsonAccountIdentity = (
 		index: number,
