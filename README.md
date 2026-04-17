@@ -1,8 +1,14 @@
 # oc-codex-multi-auth
 
+<!--
+Badges: CI + OpenSSF Scorecard will turn green once Phase 3 Batch A (CI workflow + Scorecard workflow) lands and runs its first job. Until then they may render as "no status" / 404 — that is expected and self-resolves automatically.
+-->
+[![CI](https://github.com/ndycode/oc-codex-multi-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/ndycode/oc-codex-multi-auth/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/oc-codex-multi-auth.svg)](https://www.npmjs.com/package/oc-codex-multi-auth)
 [![npm downloads](https://img.shields.io/npm/dw/oc-codex-multi-auth.svg)](https://www.npmjs.com/package/oc-codex-multi-auth)
+[![Node.js Version](https://img.shields.io/node/v/oc-codex-multi-auth.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/ndycode/oc-codex-multi-auth/badge)](https://securityscorecards.dev/viewer/?uri=github.com/ndycode/oc-codex-multi-auth)
 
 Use your ChatGPT Plus/Pro subscription inside OpenCode with OAuth login, GPT-5/Codex model presets, and multi-account failover.
 

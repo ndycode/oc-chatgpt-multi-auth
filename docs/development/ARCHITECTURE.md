@@ -1,6 +1,25 @@
 # Plugin Architecture & Technical Decisions
 
+> Reflects the codebase as of v6.0.0. Post-refactor structure after Phase 2 architecture work (see `docs/audits/07-refactoring-plan.md`). Individual section version markers refer to the release that introduced a feature and are retained for historical context only.
+
 This document explains the technical design decisions, architecture, and implementation details of the OpenAI Codex OAuth plugin for OpenCode.
+
+## Module Layout (v6.0.0)
+
+```
+index.ts              # plugin entry (~3200 lines): fetch pipeline + tool registration
+lib/
+├── accounts/         # state, persistence, rotation, rate-limits, recovery
+├── auth/             # OAuth flow, PKCE, callback server
+├── prompts/          # Codex bridge + tool-remap prompts, ETag cache
+├── recovery/         # session recovery (tool_result_missing, thinking blocks)
+├── request/          # transformer, fetch-helpers, response-handler
+├── storage/          # atomic writes, migrations, paths, flagged, backup/export/import
+├── tools/            # 19 OpenCode tools (codex-list, codex-switch, codex-doctor, ...)
+└── ui/               # terminal UI runtime, theme, formatting, beginner checklist
+```
+
+The single `index.ts` of earlier releases has been split: account management lives under `lib/accounts/`, storage under `lib/storage/`, and every `codex-*` tool is its own file under `lib/tools/`. `index.ts` now holds the plugin loader, request pipeline wiring, and tool registration only.
 
 ## Table of Contents
 - [Architecture Overview](#architecture-overview)
@@ -405,7 +424,7 @@ let include: Vec<String> = if reasoning.is_some() {
 
 ---
 
-## Multi-Account Rotation (v4.4.0+)
+## Multi-Account Rotation
 
 ### Health-Based Account Selection
 
@@ -443,7 +462,7 @@ Different rate limit reasons use different backoff multipliers:
 | `concurrent` | 0.5× | Concurrent request limit |
 | `unknown` | 1.0× | Default |
 
-### RefreshQueue (v4.5.0+)
+### RefreshQueue
 
 Prevents race conditions when multiple concurrent requests try to refresh the same token:
 

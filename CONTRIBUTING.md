@@ -125,6 +125,54 @@ We will decline features that:
 - Bypass authentication or rate limiting
 - Facilitate improper use
 
+## Local Development
+
+### Prerequisites
+- Node.js ≥ 18 (LTS recommended)
+- npm ≥ 9
+- Git
+
+### Setup
+```bash
+git clone https://github.com/ndycode/oc-codex-multi-auth.git
+cd oc-codex-multi-auth
+npm ci
+```
+
+### Run the quality gates locally
+```bash
+npm run typecheck  # strict TypeScript
+npm run lint       # ESLint (no warnings allowed)
+npm test           # Vitest full suite
+npm run build      # Compile to dist/
+```
+
+### Run a focused test file
+```bash
+npx vitest run test/circuit-breaker-wiring.test.ts
+```
+
+### Iterative test watch mode
+```bash
+npx vitest watch
+```
+
+### Husky hooks
+Commits go through:
+- `pre-commit` — lint-staged on changed files
+- `commit-msg` — Conventional Commits regex
+
+To skip hooks temporarily (discouraged):
+```bash
+git commit --no-verify -m "..."
+```
+
+### How to add a test
+Match the closest existing test file under `test/`. For a new `lib/<module>.ts`, add `test/<module>.test.ts`. Follow the Vitest + Zod + fake-timer conventions in existing tests (see `test/rotation.test.ts` for a mid-complexity example).
+
+### Debug OAuth flow locally
+Set `CODEX_DEBUG_AUTH=1` in your shell before running. See `docs/development/AUTH_FLOW.md` (if present) for protocol details.
+
 ## Code of Conduct
 
 All contributors are expected to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
