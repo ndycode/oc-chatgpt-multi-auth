@@ -190,6 +190,24 @@ Contract tests in `test/contracts/` pin external API response shapes (OAuth toke
 ### Debug OAuth flow locally
 Set `CODEX_DEBUG_AUTH=1` in your shell before running. See `docs/development/AUTH_FLOW.md` (if present) for protocol details.
 
+### Testing the OS-keychain backend
+
+`lib/storage/keychain.ts` implements the opt-in keychain credential backend. Contract tests (`test/storage-keychain.test.ts`) use an in-memory mock via `_setBackendForTests` so CI never touches the real OS keychain.
+
+To exercise the real keychain locally, unset the mock and run against your actual OS keychain:
+
+```bash
+CODEX_KEYCHAIN=1 npm test -- test/storage-keychain.test.ts
+```
+
+Real-keychain runs will create and delete throwaway entries under the service name `oc-codex-multi-auth` with account keys prefixed `accounts:`. The tests clean up after themselves, but if a run is aborted you can verify and remove leftover entries:
+
+- macOS: Keychain Access.app, search for `oc-codex-multi-auth`
+- Windows: `rundll32.exe keymgr.dll, KRShowKeyMgr` or `cmdkey /list`
+- Linux: `secret-tool search service oc-codex-multi-auth` (requires `libsecret-tools`)
+
+Never check real refresh tokens, access tokens, or account ids into tests or fixtures.
+
 ## Code of Conduct
 
 All contributors are expected to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

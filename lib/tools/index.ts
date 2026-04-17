@@ -54,9 +54,11 @@ import { createCodexExportTool } from "./codex-export.js";
 import { createCodexImportTool } from "./codex-import.js";
 import { createCodexDiagTool } from "./codex-diag.js";
 import { createCodexDiffTool } from "./codex-diff.js";
+import { createCodexKeychainTool } from "./codex-keychain.js";
 
 export { createCodexDiagTool } from "./codex-diag.js";
 export { createCodexDiffTool } from "./codex-diff.js";
+export { createCodexKeychainTool } from "./codex-keychain.js";
 
 /**
  * Mutable reference wrapper.
@@ -245,5 +247,6 @@ export function createToolRegistry(ctx: ToolContext): CodexToolRegistry {
 		"codex-import": createCodexImportTool(ctx),
 		"codex-diag": createCodexDiagTool(ctx),
 		"codex-diff": createCodexDiffTool(ctx),
+		"codex-keychain": createCodexKeychainTool(ctx),
 	};
 }
