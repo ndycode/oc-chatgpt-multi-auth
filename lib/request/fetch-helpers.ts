@@ -316,6 +316,10 @@ function isServerOverloadedError(errorBody: unknown): boolean {
 		return true;
 	}
 
+	if (typeof maybeError.type === "string" && maybeError.type === "service_unavailable_error") {
+		return true;
+	}
+
 	const maybeContext = maybeError.context;
 	return (
 		isRecord(maybeContext) &&
@@ -723,7 +727,21 @@ function extractRateLimitInfoFromBody(
                 response.status === HTTP_STATUS.TOO_MANY_REQUESTS;
         const parsed = parseRateLimitBody(bodyText);
 
-		if (isServerOverloadedError(parsed ? { error: { code: parsed.code } } : undefined)) {
+		if (
+			isServerOverloadedError(
+				parsed
+					? {
+						error: {
+							code: parsed.code,
+							type: parsed.type,
+							context: parsed.contextType
+								? { type: parsed.contextType }
+								: undefined,
+						},
+					}
+					: undefined,
+			)
+		) {
 			return undefined;
 		}
 
@@ -751,6 +769,9 @@ interface RateLimitErrorBody {
 	error?: {
 		code?: string | number;
 		type?: string;
+		context?: {
+			type?: string;
+		};
 		resets_at?: number;
 		reset_at?: number;
 		retry_after_ms?: number;
@@ -760,15 +781,17 @@ interface RateLimitErrorBody {
 
 function parseRateLimitBody(
 	body: string,
-): { code?: string; resetsAt?: number; retryAfterMs?: number } | undefined {
+): { code?: string; type?: string; contextType?: string; resetsAt?: number; retryAfterMs?: number } | undefined {
 	if (!body) return undefined;
 	try {
 		const parsed = JSON.parse(body) as RateLimitErrorBody;
 		const error = parsed?.error ?? {};
 		const code = (error.code ?? error.type ?? "").toString();
+		const type = typeof error.type === "string" ? error.type : undefined;
+		const contextType = typeof error.context?.type === "string" ? error.context.type : undefined;
 		const resetsAt = toNumber(error.resets_at ?? error.reset_at);
 		const retryAfterMs = toNumber(error.retry_after_ms ?? error.retry_after);
-		return { code, resetsAt, retryAfterMs };
+		return { code, type, contextType, resetsAt, retryAfterMs };
 	} catch {
 		return undefined;
 	}

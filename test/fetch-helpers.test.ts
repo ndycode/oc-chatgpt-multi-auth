@@ -656,6 +656,38 @@ describe('Fetch Helpers Module', () => {
 			expect(rateLimit).toBeUndefined();
 		});
 
+		it('marks reduced service_unavailable_error payload as server retry, not rate limit', async () => {
+			const body = {
+				error: {
+					type: 'service_unavailable_error',
+					message: 'Our servers are currently overloaded. Please try again later.',
+				},
+			};
+			const response = new Response(JSON.stringify(body), { status: 429 });
+
+			const { rateLimit, retryAsServerError } = await handleErrorResponse(response);
+
+			expect(retryAsServerError).toBe(true);
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it('marks reduced context.service_unavailable_error payload as server retry, not rate limit', async () => {
+			const body = {
+				error: {
+					context: {
+						type: 'service_unavailable_error',
+					},
+					message: 'Our servers are currently overloaded. Please try again later.',
+				},
+			};
+			const response = new Response(JSON.stringify(body), { status: 429 });
+
+			const { rateLimit, retryAsServerError } = await handleErrorResponse(response);
+
+			expect(retryAsServerError).toBe(true);
+			expect(rateLimit).toBeUndefined();
+		});
+
 		it('handles Response that throws on clone (safeReadBody catch)', async () => {
 			const response = new Response('test', { status: 500 });
 			const originalClone = response.clone.bind(response);
