@@ -23,7 +23,22 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	shouldRefreshToken: () => false,
 	refreshAndUpdateToken: async (auth: any) => auth,
 	createCodexHeaders: () => new Headers(),
-	handleErrorResponse: async (response: Response) => ({ response }),
+	handleErrorResponse: async (response: Response) => {
+		try {
+			const body = await response.clone().json();
+			if (
+				body?.type === "error" &&
+				body?.error?.type === "service_unavailable_error" &&
+				body?.error?.code === "server_is_overloaded"
+			) {
+				return { response, errorBody: body, retryAsServerError: true };
+			}
+		} catch {
+			// Non-JSON responses are irrelevant to this focused retry regression.
+		}
+
+		return { response };
+	},
 	isDeactivatedWorkspaceError: () => false,
 	resolveUnsupportedCodexFallbackModel: () => undefined,
 	shouldFallbackToGpt52OnUnsupportedGpt53: () => false,
@@ -185,13 +200,13 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	});
 
 	it("waits and retries when all accounts are rate-limited", async () => {
-		const { OpenAIAuthPlugin } = await import("../index.js");
+		const { OpenAIAuthPlugin } = (await import("../index.js")) as any;
 		const client = {
 			tui: { showToast: vi.fn() },
 			auth: { set: vi.fn() },
 		} as any;
 
-		const plugin = await OpenAIAuthPlugin({ client });
+		const plugin = await OpenAIAuthPlugin({ client } as any);
 
 		const getAuth = async () => ({
 			type: "oauth" as const,
@@ -201,7 +216,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 			multiAccount: true,
 		});
 
-		const sdk = (await plugin.auth.loader(getAuth, { options: {}, models: {} })) as any;
+		const sdk = (await (plugin.auth as any).loader(getAuth, { options: {}, models: {} } as any)) as any;
 
 		const fetchPromise = sdk.fetch("https://example.com", {});
 		expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -210,6 +225,57 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 
 		const response = await fetchPromise;
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(response.status).toBe(200);
+	});
+
+	it("retries when the upstream returns server overload payload", async () => {
+		const { OpenAIAuthPlugin } = (await import("../index.js")) as any;
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client } as any);
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await (plugin.auth as any).loader(getAuth, { options: {}, models: {} } as any)) as any;
+		const fetchMock = vi.mocked(globalThis.fetch);
+		fetchMock.mockReset();
+		fetchMock
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						type: "error",
+						sequence_number: 2,
+						error: {
+							type: "service_unavailable_error",
+							code: "server_is_overloaded",
+							message: "Our servers are currently overloaded. Please try again later.",
+							param: null,
+						},
+					}),
+					{ status: 400, headers: { "content-type": "application/json" } },
+				),
+			)
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+		const fetchPromise = sdk.fetch("https://example.com", {});
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+
+		const response = await fetchPromise;
 		expect(response.status).toBe(200);
 	});
 });

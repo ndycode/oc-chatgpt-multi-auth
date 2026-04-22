@@ -608,7 +608,7 @@ describe('Fetch Helpers Module', () => {
 		});
 	});
 
-	describe('handleErrorResponse edge cases', () => {
+		describe('handleErrorResponse edge cases', () => {
 		it('handles 404 with non-JSON body containing usage limit text', async () => {
 			const response = new Response('usage limit exceeded - please try again', { status: 404 });
 			
@@ -635,6 +635,24 @@ describe('Fetch Helpers Module', () => {
 			const { response: result, rateLimit } = await handleErrorResponse(response);
 			
 			expect(result.status).toBe(429);
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it('marks exact server overload payload as server retry, not rate limit', async () => {
+			const body = {
+				error: {
+					type: 'service_unavailable_error',
+					code: 'server_is_overloaded',
+					message: 'Our servers are currently overloaded. Please try again later.',
+					param: null,
+				},
+			};
+			const response = new Response(JSON.stringify(body), { status: 429 });
+
+			const { response: result, rateLimit, retryAsServerError } = await handleErrorResponse(response);
+
+			expect(result.status).toBe(429);
+			expect(retryAsServerError).toBe(true);
 			expect(rateLimit).toBeUndefined();
 		});
 
