@@ -308,26 +308,23 @@ function isServerOverloadedError(errorBody: unknown): boolean {
 	const maybeError = errorBody.error;
 	if (!isRecord(maybeError)) return false;
 
-	if (
-		typeof maybeError.code === "string" &&
-		(maybeError.code === "server_is_overloaded" || maybeError.code === "server_error")
-	) {
-		return true;
-	}
-
-	if (
-		typeof maybeError.type === "string" &&
-		(maybeError.type === "service_unavailable_error" || maybeError.type === "server_error")
-	) {
-		return true;
-	}
-
+	const code = typeof maybeError.code === "string" ? maybeError.code : undefined;
+	const type = typeof maybeError.type === "string" ? maybeError.type : undefined;
 	const maybeContext = maybeError.context;
-	return (
-		isRecord(maybeContext) &&
-		typeof maybeContext.type === "string" &&
-		(maybeContext.type === "service_unavailable_error" || maybeContext.type === "server_error")
-	);
+	const contextType =
+		isRecord(maybeContext) && typeof maybeContext.type === "string"
+			? maybeContext.type
+			: undefined;
+
+	if (code === "server_is_overloaded") {
+		return true;
+	}
+
+	if (type === "service_unavailable_error" || contextType === "service_unavailable_error") {
+		return true;
+	}
+
+	return code === "server_error" && (type === "server_error" || contextType === "server_error");
 }
 
 export function isDeactivatedWorkspaceError(errorBody: unknown, status?: number): boolean {

@@ -26,12 +26,15 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	handleErrorResponse: async (response: Response) => {
 		try {
 			const body = await response.clone().json();
+			const error = body?.error;
+			const code = error?.code;
+			const type = error?.type;
+			const contextType = error?.context?.type;
 			if (
-				(
-					(body?.error?.type === "service_unavailable_error" &&
-						body?.error?.code === "server_is_overloaded") ||
-					(body?.error?.type === "server_error" && body?.error?.code === "server_error")
-				)
+				code === "server_is_overloaded" ||
+				type === "service_unavailable_error" ||
+				contextType === "service_unavailable_error" ||
+				(code === "server_error" && (type === "server_error" || contextType === "server_error"))
 			) {
 				return { response, errorBody: body, retryAsServerError: true };
 			}

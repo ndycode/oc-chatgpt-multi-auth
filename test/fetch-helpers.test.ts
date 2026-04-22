@@ -705,6 +705,22 @@ describe('Fetch Helpers Module', () => {
 			expect(rateLimit).toBeUndefined();
 		});
 
+		it('does not mark partial server_error payloads as server retry', async () => {
+			const partialPayloads = [
+				{ error: { type: 'server_error', message: 'type only' } },
+				{ error: { code: 'server_error', message: 'code only' } },
+				{ error: { code: 'server_error', type: 'other_error', message: 'mismatched type' } },
+			];
+
+			for (const body of partialPayloads) {
+				const response = new Response(JSON.stringify(body), { status: 400 });
+				const { rateLimit, retryAsServerError } = await handleErrorResponse(response);
+
+				expect(retryAsServerError).toBe(false);
+				expect(rateLimit).toBeUndefined();
+			}
+		});
+
 		it('handles Response that throws on clone (safeReadBody catch)', async () => {
 			const response = new Response('test', { status: 500 });
 			const originalClone = response.clone.bind(response);
