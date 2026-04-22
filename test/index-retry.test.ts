@@ -41,6 +41,7 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	},
 	isDeactivatedWorkspaceError: () => false,
 	resolveUnsupportedCodexFallbackModel: () => undefined,
+	getUnsupportedCodexModelInfo: () => undefined,
 	shouldFallbackToGpt52OnUnsupportedGpt53: () => false,
 	handleSuccessResponse: async (response: Response) => response,
 }));
@@ -272,7 +273,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		await vi.advanceTimersByTimeAsync(1500);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 
-		await vi.advanceTimersByTimeAsync(1500);
+		await vi.runAllTimersAsync();
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 
 		const response = await fetchPromise;

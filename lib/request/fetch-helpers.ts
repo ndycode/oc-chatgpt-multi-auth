@@ -312,9 +312,15 @@ function isServerOverloadedError(errorBody: unknown): boolean {
 	const maybeError = errorBody.error;
 	if (!isRecord(maybeError)) return false;
 
+	if (typeof maybeError.code === "string" && maybeError.code === "server_is_overloaded") {
+		return true;
+	}
+
+	const maybeContext = maybeError.context;
 	return (
-		typeof maybeError.code === "string" &&
-		maybeError.code === "server_is_overloaded"
+		isRecord(maybeContext) &&
+		typeof maybeContext.type === "string" &&
+		maybeContext.type === "service_unavailable_error"
 	);
 }
 
@@ -716,6 +722,10 @@ function extractRateLimitInfoFromBody(
         const isStatusRateLimit =
                 response.status === HTTP_STATUS.TOO_MANY_REQUESTS;
         const parsed = parseRateLimitBody(bodyText);
+
+		if (isServerOverloadedError(parsed ? { error: { code: parsed.code } } : undefined)) {
+			return undefined;
+		}
 
         const haystack = `${parsed?.code ?? ""} ${bodyText}`.toLowerCase();
         
