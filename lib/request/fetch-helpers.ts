@@ -307,15 +307,21 @@ function isServerOverloadedError(errorBody: unknown): boolean {
 
 	const maybeError = errorBody.error;
 	if (!isRecord(maybeError)) return false;
+	const code = typeof maybeError.code === "string" ? maybeError.code : undefined;
+	const type = typeof maybeError.type === "string" ? maybeError.type : undefined;
 	const maybeMessage = typeof maybeError.message === "string"
 		? maybeError.message.toLowerCase()
 		: "";
 
-	if (typeof maybeError.code === "string" && maybeError.code === "server_is_overloaded") {
+	if (code === "server_is_overloaded") {
 		return true;
 	}
 
-	if (typeof maybeError.type === "string" && maybeError.type === "service_unavailable_error") {
+	if (type === "service_unavailable_error") {
+		return true;
+	}
+
+	if (code === "server_error" && type === "server_error") {
 		return true;
 	}
 

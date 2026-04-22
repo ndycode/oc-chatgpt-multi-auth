@@ -708,6 +708,40 @@ describe('Fetch Helpers Module', () => {
 			expect(rateLimit?.retryAfterMs).toBe(60000);
 		});
 
+		it('marks live server_error payload as server retry on non-5xx response', async () => {
+			const body = {
+				error: {
+					type: 'server_error',
+					code: 'server_error',
+					message: 'The server had an error processing your request.',
+				},
+			};
+			const response = new Response(JSON.stringify(body), { status: 400 });
+
+			const { response: result, rateLimit, retryAsServerError } = await handleErrorResponse(response);
+
+			expect(result.status).toBe(400);
+			expect(retryAsServerError).toBe(true);
+			expect(rateLimit).toBeUndefined();
+		});
+
+		it('does not mark partial server_error payloads as server retry', async () => {
+			const partialPayloads = [
+				{ error: { type: 'server_error', message: 'type only' } },
+				{ error: { code: 'server_error', message: 'code only' } },
+				{ error: { code: 'server_error', type: 'other_error', message: 'mismatched type' } },
+				{ error: { code: 'server_error', context: { type: 'server_error' }, message: 'context only' } },
+			];
+
+			for (const body of partialPayloads) {
+				const response = new Response(JSON.stringify(body), { status: 400 });
+				const { rateLimit, retryAsServerError } = await handleErrorResponse(response);
+
+				expect(retryAsServerError).toBe(false);
+				expect(rateLimit).toBeUndefined();
+			}
+		});
+
 		it('handles Response that throws on clone (safeReadBody catch)', async () => {
 			const response = new Response('test', { status: 500 });
 			const originalClone = response.clone.bind(response);

@@ -26,13 +26,15 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 	handleErrorResponse: async (response: Response) => {
 		try {
 			const body = await response.clone().json();
+			const error = body?.error;
+			const code = error?.code;
+			const type = error?.type;
+			const contextType = error?.context?.type;
 			if (
-				body?.type === "error" &&
-				(
-					body?.error?.code === "server_is_overloaded" ||
-					body?.error?.type === "service_unavailable_error" ||
-					body?.error?.context?.type === "service_unavailable_error"
-				)
+				code === "server_is_overloaded" ||
+				type === "service_unavailable_error" ||
+				contextType === "service_unavailable_error" ||
+				(code === "server_error" && type === "server_error")
 			) {
 				return { response, errorBody: body, retryAsServerError: true };
 			}
@@ -290,6 +292,56 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 			.mockResolvedValueOnce(
 				new Response(
 					JSON.stringify(overloadPayload),
+					{ status: 400, headers: { "content-type": "application/json" } },
+				),
+			)
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+		const fetchPromise = sdk.fetch("https://example.com", {});
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1500);
+		expect(fetchMock).toHaveBeenCalled();
+
+		await vi.runAllTimersAsync();
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+
+		const response = await fetchPromise;
+		expect(response.status).toBe(200);
+	});
+
+	it("retries when the upstream returns a live server_error payload", async () => {
+		const { OpenAIAuthPlugin } = (await import("../index.js")) as any;
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client } as any);
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		const sdk = (await (plugin.auth as any).loader(getAuth, { options: {}, models: {} } as any)) as any;
+		const fetchMock = vi.mocked(globalThis.fetch);
+		fetchMock.mockReset();
+		fetchMock
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						sequence_number: 2,
+						error: {
+							type: "server_error",
+							code: "server_error",
+							message: "The server had an error processing your request.",
+							param: null,
+						},
+					}),
 					{ status: 400, headers: { "content-type": "application/json" } },
 				),
 			)
