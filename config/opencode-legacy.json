@@ -15,8 +15,8 @@
         "store": false
       },
       "models": {
-        "gpt-5.4-none": {
-          "name": "GPT 5.4 None (OAuth)",
+        "gpt-5.5-none": {
+          "name": "GPT 5.5 20260423 None (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -40,8 +40,8 @@
             "store": false
           }
         },
-        "gpt-5.4-low": {
-          "name": "GPT 5.4 Low (OAuth)",
+        "gpt-5.5-low": {
+          "name": "GPT 5.5 20260423 Low (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -65,8 +65,8 @@
             "store": false
           }
         },
-        "gpt-5.4-medium": {
-          "name": "GPT 5.4 Medium (OAuth)",
+        "gpt-5.5-medium": {
+          "name": "GPT 5.5 20260423 Medium (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -90,8 +90,8 @@
             "store": false
           }
         },
-        "gpt-5.4-high": {
-          "name": "GPT 5.4 High (OAuth)",
+        "gpt-5.5-high": {
+          "name": "GPT 5.5 20260423 High (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -115,8 +115,8 @@
             "store": false
           }
         },
-        "gpt-5.4-xhigh": {
-          "name": "GPT 5.4 Extra High (OAuth)",
+        "gpt-5.5-xhigh": {
+          "name": "GPT 5.5 20260423 Extra High (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -265,8 +265,8 @@
             "store": false
           }
         },
-        "gpt-5.4-pro-medium": {
-          "name": "GPT 5.4 Pro Medium (OAuth)",
+        "gpt-5.5-pro-medium": {
+          "name": "GPT 5.5 Pro 20260423 Medium (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -290,8 +290,8 @@
             "store": false
           }
         },
-        "gpt-5.4-pro-high": {
-          "name": "GPT 5.4 Pro High (OAuth)",
+        "gpt-5.5-pro-high": {
+          "name": "GPT 5.5 Pro 20260423 High (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -315,8 +315,8 @@
             "store": false
           }
         },
-        "gpt-5.4-pro-xhigh": {
-          "name": "GPT 5.4 Pro Extra High (OAuth)",
+        "gpt-5.5-pro-xhigh": {
+          "name": "GPT 5.5 Pro 20260423 Extra High (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000

@@ -84,7 +84,7 @@ Update your `~/.config/opencode/opencode.json`:
    ```
 3. **Remember: request logs only appear after the first OpenAI request**:
    ```bash
-   ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.4
+   ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5
    ```
 4. **Check registry access**:
    ```bash
@@ -362,6 +362,7 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback opencode
    ```
 4. Default fallback chain (when policy is `fallback` and not overridden):
+   - `gpt-5.5-pro -> gpt-5.5`
    - `gpt-5.4-pro -> gpt-5.4` (if `gpt-5.4-pro` is selected manually)
    - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
    - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (if Spark IDs are selected manually)
@@ -373,6 +374,7 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
      "unsupportedCodexPolicy": "fallback",
      "fallbackOnUnsupportedCodexModel": true,
      "unsupportedCodexFallbackChain": {
+       "gpt-5.5-pro": ["gpt-5.5"],
        "gpt-5.4-pro": ["gpt-5.4"],
        "gpt-5-codex": ["gpt-5.2-codex"],
        "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
@@ -649,7 +651,7 @@ DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 o
 <summary><b>Inspect Actual API Requests</b></summary>
 
 ```bash
-ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 opencode run "test" --model=openai/gpt-5.4-low
+ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 opencode run "test" --model=openai/gpt-5.5-low
 
 cat ~/.opencode/logs/codex-plugin/request-*-after-transform.json | jq '{
   model: .body.model,
