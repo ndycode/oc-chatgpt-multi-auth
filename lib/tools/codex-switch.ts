@@ -8,6 +8,7 @@ import { loadAccounts, saveAccounts } from "../storage.js";
 import { AccountManager } from "../accounts.js";
 import { logWarn } from "../logger.js";
 import { MODEL_FAMILIES } from "../prompts/codex.js";
+import { clearTuiQuotaSnapshot } from "../tui-quota-cache.js";
 import {
 	formatUiHeader,
 	formatUiItem,
@@ -145,6 +146,13 @@ export function createCodexSwitchTool(ctx: ToolContext): ToolDefinition {
 					].join("\n");
 				}
 				return `Switched to ${label} but failed to persist. Changes may be lost on restart.`;
+			}
+			try {
+				await clearTuiQuotaSnapshot();
+			} catch (cacheError) {
+				logWarn("Failed to clear TUI quota cache after account switch", {
+					error: String(cacheError),
+				});
 			}
 
 			if (cachedAccountManagerRef.current) {

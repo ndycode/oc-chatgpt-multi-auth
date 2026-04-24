@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
 	formatPromptStatusText,
+	formatQuotaDetailsText,
 	resolvePromptReasoningVariant,
+	resolveQuotaPromptTone,
 	type CompactQuotaStatus,
 	type PromptStatusConfig,
 	type PromptStatusMessage,
 } from "../lib/tui-status.js";
 
 describe("TUI prompt status helpers", () => {
+	const sep = ` ${String.fromCharCode(183)} `;
 	const quota: CompactQuotaStatus = {
 		type: "ready",
 		limits: [
@@ -25,7 +28,7 @@ describe("TUI prompt status helpers", () => {
 				quota,
 				width: 120,
 			}),
-		).toBe("xhigh · 5h 88% · 7d 83%");
+		).toBe(`xhigh${sep}5h 88%${sep}7d 83%`);
 
 		expect(
 			formatPromptStatusText({
@@ -33,7 +36,7 @@ describe("TUI prompt status helpers", () => {
 				quota,
 				width: 80,
 			}),
-		).toBe("xhigh · 5h 88% · 7d 83%");
+		).toBe(`xhigh${sep}5h 88%${sep}7d 83%`);
 
 		expect(
 			formatPromptStatusText({
@@ -51,13 +54,83 @@ describe("TUI prompt status helpers", () => {
 				quota: { type: "unavailable" },
 				width: 120,
 			}),
-		).toBe("high · limits ?");
+		).toBe(`high${sep}limits ?`);
 		expect(
 			formatPromptStatusText({
 				quota: { type: "missing" },
 				width: 120,
 			}),
 		).toBe("no auth");
+		expect(
+			formatPromptStatusText({
+				quota: { type: "loading" },
+				width: 120,
+			}),
+		).toBe("");
+	});
+
+	it("adds account hint only when multiple accounts are configured", () => {
+		expect(
+			formatPromptStatusText({
+				quota: {
+					...quota,
+					accountIndex: 2,
+					accountCount: 3,
+				},
+				width: 120,
+			}),
+		).toBe(`A2${sep}5h 88%${sep}7d 83%`);
+
+		expect(
+			formatPromptStatusText({
+				quota: {
+					...quota,
+					accountIndex: 1,
+					accountCount: 1,
+				},
+				width: 120,
+			}),
+		).toBe(`5h 88%${sep}7d 83%`);
+	});
+
+	it("resolves prompt tone from quota thresholds", () => {
+		expect(resolveQuotaPromptTone(quota)).toBe("normal");
+		expect(
+			resolveQuotaPromptTone({
+				...quota,
+				limits: [{ label: "5h", leftPercent: 20 }],
+			}),
+		).toBe("warning");
+		expect(
+			resolveQuotaPromptTone({
+				...quota,
+				limits: [{ label: "5h", leftPercent: 8 }],
+			}),
+		).toBe("danger");
+		expect(resolveQuotaPromptTone({ ...quota, stale: true })).toBe("stale");
+	});
+
+	it("formats quota details for the command dialog", () => {
+		const details = formatQuotaDetailsText(
+			{
+				...quota,
+				accountIndex: 2,
+				accountCount: 3,
+				accountLabel: "Account 2 (neil@example.com)",
+				source: "headers",
+				fetchedAt: 1_000,
+				planType: "plus",
+				activeLimit: 40,
+			},
+			31_000,
+		);
+
+		expect(details).toContain("Account: A2 (Account 2");
+		expect(details).toContain("5h: 88% left");
+		expect(details).toContain("Plan: plus");
+		expect(details).toContain("Active limit: 40");
+		expect(details).toContain("Source: response headers");
+		expect(details).toContain("Updated: just now");
 	});
 
 	it("resolves the selected variant from session messages before config defaults", () => {

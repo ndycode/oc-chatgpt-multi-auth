@@ -5,7 +5,12 @@ export type ReasoningVariant = "none" | "low" | "medium" | "high" | "xhigh";
 export type CompactQuotaLimit = {
 	label: string;
 	leftPercent: number | null;
+	usedPercent?: number;
+	windowMinutes?: number;
+	resetAtMs?: number;
 };
+
+export type CompactQuotaSource = "headers" | "usage";
 
 export type CompactQuotaStatus =
 	| { type: "loading" }
@@ -15,6 +20,14 @@ export type CompactQuotaStatus =
 			type: "ready";
 			limits: readonly CompactQuotaLimit[];
 			stale: boolean;
+			source?: CompactQuotaSource;
+			fetchedAt?: number;
+			fingerprint?: string;
+			accountIndex?: number;
+			accountCount?: number;
+			accountLabel?: string;
+			planType?: string;
+			activeLimit?: number;
 	  };
 
 export type PromptStatusMessage = {
@@ -39,6 +52,7 @@ const variantSuffixes: ReasoningVariant[] = [
 	"low",
 	"none",
 ];
+const STATUS_SEPARATOR = ` ${String.fromCharCode(183)} `;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -178,16 +192,33 @@ function formatQuotaLimit(limit: CompactQuotaLimit): string | undefined {
 	return `${label} ${limit.leftPercent}%`;
 }
 
+function formatAccountHint(quota: CompactQuotaStatus): string | undefined {
+	if (quota.type !== "ready") return undefined;
+	if (
+		typeof quota.accountIndex !== "number" ||
+		!Number.isFinite(quota.accountIndex)
+	) {
+		return undefined;
+	}
+	if (
+		typeof quota.accountCount === "number" &&
+		Number.isFinite(quota.accountCount) &&
+		quota.accountCount <= 1
+	) {
+		return undefined;
+	}
+	return `A${quota.accountIndex}`;
+}
+
 function formatQuota(quota: CompactQuotaStatus): string | undefined {
 	if (quota.type === "ready") {
 		const parts = quota.limits
 			.map(formatQuotaLimit)
 			.filter((part): part is string => Boolean(part));
-		return parts.length > 0 ? parts.join(" · ") : undefined;
+		return parts.length > 0 ? parts.join(STATUS_SEPARATOR) : undefined;
 	}
 	if (quota.type === "missing") return "no auth";
 	if (quota.type === "unavailable") return "limits ?";
-	if (quota.type === "loading") return "limits ...";
 	return undefined;
 }
 
@@ -206,12 +237,121 @@ export function formatPromptStatusText(params: {
 	width?: number;
 }): string {
 	const variant = params.variant;
+	const account = formatAccountHint(params.quota);
 	const quota = formatQuota(params.quota);
 	const candidates = [
-		[variant, quota].filter(Boolean).join(" · "),
+		[variant, account, quota].filter(Boolean).join(STATUS_SEPARATOR),
+		[account, quota].filter(Boolean).join(STATUS_SEPARATOR),
+		[variant, quota].filter(Boolean).join(STATUS_SEPARATOR),
 		variant,
 		quota,
+		account,
 	].filter((candidate): candidate is string => Boolean(candidate));
 	const maxChars = maxStatusChars(params.width);
 	return candidates.find((candidate) => candidate.length <= maxChars) ?? "";
+}
+
+export type QuotaPromptTone =
+	| "normal"
+	| "warning"
+	| "danger"
+	| "stale"
+	| "unknown";
+
+export function resolveQuotaPromptTone(
+	quota: CompactQuotaStatus,
+): QuotaPromptTone {
+	if (quota.type === "ready") {
+		if (quota.stale) return "stale";
+		const percents = quota.limits
+			.map((limit) => limit.leftPercent)
+			.filter(isPercent);
+		if (percents.length === 0) return "unknown";
+		const lowest = Math.min(...percents);
+		if (lowest <= 10) return "danger";
+		if (lowest <= 25) return "warning";
+		return "normal";
+	}
+	if (quota.type === "loading") return "unknown";
+	return "warning";
+}
+
+function formatReset(resetAtMs: number | undefined): string | undefined {
+	if (!resetAtMs || !Number.isFinite(resetAtMs) || resetAtMs <= 0) {
+		return undefined;
+	}
+	const date = new Date(resetAtMs);
+	if (!Number.isFinite(date.getTime())) return undefined;
+	const now = new Date();
+	const sameDay =
+		now.getFullYear() === date.getFullYear() &&
+		now.getMonth() === date.getMonth() &&
+		now.getDate() === date.getDate();
+	const time = date.toLocaleTimeString(undefined, {
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	});
+	if (sameDay) return time;
+	const day = date.toLocaleDateString(undefined, {
+		month: "short",
+		day: "2-digit",
+	});
+	return `${time} on ${day}`;
+}
+
+function formatUpdatedAge(fetchedAt: number | undefined, now: number): string {
+	if (!fetchedAt || !Number.isFinite(fetchedAt)) return "unknown";
+	const ageMs = Math.max(0, now - fetchedAt);
+	if (ageMs < 60_000) return "just now";
+	const minutes = Math.floor(ageMs / 60_000);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return `${days}d ago`;
+}
+
+function formatDetailsLimit(limit: CompactQuotaLimit): string {
+	const label = limit.label.trim() || "quota";
+	const left = isPercent(limit.leftPercent)
+		? `${limit.leftPercent}% left`
+		: "unavailable";
+	const reset = formatReset(limit.resetAtMs);
+	return reset ? `${label}: ${left}, resets ${reset}` : `${label}: ${left}`;
+}
+
+export function formatQuotaDetailsText(
+	quota: CompactQuotaStatus,
+	now = Date.now(),
+): string {
+	if (quota.type === "loading") return "Quota is loading.";
+	if (quota.type === "missing") return "No Codex OAuth account is configured.";
+	if (quota.type === "unavailable") return "Quota is unavailable.";
+
+	const lines: string[] = [];
+	const accountHint = formatAccountHint(quota);
+	if (quota.accountLabel && accountHint) {
+		lines.push(`Account: ${accountHint} (${quota.accountLabel})`);
+	} else if (quota.accountLabel) {
+		lines.push(`Account: ${quota.accountLabel}`);
+	} else if (accountHint) {
+		lines.push(`Account: ${accountHint}`);
+	}
+	for (const limit of quota.limits) {
+		lines.push(formatDetailsLimit(limit));
+	}
+	if (quota.planType) lines.push(`Plan: ${quota.planType}`);
+	if (
+		typeof quota.activeLimit === "number" &&
+		Number.isFinite(quota.activeLimit)
+	) {
+		lines.push(`Active limit: ${quota.activeLimit}`);
+	}
+	lines.push(
+		`Source: ${quota.source === "headers" ? "response headers" : "usage endpoint"}`,
+	);
+	lines.push(`Updated: ${formatUpdatedAge(quota.fetchedAt, now)}`);
+	if (quota.stale) lines.push("Status: stale fallback");
+	return lines.join("\n");
 }

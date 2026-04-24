@@ -15,20 +15,27 @@ import {
 } from "./lib/codex-usage.js";
 import {
 	formatPromptStatusText,
+	formatQuotaDetailsText,
+	resolveQuotaPromptTone,
 	type CompactQuotaLimit,
 	type CompactQuotaStatus,
 } from "./lib/tui-status.js";
+import {
+	createTuiQuotaSnapshot,
+	getTuiQuotaCachePath,
+	isTuiQuotaSnapshot,
+	readTuiQuotaSnapshot,
+	writeTuiQuotaSnapshot,
+	type TuiQuotaSnapshot,
+} from "./lib/tui-quota-cache.js";
 import { loadAccounts } from "./lib/storage.js";
 
 const CACHE_KEY = "oc-codex-multi-auth:tui-status:v2";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const EVENT_REFRESH_DEBOUNCE_MS = 750;
+const ACCOUNT_POLL_INTERVAL_MS = 1_000;
 
-type StoredQuotaStatus = {
-	fingerprint: string;
-	fetchedAt: number;
-	limits: CompactQuotaLimit[];
-};
+type StoredQuotaStatus = TuiQuotaSnapshot;
 
 type SolidRuntime = Pick<
 	typeof import("@opentui/solid"),
@@ -38,38 +45,8 @@ type SolidRuntime = Pick<
 
 let inFlightRefresh: Promise<CompactQuotaStatus> | undefined;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isNullablePercent(value: unknown): value is number | null {
-	return (
-		value === null ||
-		(typeof value === "number" &&
-			Number.isFinite(value) &&
-			value >= 0 &&
-			value <= 100)
-	);
-}
-
-function isStoredQuotaLimit(value: unknown): value is CompactQuotaLimit {
-	return (
-		isRecord(value) &&
-		typeof value.label === "string" &&
-		value.label.trim().length > 0 &&
-		isNullablePercent(value.leftPercent)
-	);
-}
-
 function isStoredQuotaStatus(value: unknown): value is StoredQuotaStatus {
-	return (
-		isRecord(value) &&
-		typeof value.fingerprint === "string" &&
-		typeof value.fetchedAt === "number" &&
-		Number.isFinite(value.fetchedAt) &&
-		Array.isArray(value.limits) &&
-		value.limits.every(isStoredQuotaLimit)
-	);
+	return isTuiQuotaSnapshot(value);
 }
 
 function readStoredQuotaStatus(
@@ -108,17 +85,77 @@ function toCompactQuotaStatus(
 		type: "ready",
 		limits: stored.limits,
 		stale,
+		source: stored.source,
+		fetchedAt: stored.fetchedAt,
+		fingerprint: stored.fingerprint,
+		accountIndex: stored.accountIndex,
+		accountCount: stored.accountCount,
+		accountLabel: stored.accountLabel,
+		planType: stored.planType,
+		activeLimit: stored.activeLimit,
 	};
 }
 
 function toCompactQuotaLimit(
-	window: { usedPercent?: number; windowMinutes?: number },
+	window: { usedPercent?: number; windowMinutes?: number; resetAtMs?: number },
 ): CompactQuotaLimit | undefined {
 	if (!hasUsageWindow(window)) return undefined;
 	return {
 		label: formatUsageWindowLabel(window.windowMinutes),
 		leftPercent: getUsageLeftPercent(window.usedPercent) ?? null,
+		usedPercent: window.usedPercent,
+		windowMinutes: window.windowMinutes,
+		resetAtMs: window.resetAtMs,
 	};
+}
+
+function formatTuiAccountLabel(
+	account: { email?: string; accountId?: string; organizationId?: string },
+	index: number,
+): string {
+	return (
+		account.email?.trim() ||
+		account.accountId?.trim() ||
+		account.organizationId?.trim() ||
+		`Account ${index + 1}`
+	);
+}
+
+function getSharedQuotaCachePath(api: TuiPluginApi): string {
+	return getTuiQuotaCachePath(api.state.path.state);
+}
+
+async function readSharedQuotaStatus(
+	api: TuiPluginApi,
+	fingerprint: string,
+): Promise<StoredQuotaStatus | undefined> {
+	const cachePath = getSharedQuotaCachePath(api);
+	const snapshot = await readTuiQuotaSnapshot(cachePath);
+	if (snapshot?.fingerprint === fingerprint) return snapshot;
+	const fallbackSnapshot = await readTuiQuotaSnapshot();
+	return fallbackSnapshot?.fingerprint === fingerprint
+		? fallbackSnapshot
+		: undefined;
+}
+
+async function writeSharedQuotaStatus(
+	api: TuiPluginApi,
+	status: StoredQuotaStatus,
+): Promise<void> {
+	try {
+		await writeTuiQuotaSnapshot(status, getSharedQuotaCachePath(api));
+	} catch {
+		// The prompt status is best-effort; shared cache write failures should
+		// not affect the OpenCode TUI.
+	}
+}
+
+async function resolveActiveQuotaFingerprint(): Promise<string | undefined> {
+	const storage = await loadAccounts();
+	const selection = storage ? resolveCodexUsageActiveAccount(storage) : null;
+	return selection
+		? createUsageAccountFingerprint(selection.account)
+		: undefined;
 }
 
 async function refreshQuotaStatusInner(
@@ -133,6 +170,11 @@ async function refreshQuotaStatusInner(
 		const selection = resolveCodexUsageActiveAccount(storage);
 		if (!selection) return { type: "missing" };
 		const fingerprint = createUsageAccountFingerprint(selection.account);
+		const shared = await readSharedQuotaStatus(api, fingerprint);
+		if (shared) {
+			writeStoredQuotaStatus(api, shared);
+			return toCompactQuotaStatus(shared, false);
+		}
 		const cached = readStoredQuotaStatus(api, fingerprint);
 		const now = Date.now();
 
@@ -157,12 +199,21 @@ async function refreshQuotaStatusInner(
 				toCompactQuotaLimit(usage.primary),
 				toCompactQuotaLimit(usage.secondary),
 			].filter((limit): limit is CompactQuotaLimit => Boolean(limit));
-			const stored: StoredQuotaStatus = {
+			const stored = createTuiQuotaSnapshot({
 				fingerprint,
-				fetchedAt: now,
+				source: "usage",
+				accountIndex: selection.index + 1,
+				accountCount: storage.accounts.length,
+				accountLabel: formatTuiAccountLabel(
+					selection.account,
+					selection.index,
+				),
+				planType: usage.planType ?? undefined,
 				limits,
-			};
+				fetchedAt: now,
+			});
 			writeStoredQuotaStatus(api, stored);
+			await writeSharedQuotaStatus(api, stored);
 			return toCompactQuotaStatus(stored, false);
 		} catch {
 			return cached ? toCompactQuotaStatus(cached, true) : { type: "unavailable" };
@@ -212,9 +263,15 @@ function createPromptStatus(
 	const [quota, setQuota] = solid.createSignal<CompactQuotaStatus>({
 		type: "loading",
 	});
+	let currentFingerprint: string | undefined;
+	const applyQuota = (next: CompactQuotaStatus): void => {
+		if (next.type === "ready") currentFingerprint = next.fingerprint;
+		if (next.type === "missing") currentFingerprint = undefined;
+		setQuota(next);
+	};
 	const refresh = (): void => {
-		void refreshQuotaStatus(api).then(setQuota, () => {
-			setQuota({ type: "unavailable" });
+		void refreshQuotaStatus(api).then(applyQuota, () => {
+			applyQuota({ type: "unavailable" });
 		});
 	};
 	let refreshTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -228,6 +285,14 @@ function createPromptStatus(
 
 	refresh();
 	const interval = setInterval(refresh, REFRESH_INTERVAL_MS);
+	const accountInterval = setInterval(() => {
+		void resolveActiveQuotaFingerprint().then((fingerprint) => {
+			if (fingerprint === currentFingerprint) return;
+			currentFingerprint = fingerprint;
+			setQuota({ type: "loading" });
+			refresh();
+		});
+	}, ACCOUNT_POLL_INTERVAL_MS);
 	const disposeMessageUpdated = api.event.on("message.updated", (event) => {
 		if (shouldRefreshQuotaForEvent(event)) scheduleRefresh();
 	});
@@ -248,6 +313,7 @@ function createPromptStatus(
 	});
 	solid.onCleanup(() => {
 		clearInterval(interval);
+		clearInterval(accountInterval);
 		if (refreshTimeout) clearTimeout(refreshTimeout);
 		disposeMessageUpdated();
 		disposeMessagePartUpdated();
@@ -268,9 +334,13 @@ function createPromptStatus(
 			},
 			get fg() {
 				const current = quota();
-				return current.type === "ready"
-					? api.theme.current.textMuted
-					: api.theme.current.warning;
+				const tone = resolveQuotaPromptTone(current);
+				if (tone === "danger") return api.theme.current.error;
+				if (tone === "warning" || tone === "stale") {
+					return api.theme.current.warning;
+				}
+				if (tone === "normal") return api.theme.current.success;
+				return api.theme.current.textMuted;
 			},
 			selectable: false,
 			truncate: true,
@@ -279,6 +349,29 @@ function createPromptStatus(
 		false,
 	);
 	return node;
+}
+
+function showQuotaDetails(api: TuiPluginApi): void {
+	void refreshQuotaStatus(api).then(
+		(status) => {
+			api.ui.dialog.replace(() =>
+				api.ui.DialogAlert({
+					title: "Codex quota",
+					message: formatQuotaDetailsText(status),
+					onConfirm: () => api.ui.dialog.clear(),
+				}),
+			);
+		},
+		() => {
+			api.ui.dialog.replace(() =>
+				api.ui.DialogAlert({
+					title: "Codex quota",
+					message: formatQuotaDetailsText({ type: "unavailable" }),
+					onConfirm: () => api.ui.dialog.clear(),
+				}),
+			);
+		},
+	);
 }
 
 const module: TuiPluginModule = {
@@ -299,6 +392,17 @@ const module: TuiPluginModule = {
 				session_prompt_right: () => createPromptStatus(api, solid),
 			},
 		});
+		const disposeCommand = api.command.register(() => [
+			{
+				title: "Codex quota details",
+				value: "codex.quota.details",
+				description:
+					"Show active account usage, reset times, source, and last refresh.",
+				category: "Codex",
+				onSelect: () => showQuotaDetails(api),
+			},
+		]);
+		api.lifecycle.onDispose(disposeCommand);
 	},
 };
 
