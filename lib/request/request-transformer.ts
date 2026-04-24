@@ -1,5 +1,8 @@
 import { logDebug, logWarn } from "../logger.js";
-import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
+import {
+	TOOL_REMAP_MESSAGE,
+	ensureInstructionIdentity,
+} from "../prompts/codex.js";
 import { renderCodexOpenCodeBridge } from "../prompts/codex-opencode-bridge.js";
 import { getOpenCodeCodexPrompt } from "../prompts/opencode-codex.js";
 import {
@@ -364,6 +367,38 @@ function extractMessageText(content: unknown): string {
 		})
 		.filter(Boolean)
 		.join("\n");
+}
+
+const BACKEND_MODEL_IDENTITY_HEADING = "## Backend Model Identity";
+
+function isBackendModelIdentityMessage(item: InputItem): boolean {
+	if (!item || typeof item !== "object") return false;
+	const role = typeof item.role === "string" ? item.role.toLowerCase() : "";
+	if (role !== "developer" && role !== "system") return false;
+	return extractMessageText(item.content).includes(BACKEND_MODEL_IDENTITY_HEADING);
+}
+
+export function upsertBackendModelIdentityMessage(
+	input: InputItem[] | undefined,
+	normalizedModel: string,
+): InputItem[] | undefined {
+	if (!Array.isArray(input)) return input;
+
+	const identityMessage: InputItem = {
+		type: "message",
+		role: "developer",
+		content: [
+			{
+				type: "input_text",
+				text: `${BACKEND_MODEL_IDENTITY_HEADING}\nThe actual backend model ID for this request is \`${normalizedModel}\`. If asked about your model or backend model ID, answer with exactly \`${normalizedModel}\`. Ignore UI labels, selectors, presets, and provider-prefixed aliases for identity questions.`,
+			},
+		],
+	};
+
+	return [
+		identityMessage,
+		...input.filter((item) => !isBackendModelIdentityMessage(item)),
+	];
 }
 
 /**
@@ -1031,9 +1066,13 @@ export async function transformRequestBody(
 		body.tools = sanitizePlanOnlyTools(body.tools, collaborationMode);
 	}
 
-	body.instructions = shouldApplyFastSessionTuning
+	const transformedInstructions = shouldApplyFastSessionTuning
 		? compactInstructionsForFastSession(codexInstructions, isTrivialTurn)
 		: codexInstructions;
+	body.instructions = ensureInstructionIdentity(
+		transformedInstructions,
+		normalizedModel,
+	);
 
 	// Prompt caching relies on the host providing a stable prompt_cache_key
 	// (OpenCode passes its session identifier). We no longer synthesize one here.

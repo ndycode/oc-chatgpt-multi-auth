@@ -23,6 +23,9 @@
 
  */
 
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk";
 import {
@@ -148,7 +151,10 @@ import {
 	DEACTIVATED_WORKSPACE_ERROR_CODE,
 	isDeactivatedWorkspaceErrorMessage,
 } from "./lib/error-sentinels.js";
-import { applyFastSessionDefaults } from "./lib/request/request-transformer.js";
+import {
+	applyFastSessionDefaults,
+	upsertBackendModelIdentityMessage,
+} from "./lib/request/request-transformer.js";
 import {
 	getRateLimitBackoff,
 	RATE_LIMIT_SHORT_RETRY_THRESHOLD_MS,
@@ -223,7 +229,7 @@ import {
  * }
  * ```
  */
-// eslint-disable-next-line @typescript-eslint/require-await
+ 
 export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 	initLogger(client);
 	let cachedAccountManager: AccountManager | null = null;
@@ -591,10 +597,103 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		): number => {
 				const total = storage.accounts.length;
 				if (total === 0) return 0;
-				const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
-				const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
-				return Math.max(0, Math.min(raw, total - 1));
+		const rawCandidate = storage.activeIndexByFamily?.[family] ?? storage.activeIndex;
+		const raw = Number.isFinite(rawCandidate) ? rawCandidate : 0;
+		return Math.max(0, Math.min(raw, total - 1));
 		};
+
+	const backfillHostOpenAIAuthFromPool = async (): Promise<void> => {
+		const authPath = join(homedir(), ".local", "share", "opencode", "auth.json");
+		type HostAuthEntry = {
+			type?: unknown;
+			access?: unknown;
+			refresh?: unknown;
+			expires?: unknown;
+		};
+		type HostAuthStore = Record<string, HostAuthEntry>;
+
+		let authStore: HostAuthStore = {};
+		try {
+			const authRaw = await readFile(authPath, "utf8");
+			const parsed = JSON.parse(authRaw);
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				authStore = parsed as HostAuthStore;
+			}
+		} catch (error) {
+			const errorCode = (error as NodeJS.ErrnoException | undefined)?.code;
+			if (errorCode !== "ENOENT") {
+				logWarn(
+					`[${PLUGIN_NAME}] Failed to read host auth store for OpenAI backfill: ${
+						(error as Error)?.message ?? String(error)
+					}`,
+				);
+				return;
+			}
+		}
+
+		const existing = authStore[PROVIDER_ID];
+		const hasExistingOAuth =
+			existing?.type === "oauth" &&
+			typeof existing.access === "string" &&
+			existing.access.trim().length > 0 &&
+			typeof existing.refresh === "string" &&
+			existing.refresh.trim().length > 0 &&
+			typeof existing.expires === "number" &&
+			Number.isFinite(existing.expires);
+		if (hasExistingOAuth) {
+			return;
+		}
+
+		const storage = await loadAccounts();
+		if (!storage || storage.accounts.length === 0) {
+			return;
+		}
+
+		const activeIndex = resolveActiveIndex(storage, "codex");
+		const candidate =
+			storage.accounts[activeIndex] ??
+			storage.accounts.find(
+				(account) =>
+					typeof account?.accessToken === "string" &&
+					account.accessToken.trim().length > 0 &&
+					typeof account?.refreshToken === "string" &&
+					account.refreshToken.trim().length > 0 &&
+					typeof account?.expiresAt === "number" &&
+					Number.isFinite(account.expiresAt),
+			);
+		if (
+			!candidate ||
+			typeof candidate.accessToken !== "string" ||
+			candidate.accessToken.trim().length === 0 ||
+			typeof candidate.refreshToken !== "string" ||
+			candidate.refreshToken.trim().length === 0 ||
+			typeof candidate.expiresAt !== "number" ||
+			!Number.isFinite(candidate.expiresAt)
+		) {
+			return;
+		}
+
+		authStore[PROVIDER_ID] = {
+			type: "oauth",
+			access: candidate.accessToken,
+			refresh: candidate.refreshToken,
+			expires: candidate.expiresAt,
+		};
+
+		try {
+			await mkdir(join(homedir(), ".local", "share", "opencode"), { recursive: true });
+			await writeFile(authPath, `${JSON.stringify(authStore, null, 2)}\n`, "utf8");
+			logInfo(
+				`[${PLUGIN_NAME}] Restored missing host OpenAI auth entry from stored account pool`,
+			);
+		} catch (error) {
+			logWarn(
+				`[${PLUGIN_NAME}] Failed to backfill host OpenAI auth entry: ${
+					(error as Error)?.message ?? String(error)
+				}`,
+			);
+		}
+	};
 
 	const hydrateEmails = async (
 			storage: AccountStorageV3 | null,
@@ -1267,6 +1366,11 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			upsertFlaggedAccountRecord,
 		};
 
+	const startupPluginConfig = loadPluginConfig();
+	const startupPerProjectAccounts = getPerProjectAccounts(startupPluginConfig);
+	setStoragePath(startupPerProjectAccounts ? process.cwd() : null);
+	await backfillHostOpenAIAuthFromPool();
+
         return {
                 event: eventHandler,
                 auth: {
@@ -1332,11 +1436,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 						await accountManager.saveToDisk();
 					}
 
-					if (accountManager.getAccountCount() === 0) {
-						logDebug(
+					const accountCount = accountManager.getAccountCount();
+					const storagePath = getStoragePath();
+					logDebug(
+						`[${PLUGIN_NAME}] Loader auth bootstrap`,
+						{
+							authType: auth.type,
+							authHasRefresh: !!authFallback?.refresh,
+							authHasMultiAccount: !!authWithMulti?.multiAccount,
+							accountCount,
+							storagePath,
+						},
+					);
+					if (accountCount === 0) {
+						logWarn(
 							`[${PLUGIN_NAME}] No Codex accounts available (run opencode auth login)`,
 						);
-						return {};
 					}
 				// Extract user configuration (global + per-model options)
 				const providerConfig = provider as
@@ -2116,15 +2231,37 @@ while (attempted.size < Math.max(1, accountCount)) {
 				fallbackFrom = previousModel;
 				fallbackTo = model;
 				fallbackReason = "fallback-unsupported-model-entitlement";
+				const fallbackInstructions = await getCodexInstructions(model);
 
 				if (transformedBody && typeof transformedBody === "object") {
-					transformedBody = { ...transformedBody, model };
+					transformedBody = {
+						...transformedBody,
+						model,
+						instructions: fallbackInstructions,
+						input: upsertBackendModelIdentityMessage(
+							transformedBody.input,
+							model,
+						),
+					};
 				} else {
-					let fallbackBody: Record<string, unknown> = { model };
+					let fallbackBody: Record<string, unknown> = {
+						model,
+						instructions: fallbackInstructions,
+					};
 					if (requestInit?.body && typeof requestInit.body === "string") {
 						try {
 							const parsed = JSON.parse(requestInit.body) as Record<string, unknown>;
-							fallbackBody = { ...parsed, model };
+							fallbackBody = {
+								...parsed,
+								model,
+								instructions: fallbackInstructions,
+							};
+							if (Array.isArray(fallbackBody.input)) {
+								fallbackBody.input = upsertBackendModelIdentityMessage(
+									fallbackBody.input,
+									model,
+								);
+							}
 						} catch {
 							// Keep minimal fallback body if parsing fails.
 						}
@@ -2451,7 +2588,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 												: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;
-								runtimeMetrics.lastErrorCategory = waitMs > 0 ? "rate-limit" : "account-failure";
+								runtimeMetrics.lastErrorCategory =
+									waitMs > 0
+										? "rate-limit"
+										: wasEntitlementExhaustion
+											? "unsupported-model"
+											: "account-failure";
 								return new Response(JSON.stringify({ error: { message } }), {
 									status: waitMs > 0 ? 429 : 503,
 											headers: {

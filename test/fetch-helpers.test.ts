@@ -1000,6 +1000,8 @@ describe('Fetch Helpers Module', () => {
 
 				expect(result).toBeDefined();
 				expect(result?.body.model).toBe('gpt-5-codex');
+				expect(result?.body.instructions).toContain('backend as gpt-5-codex');
+				expect(JSON.stringify(result?.body.input?.[0])).toContain('`gpt-5-codex`');
 				expect(result?.body.tools).toEqual([{ name: 'apply_patch' }]);
 				expect(getInstructionsSpy).not.toHaveBeenCalled();
 			});
@@ -1023,6 +1025,34 @@ describe('Fetch Helpers Module', () => {
 
 				expect(result).toBeDefined();
 				expect(result?.body.model).toBe('gpt-5.5');
+				expect(result?.body.instructions).toContain('backend as gpt-5.5');
+				expect(JSON.stringify(result?.body.input?.[0])).toContain('`gpt-5.5`');
+				expect(getInstructionsSpy).not.toHaveBeenCalled();
+			});
+
+			it('replaces stale native instruction identity with the actual backend model id', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+				const getInstructionsSpy = vi.spyOn(codexPrompts, 'getCodexInstructions');
+				const requestBody = {
+					model: 'gpt-5.5-medium',
+					instructions: 'You are GPT-5.2 running in the Codex CLI, a terminal-based coding assistant.\n\nRest.',
+					input: [{ type: 'message', role: 'user', content: 'Hello' }],
+				};
+
+				const result = await transformRequestForCodex(
+					{ body: JSON.stringify(requestBody) },
+					'https://example.com',
+					{ global: {}, models: {} },
+					true,
+					undefined,
+					{ requestTransformMode: 'native' } as any,
+				);
+
+				expect(result).toBeDefined();
+				expect(result?.body.model).toBe('gpt-5.5');
+				expect(result?.body.instructions).toContain('backend as gpt-5.5');
+				expect(result?.body.instructions).not.toContain('You are GPT-5.2');
+				expect(JSON.stringify(result?.body.input?.[0])).toContain('`gpt-5.5`');
 				expect(getInstructionsSpy).not.toHaveBeenCalled();
 			});
 

@@ -6,8 +6,16 @@
 import type { Auth, OpencodeClient } from "@opencode-ai/sdk";
 import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
-import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
-import { transformRequestBody, normalizeModel } from "./request-transformer.js";
+import {
+	ensureInstructionIdentity,
+	getCodexInstructions,
+	getModelFamily,
+} from "../prompts/codex.js";
+import {
+	transformRequestBody,
+	normalizeModel,
+	upsertBackendModelIdentityMessage,
+} from "./request-transformer.js";
 import { GPT_55_MODEL_ID } from "./helpers/model-map.js";
 import { convertSseToJson, ensureContentType } from "./response-handler.js";
 import type { OAuthAuthDetails, UserConfig, RequestBody } from "../types.js";
@@ -528,6 +536,11 @@ export async function transformRequestForCodex(
 
 			const normalizedModel = normalizeModel(originalModel);
 			body.model = normalizedModel;
+			body.instructions = ensureInstructionIdentity(
+				body.instructions,
+				normalizedModel,
+			);
+			body.input = upsertBackendModelIdentityMessage(body.input, normalizedModel);
 
 			logRequest(LOG_STAGES.AFTER_TRANSFORM, {
 				url,
