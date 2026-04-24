@@ -33,7 +33,7 @@ describe("install-oc-codex-multi-auth script", () => {
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
 
-		await expect(runInstaller(["--modern", "--legacy", "--help"])).resolves.toMatchObject({
+		await expect(runInstaller(["--modern", "--full", "--legacy", "--help"])).resolves.toMatchObject({
 			action: "help",
 			exitCode: 0,
 		});
@@ -42,7 +42,7 @@ describe("install-oc-codex-multi-auth script", () => {
 		expect(errorSpy).not.toHaveBeenCalled();
 	});
 
-	it("writes the merged full catalog, preserves user model entries, and normalizes plugin entries", async () => {
+	it("writes compact UI catalog by default, preserves user model entries, and normalizes plugin entries", async () => {
 		vi.resetModules();
 		tempHome = await createTempHome();
 		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
@@ -64,6 +64,9 @@ describe("install-oc-codex-multi-auth script", () => {
 					openai: {
 						models: {
 							old: { name: "old" },
+							"gpt-5.4": { name: "stale base model" },
+							"gpt-5.5-high": { name: "stale explicit preset" },
+							"gpt-5.5-fast-medium": { name: "stale explicit preset" },
 						},
 					},
 				},
@@ -82,7 +85,7 @@ describe("install-oc-codex-multi-auth script", () => {
 			}),
 		).resolves.toMatchObject({
 			action: "install",
-			configMode: "full",
+			configMode: "modern",
 			exitCode: 0,
 		});
 
@@ -101,18 +104,16 @@ describe("install-oc-codex-multi-auth script", () => {
 		const modernTemplate = JSON.parse(
 			await readFile(new URL("../config/opencode-modern.json", import.meta.url), "utf-8"),
 		) as OpenAiTemplate;
-		const legacyTemplate = JSON.parse(
-			await readFile(new URL("../config/opencode-legacy.json", import.meta.url), "utf-8"),
-		) as OpenAiTemplate;
 		// Template catalog ids plus the user's preserved `old` entry (deep-merge).
-		const expectedCount = Object.keys(modernTemplate.provider.openai.models).length
-			+ Object.keys(legacyTemplate.provider.openai.models).length
-			+ 1;
+		// Explicit preset ids from earlier full installs are managed installer
+		// output, so compact mode prunes them instead of treating them as custom.
+		const expectedCount = Object.keys(modernTemplate.provider.openai.models).length + 1;
 		expect(Object.keys(saved.provider.openai.models)).toHaveLength(expectedCount);
 		expect(saved.provider.openai.models["gpt-5.5"]).toBeDefined();
-		expect(saved.provider.openai.models["gpt-5.5-high"]).toBeDefined();
 		expect(saved.provider.openai.models["gpt-5.5-fast"]).toBeDefined();
-		expect(saved.provider.openai.models["gpt-5.5-fast-medium"]).toBeDefined();
+		expect(saved.provider.openai.models["gpt-5.4"]).toBeUndefined();
+		expect(saved.provider.openai.models["gpt-5.5-high"]).toBeUndefined();
+		expect(saved.provider.openai.models["gpt-5.5-fast-medium"]).toBeUndefined();
 		// User-added model survives deep-merge without overriding template ids.
 		expect(saved.provider.openai.models["old"]).toEqual({ name: "old" });
 		const configEntries = await readdir(configDir);
@@ -122,6 +123,47 @@ describe("install-oc-codex-multi-auth script", () => {
 				expect.stringMatching(/^opencode\.json\.bak-/),
 			]),
 		);
+	});
+
+	it("writes the merged full catalog when --full is requested", async () => {
+		vi.resetModules();
+		tempHome = await createTempHome();
+		const { runInstaller } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const configDir = join(tempHome, ".config", "opencode");
+		const configPath = join(configDir, "opencode.json");
+
+		await mkdir(configDir, { recursive: true });
+		await writeFile(configPath, JSON.stringify({ plugin: [] }, null, 2), "utf-8");
+
+		await expect(
+			runInstaller(["--full", "--no-cache-clear"], {
+				env: {
+					...process.env,
+					HOME: tempHome,
+					USERPROFILE: tempHome,
+				},
+			}),
+		).resolves.toMatchObject({
+			action: "install",
+			configMode: "full",
+			exitCode: 0,
+		});
+
+		const saved = JSON.parse(await readFile(configPath, "utf-8")) as OpenAiTemplate;
+		const modernTemplate = JSON.parse(
+			await readFile(new URL("../config/opencode-modern.json", import.meta.url), "utf-8"),
+		) as OpenAiTemplate;
+		const legacyTemplate = JSON.parse(
+			await readFile(new URL("../config/opencode-legacy.json", import.meta.url), "utf-8"),
+		) as OpenAiTemplate;
+		const expectedCount = Object.keys(modernTemplate.provider.openai.models).length
+			+ Object.keys(legacyTemplate.provider.openai.models).length;
+
+		expect(Object.keys(saved.provider.openai.models)).toHaveLength(expectedCount);
+		expect(saved.provider.openai.models["gpt-5.5"]).toBeDefined();
+		expect(saved.provider.openai.models["gpt-5.5-high"]).toBeDefined();
+		expect(saved.provider.openai.models["gpt-5.5-fast"]).toBeDefined();
+		expect(saved.provider.openai.models["gpt-5.5-fast-medium"]).toBeDefined();
 	});
 
 	it("parses BOM-prefixed existing config and preserves custom keys on merge", async () => {
@@ -387,6 +429,32 @@ describe("install-oc-codex-multi-auth script", () => {
 		});
 	});
 
+	it("mergeOpenaiProvider unit: prunes known managed model keys while preserving custom models", async () => {
+		vi.resetModules();
+		const { __test } = await import("../scripts/install-oc-codex-multi-auth-core.js");
+		const merged = __test.mergeOpenaiProvider(
+			{
+				models: {
+					"gpt-5.5-high": { name: "stale explicit preset" },
+					"userOnly": { name: "custom user model" },
+				},
+			},
+			{
+				models: {
+					"gpt-5.5": { name: "compact base model" },
+				},
+			},
+			{
+				modelKeysToRemove: new Set(["gpt-5.5-high"]),
+			},
+		);
+
+		expect(merged.models).toEqual({
+			userOnly: { name: "custom user model" },
+			"gpt-5.5": { name: "compact base model" },
+		});
+	});
+
 	it("keeps cache files when --no-cache-clear is set but still unpins the cached package entry", async () => {
 		vi.resetModules();
 		tempHome = await createTempHome();
@@ -430,7 +498,7 @@ describe("install-oc-codex-multi-auth script", () => {
 			}),
 		).resolves.toMatchObject({
 			action: "install",
-			configMode: "full",
+			configMode: "modern",
 			exitCode: 0,
 		});
 
@@ -496,7 +564,7 @@ describe("install-oc-codex-multi-auth script", () => {
 			}),
 		).resolves.toMatchObject({
 			action: "install",
-			configMode: "full",
+			configMode: "modern",
 			exitCode: 0,
 		});
 

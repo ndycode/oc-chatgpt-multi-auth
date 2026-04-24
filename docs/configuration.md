@@ -48,7 +48,7 @@ controls how much thinking the model does.
 | `gpt-5.1-codex-mini` | medium, high |
 | `gpt-5.1` | none, low, medium, high |
 
-The shipped config templates include 9 base model families and 36 shipped presets overall (36 modern variants or 36 legacy explicit entries). On OpenCode `v1.0.210+`, those 36 presets intentionally appear as 9 base model entries plus `--variant` values. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin), while `gpt-5.3-codex-spark` remains a manual add-on for entitled workspaces only.
+The shipped config templates include 9 base model families and 36 shipped presets overall (36 modern variants or 36 legacy explicit entries). The default installer uses the compact modern template so the TUI model picker shows base OAuth model families and the separate variant picker selects the reasoning preset. Use `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin), while `gpt-5.3-codex-spark` remains a manual add-on for entitled workspaces only.
 For context sizing, shipped templates use:
 - `gpt-5.5` and `gpt-5.5-fast`: `context=1050000`, `output=128000`
 - `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, and `gpt-5.1-codex-mini`: `context=400000`, `output=128000`
@@ -58,16 +58,15 @@ model normalization aliases:
 - `gpt-5.5*`, `gpt-5.5-fast*`, and user-typed `gpt-5.5-pro*` normalize to the public Codex model id `gpt-5.5`
 - legacy `gpt-5` maps to `gpt-5.5`; legacy `gpt-5-mini` / `gpt-5-nano` map to `gpt-5.4-mini` / `gpt-5.4-nano`
 - snapshot ids `gpt-5.4-2026-03-05*`, `gpt-5.4-mini-2026-03-05*`, and `gpt-5.4-pro-2026-03-05*` map to stable `gpt-5.4` / `gpt-5.4-mini` / `gpt-5.4-pro`
-- `opencode debug config` is the reliable way to confirm merged custom/template model entries; on tested OpenCode `1.14.22`, `opencode models openai` exposes explicit GPT-5.5 entries like `gpt-5.5-medium`, `gpt-5.5-fast-medium`, and `gpt-5.5-high`, while bare `gpt-5.5` can still be omitted or rejected by provider lookup
+- `opencode debug config` is the reliable way to confirm merged custom/template model entries; default installs expose compact entries like `gpt-5.5` and `gpt-5.5-fast`, while `--full` also exposes explicit entries like `gpt-5.5-medium`, `gpt-5.5-fast-medium`, and `gpt-5.5-high`
 
 if your OpenCode runtime supports global compaction tuning, you can set:
 - `model_context_window = 1000000`
 - `model_auto_compact_token_limit = 900000`
 
-tested live selector note:
-- OpenCode `1.14.22` accepted `openai/gpt-5.5-medium`, `openai/gpt-5.5-fast-medium`, and `openai/gpt-5.5-high` in real sessions
-- the same runtime rejected bare `openai/gpt-5.5` with `ProviderModelNotFoundError`
-- use explicit shipped GPT-5.5 preset IDs for reliable CLI verification today
+selector note:
+- the default installer is optimized for the TUI model picker: choose a base `(OAuth)` model, then choose a variant
+- install with `--full` when you need direct selector IDs such as `openai/gpt-5.5-medium` or `openai/gpt-5.5-fast-medium`
 
 what they mean:
 - `none` - no reasoning phase (base general-purpose families only; pro families such as `gpt-5.4-pro` ultimately coerce it to `medium`)
@@ -367,12 +366,12 @@ opencode
 ### Verify Model Resolution
 
 ```bash
-DEBUG_CODEX_PLUGIN=1 opencode run "test" --model=openai/gpt-5.5-medium
+DEBUG_CODEX_PLUGIN=1 opencode run "test" --model=openai/gpt-5.5 --variant=medium
 ```
 
 look for:
 ```text
-[openai-codex-plugin] Model config lookup: "gpt-5.5-medium" → normalized to "gpt-5.5" for API {
+[openai-codex-plugin] Model config lookup: "gpt-5.5" -> normalized to "gpt-5.5" for API {
   hasModelSpecificConfig: true,
   resolvedConfig: { ... }
 }
@@ -381,12 +380,12 @@ look for:
 ### Test Per-Model Options
 
 ```bash
-# tested current selectors
-ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5-medium
-ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5-high
-
-# if your OpenCode release exposes bare base entries, this also works:
+# default compact selectors
+ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5 --variant=medium
 ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5 --variant=high
+
+# direct selector IDs, only after installing with --full
+ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5-medium
 
 # compare reasoning.effort in logs
 cat ~/.opencode/logs/codex-plugin/request-*-after-transform.json | jq '.reasoning.effort'

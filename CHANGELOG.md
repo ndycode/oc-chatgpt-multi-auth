@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (placeholder for next release)
 
+## [6.1.5] - 2026-04-24
+
+### Changed
+- Default installer mode now writes the compact OAuth model catalog so OpenCode's model picker shows base models only; reasoning depth is selected through the variant picker.
+- Added `--full` installer mode for users who still want explicit selector IDs such as `gpt-5.5-medium` and `gpt-5.5-fast-medium` installed into the model picker.
+- Compact/default installs now prune explicit preset IDs and stale base model IDs from earlier catalogs so rerunning the installer actually cleans up the model picker.
+
 ## [6.1.4] - 2026-04-24
 
 ### Fixed
