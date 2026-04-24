@@ -1,4 +1,3 @@
-import type { Message } from "@opencode-ai/sdk/v2";
 import type { TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import type { JSX } from "@opentui/solid";
 
@@ -15,10 +14,8 @@ import {
 } from "./lib/codex-usage.js";
 import {
 	formatPromptStatusText,
-	resolvePromptReasoningVariant,
 	type CompactQuotaLimit,
 	type CompactQuotaStatus,
-	type PromptStatusMessage,
 } from "./lib/tui-status.js";
 import { loadAccounts } from "./lib/storage.js";
 
@@ -30,10 +27,6 @@ type StoredQuotaStatus = {
 	fingerprint: string;
 	fetchedAt: number;
 	limits: CompactQuotaLimit[];
-};
-
-type StatusSlotInput = {
-	sessionID?: string;
 };
 
 type SolidRuntime = Pick<
@@ -127,35 +120,6 @@ function toCompactQuotaLimit(
 	};
 }
 
-function toPromptStatusMessage(message: Message): PromptStatusMessage {
-	if (message.role === "user") {
-		return {
-			role: "user",
-			userModel: {
-				modelID: message.model.modelID,
-				variant: message.model.variant,
-			},
-		};
-	}
-	return {
-		role: "assistant",
-		modelID: message.modelID,
-		variant: message.variant,
-	};
-}
-
-function resolveStatusMessages(
-	api: TuiPluginApi,
-	input: StatusSlotInput,
-): PromptStatusMessage[] {
-	if (!input.sessionID) return [];
-	try {
-		return api.state.session.messages(input.sessionID).map(toPromptStatusMessage);
-	} catch {
-		return [];
-	}
-}
-
 async function refreshQuotaStatusInner(
 	api: TuiPluginApi,
 ): Promise<CompactQuotaStatus> {
@@ -220,7 +184,6 @@ function refreshQuotaStatus(api: TuiPluginApi): Promise<CompactQuotaStatus> {
 
 function createPromptStatus(
 	api: TuiPluginApi,
-	input: StatusSlotInput,
 	solid: SolidRuntime,
 ): JSX.Element {
 	const [quota, setQuota] = solid.createSignal<CompactQuotaStatus>({
@@ -242,10 +205,6 @@ function createPromptStatus(
 		{
 			get content() {
 				return formatPromptStatusText({
-					variant: resolvePromptReasoningVariant({
-						messages: resolveStatusMessages(api, input),
-						config: api.state.config,
-					}),
 					quota: quota(),
 					width: api.renderer.width,
 				});
@@ -279,9 +238,8 @@ const module: TuiPluginModule = {
 
 		api.slots.register({
 			slots: {
-				home_prompt_right: () => createPromptStatus(api, {}, solid),
-				session_prompt_right: (_ctx, props) =>
-					createPromptStatus(api, { sessionID: props.session_id }, solid),
+				home_prompt_right: () => createPromptStatus(api, solid),
+				session_prompt_right: () => createPromptStatus(api, solid),
 			},
 		});
 	},
