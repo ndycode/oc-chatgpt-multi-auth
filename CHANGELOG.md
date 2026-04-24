@@ -7,18 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.2] - 2026-04-24
+
 ### Added
-- GPT-5.5 activation for OpenCode selectors such as `openai/gpt-5.5-medium` and `openai/gpt-5.5-high`.
+- GPT-5.5 2026-04-23 release presets in the shipped OpenCode config templates.
 
 ### Changed
-- `gpt-5` and `gpt-5.5*` aliases now normalize to the Codex backend model id `gpt-5.5`; `gpt-5.5-pro*` normalizes to `gpt-5.5-pro`.
-- Bare `gpt-5` / `gpt-5.5` selectors now inherit the GPT-5.5 general-family default reasoning effort of `high`; set `reasoningEffort: "medium"` or use `openai/gpt-5.5-medium` to keep medium reasoning explicit.
-- OAuth login now matches the current Codex authorize request shape by using the `localhost` redirect URI and connector scopes expected by OpenAI auth.
-- Account records now persist the OAuth scope string; accounts missing the connector scopes are marked for re-auth instead of being silently reused.
+- Activate GPT-5.5 2026-04-23 across runtime model routing and align the runtime model mapping with the new release family.
 
 ### Fixed
-- GPT-5.5 unsupported-model fallback now handles backend 400 payloads that report the message in top-level `detail`.
-- The localhost OAuth callback server now binds both `127.0.0.1` and `::1` so Windows dual-stack redirects can complete reliably.
+- Handle GPT-5.5 gating by falling back cleanly when the requested release is unavailable upstream.
 
 ## [6.1.1] - 2026-04-22
 
@@ -57,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shutdown SIGINT/SIGTERM now awaits debounced `flushPendingSave`, preventing lost rotations (#110)
 - `schemaVersion > 3` now throws `StorageError(UNSUPPORTED_SCHEMA_VERSION)` instead of silently nulling data (#110)
 - V2 storage files are detected and either migrated or rejected explicitly (no more silent drop) (#113)
-- Credential merge: `||` → `??` prevents empty-string tokens resurrecting stale older values (#112)
+- Credential merge: `||` â†’ `??` prevents empty-string tokens resurrecting stale older values (#112)
 - `REDIRECT_URI` uses `127.0.0.1` literal for RFC 8252 compliance (#112)
 - Codex-CLI cross-process JSON now Zod-validated before merging (#112)
 - Logger `TOKEN_PATTERNS` extended to cover OpenAI opaque refresh/access/id tokens (#112, #126)
@@ -74,7 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 - Per-file coverage floor (70%) for `lib/**` and `index.ts` in `vitest.config.ts` (#125)
-- Test count: 2088 → 2234 (+146 regression + chaos + contract tests)
+- Test count: 2088 â†’ 2234 (+146 regression + chaos + contract tests)
 
 ## [6.0.0] - 2026-04-06
 
@@ -164,7 +162,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **organization-scoped account preservation**: org-different variants sharing a refresh token now preserve distinct identity entries during storage collision resolution.
+- **organization-scoped account preservation**: account restoration now preserves organization/workspace identity across token refresh and flagged-account recovery paths.
 - **no-org duplicate collapse alignment**: fallback no-org duplicates now collapse consistently across storage, authorize, and prune operations.
 - **active-index remap stability**: index remapping during collision pruning/dedupe maintains stable active-index selection after account deduplication.
 
@@ -295,14 +293,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **reasoning defaults**: `gpt-5.3-codex` now defaults to `xhigh` effort (matching the current codex-family behavior), and `none`/`minimal` are normalized to supported codex levels.
-- **prompt fetch/cache mapping**: prompt family detection now recognizes `gpt-5.3-codex`; cache files are keyed to `gpt-5.3-codex-instructions.md`.
-- **config templates + docs refreshed**: modern/legacy config examples and model reference docs now advertise `gpt-5.3-codex` instead of `gpt-5.2-codex`.
-
-## [4.13.0] - 2026-02-04
-
-### Added
-
-- **runtime metrics tool**: added `codex-metrics` to inspect live request/error/latency counters for the current plugin process.
+- **prompt fetch/cache mapping**: prompt family detection now …92 tokens truncated…atency counters for the current plugin process.
 - **401 diagnostics payload**: normalized 401 errors now include `diagnostics` (for example `requestId`, `cfRay`, `correlationId`, `threadId`) to speed up debugging.
 - **stream watchdog controls**: new `fetchTimeoutMs` and `streamStallTimeoutMs` config options (and env overrides) for upstream timeout tuning.
 
@@ -389,7 +380,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Zod schemas** - Runtime validation as single source of truth
 
 - ### Stats
-- **Tests**: 580 â†’ 631 (+51)
+- **Tests**: 580 Ã¢â€ â€™ 631 (+51)
 - All passing on Windows with `--pool=forks`
 
 ### Fixed
@@ -405,12 +396,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (BREAKING)
 
 - **tool rename**: all `openai-accounts-*` tools renamed to shorter `codex-*` prefix:
-  - `openai-accounts` → `codex-list`
-  - `openai-accounts-switch` → `codex-switch`
-  - `openai-accounts-status` → `codex-status`
-  - `openai-accounts-health` → `codex-health`
-  - `openai-accounts-refresh` → `codex-refresh`
-  - `openai-accounts-remove` → `codex-remove`
+  - `openai-accounts` â†’ `codex-list`
+  - `openai-accounts-switch` â†’ `codex-switch`
+  - `openai-accounts-status` â†’ `codex-status`
+  - `openai-accounts-health` â†’ `codex-health`
+  - `openai-accounts-refresh` â†’ `codex-refresh`
+  - `openai-accounts-remove` â†’ `codex-remove`
 
 ### Added
 
@@ -525,7 +516,7 @@ env vars:
 
 - **Manual login fixed** - Parsing of OAuth URLs with fragments (`#code=`) is fixed
 - **Account switching** - Manual selection is now strictly prioritized over rotation logic
-- **apply_patch enabled** - The bridge prompt now allows `apply_patch`
+- **apply_patch enabled** - The bridge prompt now allows the `apply_patch` tool
 
 ## [4.9.3] - 2026-01-27
 
