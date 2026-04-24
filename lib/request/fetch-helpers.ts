@@ -3,13 +3,17 @@
  * These functions break down the complex fetch logic into manageable, testable units
  */
 
-import type { Auth, OpencodeClient } from "@opencode-ai/sdk";
+import type { OpencodeClient } from "@opencode-ai/sdk";
 import { queuedRefresh } from "../refresh-queue.js";
 import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
+import {
+	GPT_55_MODEL_ID,
+	GPT_55_PRO_MODEL_ID,
+} from "./helpers/model-map.js";
 import { convertSseToJson, ensureContentType } from "./response-handler.js";
-import type { UserConfig, RequestBody } from "../types.js";
+import type { OAuthAuthDetails, UserConfig, RequestBody } from "../types.js";
 import { CodexAuthError } from "../errors.js";
 import { DEACTIVATED_WORKSPACE_ERROR_CODE } from "../error-sentinels.js";
 import { isRecord } from "../utils.js";
@@ -44,8 +48,9 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 	/model is not supported when using codex with a chatgpt account/i;
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
-
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
+	[GPT_55_MODEL_ID]: ["gpt-5.4"],
+	[GPT_55_PRO_MODEL_ID]: [GPT_55_MODEL_ID],
 	"gpt-5.4-pro": ["gpt-5.4"],
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
 	"gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
@@ -76,7 +81,18 @@ function canonicalizeModelName(model: string | undefined): string | undefined {
 	const stripped = trimmed.includes("/")
 		? (trimmed.split("/").pop() ?? trimmed)
 		: trimmed;
-	return stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+	const withoutEffort = stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
+
+	// Keep legacy alias distinctions (for example gpt-5.3-codex-spark vs gpt-5.3-codex)
+	// while collapsing rejected dated GPT-5.5 release aliases onto the public Codex ids.
+	if (withoutEffort === "gpt-5.5" || withoutEffort === "gpt-5.5-20260423") {
+		return GPT_55_MODEL_ID;
+	}
+	if (withoutEffort === "gpt-5.5-pro" || withoutEffort === "gpt-5.5-pro-20260423") {
+		return GPT_55_PRO_MODEL_ID;
+	}
+
+	return withoutEffort;
 }
 
 function normalizeFallbackChain(
@@ -136,9 +152,20 @@ export function getUnsupportedCodexModelInfo(
 		return { isUnsupported: false };
 	}
 
+	const directDetail =
+		typeof errorBody.detail === "string" ? errorBody.detail : undefined;
 	const maybeError = errorBody.error;
 	if (!isRecord(maybeError)) {
-		return { isUnsupported: false };
+		const unsupportedModel = directDetail
+			? extractUnsupportedCodexModelFromText(directDetail)
+			: undefined;
+		return {
+			isUnsupported: directDetail
+				? CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN.test(directDetail)
+				: false,
+			message: directDetail,
+			unsupportedModel: unsupportedModel ?? undefined,
+		};
 	}
 
 	const code = typeof maybeError.code === "string" ? maybeError.code : undefined;
@@ -360,15 +387,18 @@ export function shouldRefreshToken(auth: Auth, skewMs = 0): boolean {
  * @returns Updated auth (throws on failure)
  */
 export async function refreshAndUpdateToken(
-	currentAuth: Auth,
+	currentAuth: OAuthAuthDetails,
 	client: OpencodeClient,
-): Promise<Auth> {
-	const refreshToken = currentAuth.type === "oauth" ? currentAuth.refresh : "";
+): Promise<OAuthAuthDetails> {
+	const refreshToken = currentAuth.refresh;
 	const refreshResult = await queuedRefresh(refreshToken);
 
 	if (refreshResult.type === "failed") {
 		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: false });
 	}
+
+	const currentScope = currentAuth.scope;
+	const nextScope = refreshResult.scope ?? currentScope;
 
 	await client.auth.set({
 		path: { id: "openai" },
@@ -377,16 +407,15 @@ export async function refreshAndUpdateToken(
 			access: refreshResult.access,
 			refresh: refreshResult.refresh,
 			expires: refreshResult.expires,
+			scope: nextScope,
 			multiAccount: true,
 		} as Parameters<typeof client.auth.set>[0]["body"],
 	});
 
-	// Update current auth reference if it's OAuth type
-	if (currentAuth.type === "oauth") {
-		currentAuth.access = refreshResult.access;
-		currentAuth.refresh = refreshResult.refresh;
-		currentAuth.expires = refreshResult.expires;
-	}
+	currentAuth.access = refreshResult.access;
+	currentAuth.refresh = refreshResult.refresh;
+	currentAuth.expires = refreshResult.expires;
+	currentAuth.scope = nextScope;
 
 	return currentAuth;
 }
@@ -474,7 +503,7 @@ export async function transformRequestForCodex(
 			logRequest(LOG_STAGES.BEFORE_TRANSFORM, {
 				url,
 				originalModel,
-				model: body.model,
+				model: originalModel,
 				hasTools: !!body.tools,
 				hasInput: !!body.input,
 				inputLength: body.input?.length,
@@ -482,10 +511,13 @@ export async function transformRequestForCodex(
 				body: body as unknown as Record<string, unknown>,
 			});
 
+			const normalizedModel = normalizeModel(originalModel);
+			body.model = normalizedModel;
+
 			logRequest(LOG_STAGES.AFTER_TRANSFORM, {
 				url,
 				originalModel,
-				normalizedModel: body.model,
+				normalizedModel,
 				hasTools: !!body.tools,
 				hasInput: !!body.input,
 				inputLength: body.input?.length,
@@ -839,7 +871,7 @@ function normalizeErrorPayload(
 								message:
 										`The model '${unsupportedModel}' is not currently available for this ChatGPT account when using Codex OAuth. ` +
 										"This is an account/workspace entitlement gate, not a temporary rate limit. " +
-										"Try 'gpt-5.4' (latest general), 'gpt-5-codex' (canonical), or legacy aliases like 'gpt-5.3-codex'/'gpt-5.2-codex', or enable automatic fallback via " +
+										"Try 'gpt-5.5' (latest general), 'gpt-5-codex' (canonical), or legacy aliases like 'gpt-5.3-codex'/'gpt-5.2-codex', or enable automatic fallback via " +
 										'unsupportedCodexPolicy: "fallback" (or CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback). ' +
 										"(Legacy: CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL=1 or fallbackOnUnsupportedCodexModel).",
 								type: "entitlement_error",

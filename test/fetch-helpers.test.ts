@@ -346,6 +346,17 @@ describe('Fetch Helpers Module', () => {
 			expect(info.unsupportedModel).toBe('gpt-5.3-codex-spark');
 		});
 
+		it('returns unsupported model info from top-level detail payload', () => {
+			const info = getUnsupportedCodexModelInfo({
+				detail:
+					"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+			});
+
+			expect(info.isUnsupported).toBe(true);
+			expect(info.message).toContain('gpt-5.5');
+			expect(info.unsupportedModel).toBe('gpt-5.5');
+		});
+
 		it('resolves Spark fallback chain to canonical gpt-5-codex first', () => {
 			const errorBody = {
 				error: {
@@ -440,6 +451,74 @@ describe('Fetch Helpers Module', () => {
 					},
 				},
 				attemptedModels: ['gpt-5.4-pro', 'gpt-5.4'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(fallback).toBeUndefined();
+		});
+
+		it('falls back from gpt-5.5-pro to GPT-5.5 when fallback policy is enabled', () => {
+			const fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.5-pro',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.5-pro' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.5-pro'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(fallback).toBe('gpt-5.5');
+		});
+
+		it('falls back from GPT-5.5 to gpt-5.4 when GPT-5.5 is unsupported', () => {
+			const fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.5-medium',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.5'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(fallback).toBe('gpt-5.4');
+		});
+
+		it('does not fallback from GPT-5.5 when gpt-5.4 was already attempted', () => {
+			const fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.5',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.5', 'gpt-5.4'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(fallback).toBeUndefined();
+		});
+
+		it('does not fallback from gpt-5.5-pro when GPT-5.5 was already attempted', () => {
+			const fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.5-pro',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.5-pro' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.5-pro', 'gpt-5.5'],
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
@@ -895,7 +974,7 @@ describe('Fetch Helpers Module', () => {
 	});
 
 		describe('transformRequestForCodex', () => {
-			it('returns passthrough body in native mode without loading codex instructions', async () => {
+			it('normalizes the model in native mode without loading codex instructions', async () => {
 				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
 				const getInstructionsSpy = vi.spyOn(codexPrompts, 'getCodexInstructions');
 				const requestBody = {
@@ -914,8 +993,30 @@ describe('Fetch Helpers Module', () => {
 				);
 
 				expect(result).toBeDefined();
-				expect(result?.body.model).toBe('gpt-5.3-codex');
+				expect(result?.body.model).toBe('gpt-5-codex');
 				expect(result?.body.tools).toEqual([{ name: 'apply_patch' }]);
+				expect(getInstructionsSpy).not.toHaveBeenCalled();
+			});
+
+			it('normalizes GPT-5.5 preset ids to the canonical model id in native mode', async () => {
+				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
+				const getInstructionsSpy = vi.spyOn(codexPrompts, 'getCodexInstructions');
+				const requestBody = {
+					model: 'gpt-5.5-medium',
+					input: [{ type: 'message', role: 'user', content: 'Hello' }],
+				};
+
+				const result = await transformRequestForCodex(
+					{ body: JSON.stringify(requestBody) },
+					'https://example.com',
+					{ global: {}, models: {} },
+					true,
+					undefined,
+					{ requestTransformMode: 'native' } as any,
+				);
+
+				expect(result).toBeDefined();
+				expect(result?.body.model).toBe('gpt-5.5');
 				expect(getInstructionsSpy).not.toHaveBeenCalled();
 			});
 

@@ -104,8 +104,8 @@ describe("install-oc-codex-multi-auth script", () => {
 			+ Object.keys(legacyTemplate.provider.openai.models).length
 			+ 1;
 		expect(Object.keys(saved.provider.openai.models)).toHaveLength(expectedCount);
-		expect(saved.provider.openai.models["gpt-5.4"]).toBeDefined();
-		expect(saved.provider.openai.models["gpt-5.4-high"]).toBeDefined();
+		expect(saved.provider.openai.models["gpt-5.5"]).toBeDefined();
+		expect(saved.provider.openai.models["gpt-5.5-high"]).toBeDefined();
 		// User-added model survives deep-merge without overriding template ids.
 		expect(saved.provider.openai.models["old"]).toEqual({ name: "old" });
 		const configEntries = await readdir(configDir);
@@ -164,7 +164,7 @@ describe("install-oc-codex-multi-auth script", () => {
 		expect(saved.plugin).toEqual(expect.arrayContaining(["some-other-plugin", "oc-codex-multi-auth"]));
 		expect(saved.provider.openai.myCustomKey).toBe("preserve-me");
 		expect(saved.provider.openai.models["user-only-model"]).toBeDefined();
-		expect(saved.provider.openai.models["gpt-5.4"]).toBeDefined();
+		expect(saved.provider.openai.models["gpt-5.5"]).toBeDefined();
 	});
 
 	it("parses BOM-less existing config and preserves custom keys on merge", async () => {
@@ -219,7 +219,7 @@ describe("install-oc-codex-multi-auth script", () => {
 
 		expect(saved.provider.openai.myCustomKey).toBe("preserve-me");
 		expect(saved.provider.openai.models["user-only-model"]).toBeDefined();
-		expect(saved.provider.openai.models["gpt-5.4"]).toBeDefined();
+		expect(saved.provider.openai.models["gpt-5.5"]).toBeDefined();
 	});
 
 	it("deep-merges provider.openai preserving user customizations while overwriting managed keys", async () => {
@@ -241,7 +241,7 @@ describe("install-oc-codex-multi-auth script", () => {
 						nested: { foo: "bar" },
 						options: { textVerbosity: "low" },
 						models: {
-							"gpt-5.4": { name: "user override" },
+							"gpt-5.5": { name: "user override" },
 							"my-fine-tune": { name: "custom user model" },
 						},
 					},
@@ -273,11 +273,11 @@ describe("install-oc-codex-multi-auth script", () => {
 		};
 
 		// Managed keys overwritten: baseURL / apiKey removed (template does not set
-		// them), options replaced with template value, models.gpt-5.4 reset to template.
+		// them), options replaced with template value, models.gpt-5.5 reset to template.
 		expect(saved.provider.openai.baseURL).toBeUndefined();
 		expect(saved.provider.openai.apiKey).toBeUndefined();
 		expect(saved.provider.openai.options).not.toEqual({ textVerbosity: "low" });
-		expect(saved.provider.openai.models?.["gpt-5.4"]).not.toEqual({ name: "user override" });
+		expect(saved.provider.openai.models?.["gpt-5.5"]).not.toEqual({ name: "user override" });
 
 		// Non-managed keys preserved as-is.
 		expect(saved.provider.openai.myCustomKey).toBe("preserved");

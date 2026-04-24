@@ -84,7 +84,7 @@ Update your `~/.config/opencode/opencode.json`:
    ```
 3. **Remember: request logs only appear after the first OpenAI request**:
    ```bash
-   ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.4
+   ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5-medium
    ```
 4. **Check registry access**:
    ```bash
@@ -145,6 +145,7 @@ Failed to access Codex API
 1. Token expired
 2. Not authenticated yet
 3. Invalid credentials
+4. Stored OAuth grant is missing the connector scopes required by the current Codex auth flow
 
 **Solutions:**
 
@@ -152,6 +153,8 @@ Failed to access Codex API
    ```bash
    opencode auth login
    ```
+
+   Re-auth is required for accounts created before `api.connectors.read` and `api.connectors.invoke` were requested; stale account records are marked inactive until they are refreshed through login.
 
 2. **Check auth file exists:**
    ```bash
@@ -317,6 +320,8 @@ opencode run "test" --model=openai/gpt-5-codex-low  # Must match config key
 
 **Note:** `opencode models openai` currently shows only OpenCode's built-in provider catalog. If you add template-defined or custom models, use `opencode debug config` to confirm they were merged into the effective config.
 
+**GPT-5.5 note:** on tested OpenCode `1.14.22`, bare `openai/gpt-5.5` can still fail with `ProviderModelNotFoundError` even when the base template entry exists. Use explicit shipped IDs like `openai/gpt-5.5-medium` or `openai/gpt-5.5-high` for current live CLI tests.
+
 </details>
 
 <details>
@@ -362,6 +367,8 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback opencode
    ```
 4. Default fallback chain (when policy is `fallback` and not overridden):
+   - `gpt-5.5 -> gpt-5.4`
+   - `gpt-5.5-pro -> gpt-5.5`
    - `gpt-5.4-pro -> gpt-5.4` (if `gpt-5.4-pro` is selected manually)
    - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
    - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (if Spark IDs are selected manually)
@@ -370,12 +377,14 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
 5. Configure a custom fallback chain in `~/.opencode/openai-codex-auth-config.json`:
    ```json
    {
-     "unsupportedCodexPolicy": "fallback",
-     "fallbackOnUnsupportedCodexModel": true,
-     "unsupportedCodexFallbackChain": {
-       "gpt-5.4-pro": ["gpt-5.4"],
-       "gpt-5-codex": ["gpt-5.2-codex"],
-       "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
+   "unsupportedCodexPolicy": "fallback",
+   "fallbackOnUnsupportedCodexModel": true,
+   "unsupportedCodexFallbackChain": {
+      "gpt-5.5": ["gpt-5.4"],
+      "gpt-5.5-pro": ["gpt-5.5"],
+      "gpt-5.4-pro": ["gpt-5.4"],
+      "gpt-5-codex": ["gpt-5.2-codex"],
+      "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
        "gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"]
      }
    }
@@ -605,7 +614,7 @@ opencode auth login
 <details>
 <summary><b>Docker / WSL2 / Remote Development</b></summary>
 
-OAuth callback requires browser to reach `localhost` on the machine running OpenCode.
+OAuth callback requires browser to reach `localhost` on the machine running OpenCode. The plugin listens on both `127.0.0.1:1455` and `[::1]:1455` so Windows/macOS/Linux dual-stack localhost resolution can complete the redirect.
 
 **WSL2:**
 - Use VS Code's port forwarding, or
@@ -649,7 +658,7 @@ DEBUG_CODEX_PLUGIN=1 ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 o
 <summary><b>Inspect Actual API Requests</b></summary>
 
 ```bash
-ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 opencode run "test" --model=openai/gpt-5.4-low
+ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1 opencode run "test" --model=openai/gpt-5.5-medium
 
 cat ~/.opencode/logs/codex-plugin/request-*-after-transform.json | jq '{
   model: .body.model,

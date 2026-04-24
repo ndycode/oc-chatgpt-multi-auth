@@ -24,14 +24,16 @@ This guide covers the full installation and first-run flow for `oc-codex-multi-a
 ```bash
 npx -y oc-codex-multi-auth@latest
 opencode auth login
-opencode run "Explain this repository" --model=openai/gpt-5.4 --variant=medium
+opencode run "Explain this repository" --model=openai/gpt-5.5-medium
 ```
 
 The installer updates `~/.config/opencode/opencode.json`, backs up the previous config, normalizes the plugin entry to `oc-codex-multi-auth`, and clears the cached plugin copy so OpenCode reinstalls the latest package.
 
 By default, the installer writes a full catalog config so you get both:
-- modern base model entries such as `gpt-5.4` for `--variant` workflows
-- explicit preset entries such as `gpt-5.4-high` so the full shipped catalog is visible directly in pickers
+- modern base model entries such as `gpt-5.5` for `--variant` workflows
+- explicit preset entries such as `gpt-5.5-medium` / `gpt-5.5-high` so the full shipped catalog is visible directly in pickers
+
+Tested live on OpenCode `1.14.22`: use explicit GPT-5.5 selectors like `openai/gpt-5.5-medium` or `openai/gpt-5.5-high` for real-session verification. Bare `openai/gpt-5.5 --variant=...` may or may not work depending on your OpenCode release.
 
 If you prefer the compact variant-only config on OpenCode `v1.0.210+`, use:
 
@@ -79,7 +81,9 @@ Then choose:
 1. `OpenAI`
 2. `Codex OAuth (ChatGPT Plus/Pro)`
 
-The browser-based OAuth flow uses the same local callback port as Codex CLI: `http://127.0.0.1:1455/auth/callback`.
+The browser-based OAuth flow uses the same local callback port as Codex CLI. The authorize redirect is `http://localhost:1455/auth/callback`, while the local callback server binds both `127.0.0.1:1455` and `[::1]:1455` for dual-stack localhost redirects.
+
+If you authenticated before the connector scopes were added, re-run `opencode auth login`. Current account records persist the granted OAuth scope and accounts missing `api.connectors.read` / `api.connectors.invoke` are marked for re-auth instead of being silently reused.
 
 ### Remote or Headless Login
 
@@ -115,30 +119,30 @@ Current templates expose 9 shipped base model families and 34 shipped presets ov
 
 On OpenCode `v1.0.210+`, the modern template intentionally shows 9 base model entries because the additional presets are selected through `--variant` instead of separate model keys.
 
-`gpt-5.4-pro` ships in the templates but can still be entitlement-gated by your workspace. Add entitlement-gated Spark variants manually only when your workspace supports them.
+`gpt-5.5-pro` ships in the templates but can still be entitlement-gated by your workspace. Add entitlement-gated Spark variants manually only when your workspace supports them.
 
 ## Verify the Setup
 
 Run one of these commands:
 
 ```bash
-# Modern OpenCode
-opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.4 --variant=medium
+# Recommended current GPT-5.5 path
+opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5-medium
 opencode run "Inspect the retry logic and summarize it" --model=openai/gpt-5-codex --variant=high
 
-# Legacy OpenCode
-opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.4-medium
+# Compact modern template, only if your OpenCode release exposes bare base entries
+opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5 --variant=medium
 ```
 
 If you want to verify request routing, run a request with logging enabled:
 
 ```bash
-ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.4
+ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5-medium
 ```
 
 The first request should create logs under `~/.opencode/logs/codex-plugin/`.
 
-Use `opencode debug config` when you want to verify that template-defined or custom models were merged into your effective config. `opencode models openai` currently shows OpenCode's built-in provider catalog and can omit config-defined entries such as `gpt-5.4-mini`.
+Use `opencode debug config` when you want to verify that template-defined or custom models were merged into your effective config. On tested OpenCode `1.14.22`, `opencode models openai` exposes explicit GPT-5.5 entries such as `gpt-5.5-medium` / `gpt-5.5-high`; bare `gpt-5.5` may still not be selectable even when present in config.
 
 ## Multi-Account Setup
 

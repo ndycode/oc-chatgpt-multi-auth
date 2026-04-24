@@ -83,6 +83,8 @@ export interface AccountMetadataV1 {
 	accessToken?: string;
 	/** Optional access token expiry timestamp (ms since epoch). */
 	expiresAt?: number;
+	/** OAuth scope string granted when this token set was minted. */
+	oauthScope?: string;
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
@@ -111,6 +113,8 @@ export interface AccountMetadataV3 {
 	accessToken?: string;
 	/** Optional access token expiry timestamp (ms since epoch). */
 	expiresAt?: number;
+	/** OAuth scope string granted when this token set was minted. */
+	oauthScope?: string;
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
@@ -153,6 +157,7 @@ export function migrateV1ToV3(v1: AccountStorageV1): AccountStorageV3 {
 				refreshToken: account.refreshToken,
 				accessToken: account.accessToken,
 				expiresAt: account.expiresAt,
+				oauthScope: account.oauthScope,
 				enabled: account.enabled,
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,

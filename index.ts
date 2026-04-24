@@ -532,7 +532,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (!serverInfo || !serverInfo.ready) {
 				serverInfo?.close();
 				const message =
-					`OAuth callback server failed to start on http://127.0.0.1:1455. ` +
+					`OAuth callback server failed to start on localhost loopback port 1455. ` +
 					`Retry with "${AUTH_LABELS.OAUTH_DEVICE_CODE}" or "${AUTH_LABELS.OAUTH_MANUAL}".`;
 				logWarn(`\n[${PLUGIN_NAME}] ${message}\n`);
 				return {
@@ -645,6 +645,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					}
 					if (typeof refreshed.expires === "number" && refreshed.expires !== account.expiresAt) {
 						account.expiresAt = refreshed.expires;
+						changed = true;
+					}
+					if (refreshed.scope && refreshed.scope !== account.oauthScope) {
+						account.oauthScope = refreshed.scope;
 						changed = true;
 					}
                                         if (refreshed.refresh && refreshed.refresh !== account.refreshToken) {
@@ -2909,6 +2913,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 												refreshResult.expires !== account.expiresAt
 											) {
 												account.expiresAt = refreshResult.expires;
+												storageChanged = true;
+											}
+											if (refreshResult.scope && refreshResult.scope !== account.oauthScope) {
+												account.oauthScope = refreshResult.scope;
 												storageChanged = true;
 											}
 											const hydratedEmail = sanitizeEmail(

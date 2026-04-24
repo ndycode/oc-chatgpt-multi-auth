@@ -6,25 +6,77 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { EventEmitter } from 'node:events';
 
+type ListenBehavior = 'success' | 'fail-all' | 'fail-ipv6';
+
+type MockOAuthServer = {
+	listen: ReturnType<typeof vi.fn>;
+	close: ReturnType<typeof vi.fn>;
+	unref: ReturnType<typeof vi.fn>;
+	on: ReturnType<typeof vi.fn>;
+	_handler?: (req: IncomingMessage, res: ServerResponse) => void;
+	_lastCode?: string;
+	_host?: string;
+	_port?: number;
+	_errorHandlers: Array<(err: NodeJS.ErrnoException) => void>;
+};
+
 // Mock http module before importing server
 vi.mock('node:http', () => {
-	const mockServer = {
-		listen: vi.fn(),
-		close: vi.fn(),
-		unref: vi.fn(),
-		on: vi.fn(),
-		_lastCode: undefined as string | undefined,
+	const mockServers: MockOAuthServer[] = [];
+	let listenBehavior: ListenBehavior = 'success';
+
+	const makeBindError = (): NodeJS.ErrnoException => {
+		const error = new Error('Address in use') as NodeJS.ErrnoException;
+		error.code = 'EADDRINUSE';
+		return error;
 	};
 
-	return {
-		default: {
-			createServer: vi.fn((handler: (req: IncomingMessage, res: ServerResponse) => void) => {
-				// Store the handler for later invocation
-				(mockServer as unknown as { _handler: typeof handler })._handler = handler;
-				return mockServer;
-			}),
+	const defaultExport = {
+		__mockServers: mockServers,
+		__reset: () => {
+			mockServers.length = 0;
+			listenBehavior = 'success';
 		},
+		__setListenBehavior: (behavior: ListenBehavior) => {
+			listenBehavior = behavior;
+		},
+		createServer: vi.fn((handler: (req: IncomingMessage, res: ServerResponse) => void) => {
+			const mockServer: MockOAuthServer = {
+				listen: vi.fn((port: number, host: string, callback: () => void) => {
+					mockServer._port = port;
+					mockServer._host = host;
+					const shouldFail =
+						listenBehavior === 'fail-all' ||
+						(listenBehavior === 'fail-ipv6' && host === '::1');
+
+					if (shouldFail) {
+						setTimeout(() => {
+							for (const errorHandler of mockServer._errorHandlers) {
+								errorHandler(makeBindError());
+							}
+						}, 0);
+					} else {
+						callback();
+					}
+					return mockServer;
+				}),
+				close: vi.fn(),
+				unref: vi.fn(),
+				on: vi.fn((event: string, eventHandler: (err: NodeJS.ErrnoException) => void) => {
+					if (event === 'error') mockServer._errorHandlers.push(eventHandler);
+					return mockServer;
+				}),
+				_handler: handler,
+				_lastCode: undefined,
+				_errorHandlers: [],
+			};
+
+			mockServers.push(mockServer);
+			return mockServer;
+		}),
 	};
+
+	return { default: defaultExport };
 });
 
 vi.mock('../lib/oauth-success.js', () => ({
@@ -40,16 +92,18 @@ import http from 'node:http';
 import { startLocalOAuthServer } from '../lib/auth/server.js';
 import { logError, logWarn } from '../lib/logger.js';
 
-describe('OAuth Server Unit Tests', () => {
-	let mockServer: ReturnType<typeof http.createServer> & {
-		_handler?: (req: IncomingMessage, res: ServerResponse) => void;
-		_lastCode?: string;
-	};
+type MockHttp = typeof http & {
+	__mockServers: MockOAuthServer[];
+	__reset: () => void;
+	__setListenBehavior: (behavior: ListenBehavior) => void;
+};
 
+const mockHttp = http as MockHttp;
+
+describe('OAuth Server Unit Tests', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockServer = http.createServer(() => {}) as typeof mockServer;
-		mockServer._lastCode = undefined;
+		mockHttp.__reset();
 	});
 
 	afterEach(() => {
@@ -57,41 +111,39 @@ describe('OAuth Server Unit Tests', () => {
 	});
 
 	describe('server creation', () => {
-		it('should call http.createServer', async () => {
-			// Make listen succeed immediately
-			(mockServer.listen as ReturnType<typeof vi.fn>).mockImplementation(
-				(_port: number, _host: string, callback: () => void) => {
-					callback();
-					return mockServer;
-				}
-			);
-			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
-
+		it('should bind both concrete loopback hosts', async () => {
 			const result = await startLocalOAuthServer({ state: 'test-state' });
-			expect(http.createServer).toHaveBeenCalled();
+
+			expect(http.createServer).toHaveBeenCalledTimes(2);
+			expect(mockHttp.__mockServers.map((server) => server._host)).toEqual(['127.0.0.1', '::1']);
 			expect(result.port).toBe(1455);
 			expect(result.ready).toBe(true);
 		});
 
-		it('should set ready=false when port binding fails', async () => {
-			(mockServer.listen as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
-			(mockServer.on as ReturnType<typeof vi.fn>).mockImplementation(
-				(event: string, handler: (err: NodeJS.ErrnoException) => void) => {
-					if (event === 'error') {
-						// Simulate EADDRINUSE
-						const error = new Error('Address in use') as NodeJS.ErrnoException;
-						error.code = 'EADDRINUSE';
-						setTimeout(() => handler(error), 0);
-					}
-					return mockServer;
-				}
-			);
+		it('should set ready=false when all port bindings fail', async () => {
+			mockHttp.__setListenBehavior('fail-all');
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
+
 			expect(result.ready).toBe(false);
 			expect(result.port).toBe(1455);
 			expect(logError).toHaveBeenCalledWith(
 				expect.stringContaining('Failed to bind http://127.0.0.1:1455')
+			);
+			expect(logWarn).toHaveBeenCalledWith(
+				expect.stringContaining('Failed to bind http://[::1]:1455')
+			);
+		});
+
+		it('should stay ready when IPv6 loopback binding fails but IPv4 is available', async () => {
+			mockHttp.__setListenBehavior('fail-ipv6');
+
+			const result = await startLocalOAuthServer({ state: 'test-state' });
+
+			expect(result.ready).toBe(true);
+			expect(mockHttp.__mockServers.map((server) => server._host)).toEqual(['127.0.0.1', '::1']);
+			expect(logWarn).toHaveBeenCalledWith(
+				expect.stringContaining('Failed to bind http://[::1]:1455')
 			);
 		});
 	});
@@ -99,18 +151,10 @@ describe('OAuth Server Unit Tests', () => {
 	describe('request handler', () => {
 		let requestHandler: (req: IncomingMessage, res: ServerResponse) => void;
 
-		beforeEach(() => {
-			(mockServer.listen as ReturnType<typeof vi.fn>).mockImplementation(
-				(_port: number, _host: string, callback: () => void) => {
-					callback();
-					return mockServer;
-				}
-			);
-			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
-
-			// Start server to capture request handler
-			startLocalOAuthServer({ state: 'test-state' });
-			requestHandler = mockServer._handler!;
+		beforeEach(async () => {
+			const result = await startLocalOAuthServer({ state: 'test-state' });
+			expect(result.ready).toBe(true);
+			requestHandler = mockHttp.__mockServers[0]._handler!;
 		});
 
 		function createMockRequest(url: string): IncomingMessage {
@@ -181,13 +225,16 @@ describe('OAuth Server Unit Tests', () => {
 			expect(res.end).toHaveBeenCalledWith('<html>Success</html>');
 		});
 
-		it('should store the code in server._lastCode', () => {
+		it('should store the code on every local server instance', () => {
 			const req = createMockRequest('/auth/callback?code=captured-code&state=test-state');
 			const res = createMockResponse();
 
 			requestHandler(req, res);
 
-			expect(mockServer._lastCode).toBe('captured-code');
+			expect(mockHttp.__mockServers.map((server) => server._lastCode)).toEqual([
+				'captured-code',
+				'captured-code',
+			]);
 		});
 
 		it('should handle request handler errors gracefully', () => {
@@ -205,40 +252,31 @@ describe('OAuth Server Unit Tests', () => {
 	});
 
 	describe('close function', () => {
-		it('should call server.close when ready=true', async () => {
-			(mockServer.listen as ReturnType<typeof vi.fn>).mockImplementation(
-				(_port: number, _host: string, callback: () => void) => {
-					callback();
-					return mockServer;
-				}
-			);
-			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
+		it('should close all bound servers when ready=true', async () => {
+			const result = await startLocalOAuthServer({ state: 'test-state' });
+			result.close();
+
+			expect(mockHttp.__mockServers[0].close).toHaveBeenCalledTimes(1);
+			expect(mockHttp.__mockServers[1].close).toHaveBeenCalledTimes(1);
+		});
+
+		it('should close only the bound server when IPv6 binding fails', async () => {
+			mockHttp.__setListenBehavior('fail-ipv6');
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
 			result.close();
 
-			expect(mockServer.close).toHaveBeenCalled();
+			expect(mockHttp.__mockServers[0].close).toHaveBeenCalledTimes(1);
+			expect(mockHttp.__mockServers[1].close).not.toHaveBeenCalled();
 		});
 
 		it('should handle close error when ready=false', async () => {
-			(mockServer.listen as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
-			(mockServer.on as ReturnType<typeof vi.fn>).mockImplementation(
-				(event: string, handler: (err: NodeJS.ErrnoException) => void) => {
-					if (event === 'error') {
-						const error = new Error('Address in use') as NodeJS.ErrnoException;
-						error.code = 'EADDRINUSE';
-						setTimeout(() => handler(error), 0);
-					}
-					return mockServer;
-				}
-			);
-			(mockServer.close as ReturnType<typeof vi.fn>).mockImplementation(() => {
+			mockHttp.__setListenBehavior('fail-all');
+			const result = await startLocalOAuthServer({ state: 'test-state' });
+			mockHttp.__mockServers[0].close.mockImplementation(() => {
 				throw new Error('Close failed');
 			});
 
-			const result = await startLocalOAuthServer({ state: 'test-state' });
-			
-			// Should not throw even if close fails
 			expect(() => result.close()).not.toThrow();
 			expect(logError).toHaveBeenCalledWith(
 				expect.stringContaining('Failed to close OAuth server')
@@ -248,17 +286,7 @@ describe('OAuth Server Unit Tests', () => {
 
 	describe('waitForCode function', () => {
 		it('should return null immediately when ready=false', async () => {
-			(mockServer.listen as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
-			(mockServer.on as ReturnType<typeof vi.fn>).mockImplementation(
-				(event: string, handler: (err: NodeJS.ErrnoException) => void) => {
-					if (event === 'error') {
-						const error = new Error('Address in use') as NodeJS.ErrnoException;
-						error.code = 'EADDRINUSE';
-						setTimeout(() => handler(error), 0);
-					}
-					return mockServer;
-				}
-			);
+			mockHttp.__setListenBehavior('fail-all');
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
 			const code = await result.waitForCode('test-state');
@@ -267,43 +295,25 @@ describe('OAuth Server Unit Tests', () => {
 		});
 
 		it('should return code when available', async () => {
-			(mockServer.listen as ReturnType<typeof vi.fn>).mockImplementation(
-				(_port: number, _host: string, callback: () => void) => {
-					callback();
-					return mockServer;
-				}
-			);
-			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
-
 			const result = await startLocalOAuthServer({ state: 'test-state' });
-			
-			mockServer._lastCode = 'the-code';
-			
+			mockHttp.__mockServers[1]._lastCode = 'the-code';
+
 			const code = await result.waitForCode('test-state');
 			expect(code).toEqual({ code: 'the-code' });
 		});
 
 		it('should return null after 5 minute timeout', async () => {
 			vi.useFakeTimers();
-			
-			(mockServer.listen as ReturnType<typeof vi.fn>).mockImplementation(
-				(_port: number, _host: string, callback: () => void) => {
-					callback();
-					return mockServer;
-				}
-			);
-			(mockServer.on as ReturnType<typeof vi.fn>).mockReturnValue(mockServer);
 
 			const result = await startLocalOAuthServer({ state: 'test-state' });
-			
 			const codePromise = result.waitForCode('test-state');
-			
+
 			await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 100);
-			
+
 			const code = await codePromise;
 			expect(code).toBeNull();
 			expect(logWarn).toHaveBeenCalledWith('OAuth poll timeout after 5 minutes');
-			
+
 			vi.useRealTimers();
 		});
 	});
