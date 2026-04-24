@@ -7,6 +7,7 @@ import type { CompactQuotaLimit } from "./tui-status.js";
 
 export const TUI_QUOTA_CACHE_VERSION = 1;
 export const TUI_QUOTA_CACHE_FILE = "oc-codex-multi-auth-tui-quota.json";
+const TUI_QUOTA_CACHE_WRITE_SKIP_MS = 500;
 
 export type TuiQuotaSource = "headers" | "usage";
 
@@ -36,6 +37,14 @@ export type TuiQuotaSnapshotInput = Omit<
 > & {
 	fetchedAt?: number;
 };
+
+type RecentTuiQuotaWrite = {
+	key: string;
+	at: number;
+	promise?: Promise<void>;
+};
+
+const recentTuiQuotaWrites = new Map<string, RecentTuiQuotaWrite>();
 
 function getDefaultOpenCodeStateDir(): string {
 	return join(homedir(), ".local", "state", "opencode");
@@ -162,6 +171,26 @@ export function createTuiQuotaSnapshot(
 	};
 }
 
+function getSnapshotWriteKey(snapshot: TuiQuotaSnapshot): string {
+	return JSON.stringify({
+		fingerprint: snapshot.fingerprint,
+		source: snapshot.source,
+		accountIndex: snapshot.accountIndex,
+		accountCount: snapshot.accountCount,
+		accountEmail: snapshot.accountEmail,
+		accountLabel: snapshot.accountLabel,
+		planType: snapshot.planType,
+		activeLimit: snapshot.activeLimit,
+		limits: snapshot.limits.map((limit) => ({
+			label: limit.label,
+			leftPercent: limit.leftPercent,
+			usedPercent: limit.usedPercent,
+			windowMinutes: limit.windowMinutes,
+			resetAtMs: limit.resetAtMs,
+		})),
+	});
+}
+
 export function parseTuiQuotaSnapshotFromHeaders(
 	headers: Headers,
 	input: Omit<TuiQuotaSnapshotInput, "source" | "limits">,
@@ -255,23 +284,52 @@ export async function writeTuiQuotaSnapshot(
 	cachePath?: string,
 ): Promise<void> {
 	const target = cachePath ?? getTuiQuotaCachePath();
-	await fs.mkdir(dirname(target), { recursive: true });
-	const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-	try {
+	const writeKey = getSnapshotWriteKey(snapshot);
+	const now = Date.now();
+	const recentWrite = recentTuiQuotaWrites.get(target);
+	if (
+		recentWrite?.key === writeKey &&
+		now - recentWrite.at < TUI_QUOTA_CACHE_WRITE_SKIP_MS
+	) {
+		await recentWrite.promise;
+		return;
+	}
+
+	const temporary =
+		`${target}.${process.pid}.${now}.${Math.random().toString(36).slice(2)}.tmp`;
+	const writePromise = (async () => {
+		await fs.mkdir(dirname(target), { recursive: true });
 		await fs.writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, {
 			encoding: "utf-8",
 			mode: 0o600,
 		});
 		await renameWithWindowsRetry(temporary, target);
+	})();
+	recentTuiQuotaWrites.set(target, {
+		key: writeKey,
+		at: now,
+		promise: writePromise,
+	});
+	try {
+		await writePromise;
+		recentTuiQuotaWrites.set(target, {
+			key: writeKey,
+			at: Date.now(),
+		});
 	} catch (error) {
 		await fs.unlink(temporary).catch(() => undefined);
+		if (recentTuiQuotaWrites.get(target)?.promise === writePromise) {
+			recentTuiQuotaWrites.delete(target);
+		}
 		throw error;
 	}
 }
 
 export async function clearTuiQuotaSnapshot(cachePath?: string): Promise<void> {
+	const target = cachePath ?? getTuiQuotaCachePath();
+	recentTuiQuotaWrites.delete(target);
 	try {
-		await fs.unlink(cachePath ?? getTuiQuotaCachePath());
+		await fs.unlink(target);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
 		throw error;

@@ -2145,7 +2145,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								latencyMs: fetchLatencyMs,
 								headers: Object.fromEntries(response.headers.entries()),
 							});
-							await recordPromptQuotaHeaders(response, account, accountCount);
+							void recordPromptQuotaHeaders(response, account, accountCount);
 
 								if (!response.ok) {
 									const contextOverflowResult = await handleContextOverflow(response, model);

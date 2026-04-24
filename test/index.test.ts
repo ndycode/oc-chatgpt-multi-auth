@@ -2459,7 +2459,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			const { getTuiQuotaCachePath, readTuiQuotaSnapshot } = await import(
 				"../lib/tui-quota-cache.js"
 			);
-			const snapshot = await readTuiQuotaSnapshot(getTuiQuotaCachePath(stateDir));
+			let snapshot = await readTuiQuotaSnapshot(getTuiQuotaCachePath(stateDir));
+			for (let attempt = 0; !snapshot && attempt < 20; attempt += 1) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				snapshot = await readTuiQuotaSnapshot(getTuiQuotaCachePath(stateDir));
+			}
 
 			expect(response.status).toBe(200);
 			expect(snapshot).toEqual(

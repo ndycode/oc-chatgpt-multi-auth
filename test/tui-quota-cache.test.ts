@@ -86,4 +86,30 @@ describe("TUI quota cache", () => {
 			await rm(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("skips repeated equivalent writes in a short window", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "tui-quota-cache-"));
+		const path = getTuiQuotaCachePath(dir);
+		try {
+			const first = createTuiQuotaSnapshot({
+				fingerprint: "acct",
+				source: "headers",
+				fetchedAt: 1000,
+				limits: [{ label: "5h", leftPercent: 94 }],
+			});
+			const second = createTuiQuotaSnapshot({
+				fingerprint: "acct",
+				source: "headers",
+				fetchedAt: 2000,
+				limits: [{ label: "5h", leftPercent: 94 }],
+			});
+
+			await writeTuiQuotaSnapshot(first, path);
+			await writeTuiQuotaSnapshot(second, path);
+
+			await expect(readTuiQuotaSnapshot(path)).resolves.toEqual(first);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
 });
