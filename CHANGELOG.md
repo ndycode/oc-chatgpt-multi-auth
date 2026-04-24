@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- (placeholder for next release)
+
+## [6.1.3] - 2026-04-24
+
+### Added
 - Explicit `gpt-5.5-fast` / `gpt-5.5-fast-{none,low,medium,high,xhigh}` entries in the model map, normalizing to `gpt-5.5`. Without the explicit map entry, picking OpenCode's built-in `GPT-5.5 Fast` catalog item fell through the regex fallback with no per-model config lookup, which contributed to the `All N account(s) failed (server errors or auth issues)` symptom.
 - Scoped auto-fallback for GPT-5.5: when the backend returns `model_not_supported_with_chatgpt_account` for `gpt-5.5`, the plugin now routes the retry to `gpt-5.4` automatically, even without `unsupportedCodexPolicy: "fallback"` or `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback`. Opt out with `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1`. Legacy family fallback behavior is unchanged.
 
