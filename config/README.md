@@ -9,7 +9,7 @@ This directory contains the official OpenCode config templates for `oc-codex-mul
 | [`opencode-modern.json`](./opencode-modern.json) | **v1.0.210+** | Variant-based config: 9 base models with 36 total presets |
 | [`opencode-legacy.json`](./opencode-legacy.json) | **v1.0.209 and below** | Legacy explicit entries: 36 individual model definitions |
 
-The installer currently uses a merged full-catalog mode by default so users get both the modern base entries and the explicit preset entries without having to hand-edit `opencode.json`.
+The installer uses the compact modern template by default so the model picker shows only base OAuth model families. Rerun the default installer to remove explicit preset IDs and stale base models left by earlier plugin catalogs. Use `--full` when you want the explicit preset IDs installed too.
 
 ## Quick pick
 
@@ -41,7 +41,7 @@ Both templates include:
 - `store: false` and `include: ["reasoning.encrypted_content"]`
 - Context metadata (`gpt-5.5`/`gpt-5.5-fast`: 1,050,000; `gpt-5.4-mini`/`gpt-5.4-nano`/Codex models: 400,000; `gpt-5.1`: 272,000; all output: 128,000)
 
-Use `opencode debug config` to verify that these template entries were merged into your effective config. On tested OpenCode `1.14.22`, `opencode models openai` exposes explicit GPT-5.5 entries such as `gpt-5.5-medium` / `gpt-5.5-high`, while bare `gpt-5.5` may still be omitted or rejected by provider lookup even when it exists in the effective config.
+Use `opencode debug config` to verify that these template entries were merged into your effective config. The default compact install shows base OAuth entries such as `gpt-5.5` / `gpt-5.5-fast`; the separate OpenCode variant picker exposes the reasoning presets.
 
 If your OpenCode runtime supports global compaction tuning, you can also set:
 - `model_context_window = 1050000`
@@ -55,18 +55,18 @@ If your workspace is entitled, you can add Spark model IDs manually.
 
 ## Usage examples
 
-Recommended real-session selectors (tested on OpenCode `1.14.22`):
-
-```bash
-opencode run "task" --model=openai/gpt-5.5-medium
-opencode run "task" --model=openai/gpt-5.5-fast-medium
-opencode run "task" --model=openai/gpt-5-codex --variant=high
-```
-
-If your OpenCode release already exposes bare GPT-5.5 base entries, the compact modern template also supports:
+Recommended compact UI selectors:
 
 ```bash
 opencode run "task" --model=openai/gpt-5.5 --variant=medium
+opencode run "task" --model=openai/gpt-5.5-fast --variant=medium
+opencode run "task" --model=openai/gpt-5-codex --variant=high
+```
+
+If you need direct explicit selector IDs for scripts, install with:
+
+```bash
+npx -y oc-codex-multi-auth@latest --full
 ```
 
 ## Minimal config (advanced)

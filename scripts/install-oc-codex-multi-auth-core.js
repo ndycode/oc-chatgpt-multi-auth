@@ -8,21 +8,27 @@ const PACKAGE_NAME = "oc-codex-multi-auth";
 const LEGACY_PACKAGE_NAMES = ["oc-chatgpt-multi-auth"];
 const WINDOWS_RENAME_RETRY_ATTEMPTS = 5;
 const WINDOWS_RENAME_RETRY_BASE_DELAY_MS = 10;
+const STALE_MANAGED_MODEL_KEYS = new Set([
+	"gpt-5.2",
+	"gpt-5.3-codex",
+	"gpt-5.4",
+]);
 
 function getManagedPackageNames() {
 	return [PACKAGE_NAME, ...LEGACY_PACKAGE_NAMES];
 }
 
 function printHelp() {
-	console.log(`Usage: ${PACKAGE_NAME} [--modern|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
+	console.log(`Usage: ${PACKAGE_NAME} [--modern|--full|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
 		"Default behavior:\n" +
 		"  - Installs/updates global config at ~/.config/opencode/opencode.json\n" +
-		"  - Uses full catalog config by default (9 base models + 36 explicit presets)\n" +
+		"  - Uses compact UI config by default (9 base OAuth models + variant picker presets)\n" +
 		"  - Ensures plugin is unpinned (latest)\n" +
 		"  - Clears OpenCode plugin cache\n\n" +
 		"Options:\n" +
-		"  --modern           Force compact modern config (9 base models + --variant presets)\n" +
-		"  --legacy           Force explicit legacy config (34 preset model entries)\n" +
+		"  --modern           Force compact modern config (9 base OAuth models + --variant presets)\n" +
+		"  --full             Install compact base models plus 36 explicit selector entries\n" +
+		"  --legacy           Force explicit legacy config (36 preset model entries)\n" +
 		"  --dry-run          Show actions without writing\n" +
 		"  --no-cache-clear   Skip clearing OpenCode cache\n"
 	);
@@ -82,17 +88,20 @@ function parseCliArgs(argv = process.argv.slice(2)) {
 	}
 
 	const requestedModern = args.has("--modern");
+	const requestedFull = args.has("--full");
 	const requestedLegacy = args.has("--legacy");
 
-	if (requestedModern && requestedLegacy) {
-		throw new Error("Choose only one of --modern or --legacy.");
+	const requestedModes = [requestedModern, requestedFull, requestedLegacy]
+		.filter(Boolean).length;
+	if (requestedModes > 1) {
+		throw new Error("Choose only one of --modern, --full, or --legacy.");
 	}
 
 	return {
 		wantsHelp: false,
 		dryRun: args.has("--dry-run"),
 		skipCacheClear: args.has("--no-cache-clear"),
-		configMode: requestedModern ? "modern" : requestedLegacy ? "legacy" : "full",
+		configMode: requestedFull ? "full" : requestedLegacy ? "legacy" : "modern",
 	};
 }
 
@@ -150,9 +159,12 @@ function isPlainObject(value) {
 // installer overwrite the managed shape it ships. This replaces the earlier
 // wholesale overwrite which clobbered custom user-added keys (see audit top-20
 // #6).
-function mergeOpenaiProvider(existingOpenai, templateOpenai) {
+function mergeOpenaiProvider(existingOpenai, templateOpenai, options = {}) {
 	const existingSafe = isPlainObject(existingOpenai) ? existingOpenai : {};
 	const templateSafe = isPlainObject(templateOpenai) ? templateOpenai : {};
+	const modelKeysToRemove = options.modelKeysToRemove instanceof Set
+		? options.modelKeysToRemove
+		: new Set();
 
 	const result = {};
 
@@ -172,7 +184,10 @@ function mergeOpenaiProvider(existingOpenai, templateOpenai) {
 	// 3. Merge `models` by id: template wins on collision, user-added ids survive.
 	const existingModels = isPlainObject(existingSafe.models) ? existingSafe.models : {};
 	const templateModels = isPlainObject(templateSafe.models) ? templateSafe.models : {};
-	const mergedModels = { ...existingModels, ...templateModels };
+	const prunedExistingModels = Object.fromEntries(
+		Object.entries(existingModels).filter(([key]) => !modelKeysToRemove.has(key)),
+	);
+	const mergedModels = { ...prunedExistingModels, ...templateModels };
 	if (Object.keys(mergedModels).length > 0) {
 		result.models = mergedModels;
 	}
@@ -226,6 +241,10 @@ function mergeFullTemplate(modernTemplate, legacyTemplate) {
 			},
 		},
 	};
+}
+
+function getTemplateModelKeys(template) {
+	return new Set(Object.keys(template.provider?.openai?.models ?? {}));
 }
 
 async function readJson(filePath) {
@@ -417,6 +436,17 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 
 	const template = await loadTemplate(configMode, paths);
 	template.plugin = [PACKAGE_NAME];
+	const modelKeysToRemove = new Set(STALE_MANAGED_MODEL_KEYS);
+	if (configMode === "modern") {
+		for (const key of getTemplateModelKeys(await readJson(paths.legacyTemplatePath))) {
+			modelKeysToRemove.add(key);
+		}
+	}
+	if (configMode === "legacy") {
+		for (const key of getTemplateModelKeys(await readJson(paths.modernTemplatePath))) {
+			modelKeysToRemove.add(key);
+		}
+	}
 
 	let nextConfig = template;
 	let existingConfig;
@@ -432,7 +462,9 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 			const provider = (existing.provider && typeof existing.provider === "object")
 				? { ...existing.provider }
 				: {};
-			provider.openai = mergeOpenaiProvider(existing.provider?.openai, template.provider?.openai);
+			provider.openai = mergeOpenaiProvider(existing.provider?.openai, template.provider?.openai, {
+				modelKeysToRemove,
+			});
 			merged.provider = provider;
 			nextConfig = merged;
 		} catch (error) {
@@ -460,13 +492,13 @@ export async function runInstaller(argv = process.argv.slice(2), options = {}) {
 	log("\nDone. Restart OpenCode to (re)install the plugin.");
 	log("Example: opencode");
 	if (configMode === "modern") {
-		log("Note: Modern config intentionally shows 9 base model entries; use --variant to access all 36 shipped presets.");
+		log("Note: Modern config intentionally shows 9 base OAuth model entries; use the variant picker for reasoning presets.");
 	}
 	if (configMode === "legacy") {
 		log("Note: Legacy config writes 36 explicit preset entries and is also safe for older OpenCode versions.");
 	}
 	if (configMode === "full") {
-		log("Note: Full config installs both modern base models and explicit preset entries so the full shipped catalog is visible by default.");
+		log("Note: Full config installs both compact base models and explicit preset entries for direct selector IDs.");
 	}
 
 	return {

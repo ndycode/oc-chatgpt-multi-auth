@@ -24,21 +24,17 @@ This guide covers the full installation and first-run flow for `oc-codex-multi-a
 ```bash
 npx -y oc-codex-multi-auth@latest
 opencode auth login
-opencode run "Explain this repository" --model=openai/gpt-5.5-medium
+opencode run "Explain this repository" --model=openai/gpt-5.5 --variant=medium
 ```
 
 The installer updates `~/.config/opencode/opencode.json`, backs up the previous config, normalizes the plugin entry to `oc-codex-multi-auth`, and clears the cached plugin copy so OpenCode reinstalls the latest package.
 
-By default, the installer writes a full catalog config so you get both:
-- modern base model entries such as `gpt-5.5` and `gpt-5.5-fast` for `--variant` workflows
-- explicit preset entries such as `gpt-5.5-medium` / `gpt-5.5-fast-medium` / `gpt-5.5-high` so the full shipped catalog is visible directly in pickers
+By default, the installer writes the compact UI config so the model picker shows base OAuth model families such as `gpt-5.5` and `gpt-5.5-fast`, then the separate model variant picker handles `none`, `low`, `medium`, `high`, and `xhigh`. Rerunning the default installer also removes explicit preset entries and stale base models left by earlier plugin catalogs.
 
-Tested live on OpenCode `1.14.22`: use explicit GPT-5.5 selectors like `openai/gpt-5.5-medium`, `openai/gpt-5.5-fast-medium`, or `openai/gpt-5.5-high` for real-session verification. Bare `openai/gpt-5.5 --variant=...` may or may not work depending on your OpenCode release.
-
-If you prefer the compact variant-only config on OpenCode `v1.0.210+`, use:
+If you want direct explicit selector IDs such as `openai/gpt-5.5-medium`, use the full catalog:
 
 ```bash
-npx -y oc-codex-multi-auth@latest --modern
+npx -y oc-codex-multi-auth@latest --full
 ```
 
 If you explicitly want the older explicit-only layout, use:
@@ -127,23 +123,23 @@ Run one of these commands:
 
 ```bash
 # Recommended current GPT-5.5 path
-opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5-medium
-opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5-fast-medium
+opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5 --variant=medium
+opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5-fast --variant=medium
 opencode run "Inspect the retry logic and summarize it" --model=openai/gpt-5-codex --variant=high
 
-# Compact modern template, only if your OpenCode release exposes bare base entries
-opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5 --variant=medium
+# Direct selector IDs, only after installing with --full
+opencode run "Create a short TODO list for this repo" --model=openai/gpt-5.5-medium
 ```
 
 If you want to verify request routing, run a request with logging enabled:
 
 ```bash
-ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5-medium
+ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5 --variant=medium
 ```
 
 The first request should create logs under `~/.opencode/logs/codex-plugin/`.
 
-Use `opencode debug config` when you want to verify that template-defined or custom models were merged into your effective config. On tested OpenCode `1.14.22`, `opencode models openai` exposes explicit GPT-5.5 entries such as `gpt-5.5-medium` / `gpt-5.5-high`; bare `gpt-5.5` may still not be selectable even when present in config.
+Use `opencode debug config` when you want to verify that template-defined or custom models were merged into your effective config. The default install exposes compact OAuth model entries such as `gpt-5.5` and `gpt-5.5-fast`; `--full` additionally exposes explicit entries such as `gpt-5.5-medium` / `gpt-5.5-fast-medium` / `gpt-5.5-high`.
 
 ## Multi-Account Setup
 

@@ -30,7 +30,7 @@ OpenCode can also accept override content at process start:
 
 ```bash
 OPENCODE_CONFIG=/path/to/config.json opencode
-OPENCODE_CONFIG_CONTENT='{"model":"openai/gpt-5.5-medium"}' opencode
+OPENCODE_CONFIG_CONTENT='{"model":"openai/gpt-5.5","variant":"medium"}' opencode
 ```
 
 ### Plugin runtime config
@@ -47,7 +47,7 @@ That file controls plugin behavior such as retry policy, beginner safe mode, fal
 
 `scripts/install-oc-codex-multi-auth.js` performs these steps:
 
-1. Load the selected template set (`full` by default, `config/opencode-modern.json` with `--modern`, `config/opencode-legacy.json` with `--legacy`).
+1. Load the selected template set (`config/opencode-modern.json` by default, merged modern+legacy templates with `--full`, or `config/opencode-legacy.json` with `--legacy`).
 2. Back up an existing `~/.config/opencode/opencode.json`.
 3. Normalize the plugin list so it ends with plain `oc-codex-multi-auth`.
 4. Replace `provider.openai` with the selected shipped template block.
@@ -56,7 +56,8 @@ That file controls plugin behavior such as retry policy, beginner safe mode, fal
 Important detail:
 
 - The installer intentionally writes the plugin entry as `oc-codex-multi-auth`, not `oc-codex-multi-auth@latest`.
-- The default `full` install mode merges the modern base-model template with the explicit legacy preset entries so users can access `--variant` workflows and still see the full shipped preset catalog directly.
+- The default install mode uses the compact modern base-model template so the TUI model picker shows real OAuth model families and leaves reasoning depth to the variant picker.
+- `--full` merges the modern base-model template with the explicit legacy preset entries for scripts that require direct selector IDs.
 
 ## Shipped Template Structure
 
@@ -73,14 +74,13 @@ It currently ships:
 - `gpt-5.1` at 272,000 context / 128,000 output
 - `store: false` plus `include: ["reasoning.encrypted_content"]`
 
-### Full installer mode
+### Default installer mode
 
-The default installer mode combines:
+The default installer mode writes:
 
 - the 9 modern base model entries from `config/opencode-modern.json`
-- the 36 explicit preset entries from `config/opencode-legacy.json`
 
-That hybrid install mode is what fixes the "only 9 models" complaint without removing `--variant` support.
+That compact install mode keeps the OpenCode TUI model picker focused on actual OAuth model families. Reasoning presets are selected through the separate variant picker.
 
 Example shape:
 
@@ -110,17 +110,26 @@ Example shape:
 }
 ```
 
-Full/default install, tested live on OpenCode `1.14.22`, uses:
+Default install uses base model IDs plus variants:
 
 ```bash
-opencode run "task" --model=openai/gpt-5.5-medium
-opencode run "task" --model=openai/gpt-5.5-fast-medium
+opencode run "task" --model=openai/gpt-5.5 --variant=medium
+opencode run "task" --model=openai/gpt-5.5-fast --variant=medium
 ```
 
-If your OpenCode release exposes bare base entries, the compact modern template also supports:
+### Full installer mode
+
+`--full` combines:
+
+- the 9 modern base model entries from `config/opencode-modern.json`
+- the 36 explicit preset entries from `config/opencode-legacy.json`
+
+Use it when scripts require direct selector IDs:
 
 ```bash
-opencode run "task" --model=openai/gpt-5.5 --variant=high
+npx -y oc-codex-multi-auth@latest --full
+opencode run "task" --model=openai/gpt-5.5-medium
+opencode run "task" --model=openai/gpt-5.5-fast-medium
 ```
 
 ### Legacy template
@@ -150,7 +159,7 @@ At runtime, OpenCode passes `provider.openai.options` and `provider.openai.model
 
 Examples:
 
-- `openai/gpt-5.5-medium` normalizes to `gpt-5.5`
+- `openai/gpt-5.5` with variant `medium` normalizes to `gpt-5.5`
 - `openai/gpt-5.4-mini-xhigh` normalizes to `gpt-5.4-mini`
 - legacy aliases such as `gpt-5-mini` normalize to `gpt-5.4-mini`
 
@@ -160,14 +169,14 @@ Use these commands when checking the effective config:
 
 ```bash
 opencode debug config
-ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-5.5-medium
+ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "ping" --model=openai/gpt-5.5 --variant=medium
 ```
 
 Important runtime behavior:
 
 - `opencode debug config` shows merged provider models from your config.
-- On tested OpenCode `1.14.22`, `opencode models openai` shows explicit GPT-5.5 entries such as `gpt-5.5-medium` / `gpt-5.5-high`.
-- The same runtime can still reject bare `openai/gpt-5.5`, so explicit GPT-5.5 preset IDs are the reliable current CLI path.
+- The default install shows compact GPT-5.5 OAuth base entries such as `gpt-5.5` / `gpt-5.5-fast`.
+- `--full` additionally shows explicit GPT-5.5 entries such as `gpt-5.5-medium` / `gpt-5.5-fast-medium` / `gpt-5.5-high`.
 
 ## File Locations
 

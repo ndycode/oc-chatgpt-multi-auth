@@ -17,7 +17,7 @@ Use your ChatGPT Plus/Pro subscription inside OpenCode with OAuth login, GPT-5/C
 ## What This Project Does
 
 - Adds an OpenCode plugin that authenticates with ChatGPT Plus/Pro through official OAuth
-- Ships ready-to-use GPT-5.5 templates, explicit `gpt-5.5-medium` / `gpt-5.5-fast-medium` / `gpt-5.5-high` selectors, `gpt-5-codex`, and related GPT-5 families
+- Ships ready-to-use GPT-5.5 OAuth model templates, variant picker presets, optional explicit selector IDs, `gpt-5-codex`, and related GPT-5 families
 - Routes requests through a stateless Codex-compatible request pipeline with automatic token refresh
 - Supports multi-account rotation, per-project account storage, and guided onboarding commands
 
@@ -31,7 +31,7 @@ npx -y oc-codex-multi-auth@latest
 opencode auth login
 
 # 3. Run a prompt in OpenCode
-opencode run "Explain this repository" --model=openai/gpt-5.5-medium
+opencode run "Explain this repository" --model=openai/gpt-5.5 --variant=medium
 ```
 
 What the installer does:
@@ -41,18 +41,19 @@ What the installer does:
 - normalizes the plugin entry to `"oc-codex-multi-auth"`
 - clears the cached plugin copy so OpenCode reinstalls the latest package
 
-By default, the installer now writes a full catalog config that includes both:
-- modern base model entries such as `gpt-5.5` for `--variant` workflows
-- explicit preset entries such as `gpt-5.5-medium` / `gpt-5.5-fast-medium` / `gpt-5.5-high` so the shipped catalog is visible directly in model pickers
+By default, the installer writes the compact UI config:
+- model picker entries stay on actual OAuth model families such as `gpt-5.5` and `gpt-5.5-fast`
+- reasoning presets are selected through OpenCode's model variant picker (`none`, `low`, `medium`, `high`, `xhigh`)
+- rerunning the default installer removes explicit preset entries and stale base models from earlier plugin catalogs
 
-Tested live on OpenCode `1.14.22`: explicit GPT-5.5 model IDs like `openai/gpt-5.5-medium`, `openai/gpt-5.5-fast-medium`, and `openai/gpt-5.5-high` work directly. Some OpenCode releases still reject bare `openai/gpt-5.5` on the CLI even when the base config entry exists in the effective config.
+If you prefer direct model IDs such as `openai/gpt-5.5-medium` or `openai/gpt-5.5-fast-medium`, install with `--full`.
 
 ## Example Usage
 
 ```bash
 # General GPT-5 workflow
-opencode run "Summarize the failing test and suggest a fix" --model=openai/gpt-5.5-medium
-opencode run "Summarize the failing test and suggest a fix" --model=openai/gpt-5.5-fast-medium
+opencode run "Summarize the failing test and suggest a fix" --model=openai/gpt-5.5 --variant=medium
+opencode run "Summarize the failing test and suggest a fix" --model=openai/gpt-5.5-fast --variant=medium
 
 # Codex-focused workflow
 opencode run "Refactor the retry logic and update the tests" --model=openai/gpt-5-codex --variant=high
@@ -89,7 +90,7 @@ OpenCode users often want the same GPT-5 and Codex model experience they use in 
 
 ## Common Workflows
 
-- Personal coding sessions in OpenCode using `gpt-5.5-medium`, `gpt-5.5-high`, or `gpt-5-codex`
+- Personal coding sessions in OpenCode using `gpt-5.5` / `gpt-5.5-fast` with variants, or `gpt-5-codex`
 - Switching between personal and workspace-linked ChatGPT accounts
 - Keeping separate account pools per project or monorepo
 - Recovering from unsupported-model, auth, or rate-limit issues with guided commands
@@ -109,10 +110,10 @@ See [Architecture](docs/development/ARCHITECTURE.md) for implementation details.
 
 Use the quick-start path above for the fastest setup. For full setup, local development installs, legacy OpenCode support, and verification steps, see [Getting Started](docs/getting-started.md).
 
-If you prefer the compact variant-only config on OpenCode `v1.0.210+`, use:
+For direct selector IDs in scripts or older habits, use the full catalog:
 
 ```bash
-npx -y oc-codex-multi-auth@latest --modern
+npx -y oc-codex-multi-auth@latest --full
 ```
 
 ## Configuration
