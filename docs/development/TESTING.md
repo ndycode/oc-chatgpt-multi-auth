@@ -26,7 +26,7 @@ Representative suites on `main`:
 
 | File / area | Focus |
 |------|---------|
-| `test/gpt55-release.test.ts` | GPT-5.5 release ids, prompt-family routing, fallback chain |
+| `test/gpt55-release.test.ts` | GPT-5.5 model ids, prompt-family routing, fallback chain |
 | `test/gpt54-models.test.ts` | GPT-5.4 family defaults and model surface |
 | `test/request-transformer.test.ts` | model normalization, request shaping, `store: false`, reasoning options |
 | `test/config.test.ts` | config loading and provider model handling |

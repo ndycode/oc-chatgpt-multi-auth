@@ -9,8 +9,8 @@ import { logRequest, logError, logWarn } from "../logger.js";
 import { getCodexInstructions, getModelFamily } from "../prompts/codex.js";
 import { transformRequestBody, normalizeModel } from "./request-transformer.js";
 import {
-	GPT_55_PRO_RELEASE_ID,
-	GPT_55_RELEASE_ID,
+	GPT_55_MODEL_ID,
+	GPT_55_PRO_MODEL_ID,
 } from "./helpers/model-map.js";
 import { convertSseToJson, ensureContentType } from "./response-handler.js";
 import type { UserConfig, RequestBody } from "../types.js";
@@ -49,8 +49,8 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
-	[GPT_55_RELEASE_ID]: ["gpt-5.4"],
-	[GPT_55_PRO_RELEASE_ID]: [GPT_55_RELEASE_ID],
+	[GPT_55_MODEL_ID]: ["gpt-5.4"],
+	[GPT_55_PRO_MODEL_ID]: [GPT_55_MODEL_ID],
 	"gpt-5.4-pro": ["gpt-5.4"],
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
 	"gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
@@ -84,12 +84,12 @@ function canonicalizeModelName(model: string | undefined): string | undefined {
 	const withoutEffort = stripped.replace(/-(none|minimal|low|medium|high|xhigh)$/i, "");
 
 	// Keep legacy alias distinctions (for example gpt-5.3-codex-spark vs gpt-5.3-codex)
-	// while still collapsing GPT-5.5 release aliases onto the exact shipped ids.
-	if (withoutEffort === "gpt-5.5") {
-		return GPT_55_RELEASE_ID;
+	// while collapsing rejected dated GPT-5.5 release aliases onto the public Codex ids.
+	if (withoutEffort === "gpt-5.5" || withoutEffort === "gpt-5.5-20260423") {
+		return GPT_55_MODEL_ID;
 	}
-	if (withoutEffort === "gpt-5.5-pro") {
-		return GPT_55_PRO_RELEASE_ID;
+	if (withoutEffort === "gpt-5.5-pro" || withoutEffort === "gpt-5.5-pro-20260423") {
+		return GPT_55_PRO_MODEL_ID;
 	}
 
 	return withoutEffort;
@@ -397,6 +397,12 @@ export async function refreshAndUpdateToken(
 		throw new CodexAuthError(ERROR_MESSAGES.TOKEN_REFRESH_FAILED, { retryable: false });
 	}
 
+	const currentScope =
+		typeof (currentAuth as Auth & { scope?: unknown }).scope === "string"
+			? (currentAuth as Auth & { scope?: string }).scope
+			: undefined;
+	const nextScope = refreshResult.scope ?? currentScope;
+
 	await client.auth.set({
 		path: { id: "openai" },
 		body: {
@@ -404,6 +410,7 @@ export async function refreshAndUpdateToken(
 			access: refreshResult.access,
 			refresh: refreshResult.refresh,
 			expires: refreshResult.expires,
+			scope: nextScope,
 			multiAccount: true,
 		} as Parameters<typeof client.auth.set>[0]["body"],
 	});
@@ -413,6 +420,7 @@ export async function refreshAndUpdateToken(
 		currentAuth.access = refreshResult.access;
 		currentAuth.refresh = refreshResult.refresh;
 		currentAuth.expires = refreshResult.expires;
+		(currentAuth as Auth & { scope?: string }).scope = nextScope;
 	}
 
 	return currentAuth;

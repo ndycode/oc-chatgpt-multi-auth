@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { REDIRECT_URI } from "../lib/auth/auth.js";
 import {
+	OAUTH_CALLBACK_BIND_HOSTS,
 	OAUTH_CALLBACK_BIND_URL,
 	OAUTH_CALLBACK_LOOPBACK_HOST,
 	OAUTH_CALLBACK_PATH,
@@ -12,9 +13,10 @@ describe("oauth callback constants", () => {
 		expect(OAUTH_CALLBACK_PORT).toBe(1455);
 		expect(OAUTH_CALLBACK_PATH).toBe("/auth/callback");
 		expect(OAUTH_CALLBACK_LOOPBACK_HOST).toBe("127.0.0.1");
+		expect(OAUTH_CALLBACK_BIND_HOSTS).toEqual(["127.0.0.1", "::1"]);
 		expect(OAUTH_CALLBACK_BIND_URL).toBe(`http://127.0.0.1:${OAUTH_CALLBACK_PORT}`);
-		// Codex's OAuth client is registered with localhost in redirect_uri, while
-		// the local server binds the concrete IPv4 loopback interface.
+		// Codex's OAuth client is registered with localhost in redirect_uri; the
+		// callback server binds both concrete loopback interfaces for dual-stack hosts.
 		expect(REDIRECT_URI).toBe(
 			`http://localhost:${OAUTH_CALLBACK_PORT}${OAUTH_CALLBACK_PATH}`,
 		);

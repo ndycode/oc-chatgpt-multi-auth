@@ -236,6 +236,7 @@ describe('Auth Module', () => {
 					refresh_token: 'refresh-456',
 					expires_in: 3600,
 					id_token: 'id-token-789',
+					scope: SCOPE,
 				}), { status: 200 }),
 			) as never;
 
@@ -247,6 +248,7 @@ describe('Auth Module', () => {
 					refresh: 'refresh-456',
 					expires: 3_601_000,
 					idToken: 'id-token-789',
+					scope: SCOPE,
 					multiAccount: true,
 				});
 			} finally {

@@ -76,7 +76,7 @@ Example:
     "openai": {
       "models": {
         "gpt-5.5": {
-          "name": "GPT 5.5 20260423 (OAuth)",
+          "name": "GPT 5.5 (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -126,7 +126,7 @@ Example:
     "openai": {
       "models": {
         "gpt-5.5-high": {
-          "name": "GPT 5.5 20260423 High (OAuth)",
+          "name": "GPT 5.5 High (OAuth)",
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -163,7 +163,7 @@ Examples:
 
 | Selected model | Effective upstream family |
 |------|---------|
-| `openai/gpt-5.5-medium` | `gpt-5.5-20260423` |
+| `openai/gpt-5.5-medium` | `gpt-5.5` |
 | `openai/gpt-5.4-mini-xhigh` | `gpt-5.4-mini` |
 | `openai/gpt-5.1-codex-high` | `gpt-5.1-codex` |
 | `openai/gpt-5-mini` | `gpt-5.4-mini` |

@@ -19,6 +19,7 @@ type MergeableAccountRecord = {
 	refreshToken?: string;
 	accessToken?: string;
 	expiresAt?: number;
+	oauthScope?: string;
 	lastUsed?: number;
 	addedAt?: number;
 	enabled?: boolean;
@@ -119,6 +120,7 @@ export function mergeStoredAccountPair<T extends MergeableAccountRecord>(
 		refreshToken: newer.refreshToken ?? older.refreshToken,
 		accessToken: newer.accessToken ?? older.accessToken,
 		expiresAt: newer.expiresAt ?? older.expiresAt,
+		oauthScope: newer.oauthScope ?? older.oauthScope,
 		enabled: mergedEnabled,
 		addedAt: Math.max(target.addedAt ?? 0, source.addedAt ?? 0),
 		lastUsed: Math.max(target.lastUsed ?? 0, source.lastUsed ?? 0),
@@ -671,6 +673,7 @@ export async function persistAccountPool(
 					refreshToken: result.refresh,
 					accessToken: result.access,
 					expiresAt: result.expires,
+					oauthScope: result.scope,
 					addedAt: now,
 					lastUsed: now,
 				});
@@ -708,6 +711,7 @@ export async function persistAccountPool(
 				refreshToken: result.refresh,
 				accessToken: result.access,
 				expiresAt: result.expires,
+				oauthScope: result.scope ?? existing.oauthScope,
 				lastUsed: now,
 			};
 			identityIndexes = buildIdentityIndexes();

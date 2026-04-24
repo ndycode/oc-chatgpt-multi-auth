@@ -116,6 +116,7 @@ export const AccountMetadataV3Schema = z.object({
 	refreshToken: z.string().min(1), // Required, non-empty
 	accessToken: z.string().optional(),
 	expiresAt: z.number().optional(),
+	oauthScope: z.string().optional(),
 	enabled: z.boolean().optional(),
 	addedAt: z.number(),
 	lastUsed: z.number(),
@@ -163,6 +164,7 @@ export const AccountMetadataV1Schema = z.object({
 	refreshToken: z.string().min(1),
 	accessToken: z.string().optional(),
 	expiresAt: z.number().optional(),
+	oauthScope: z.string().optional(),
 	enabled: z.boolean().optional(),
 	addedAt: z.number(),
 	lastUsed: z.number(),
@@ -302,6 +304,7 @@ export const TokenSuccessSchema = z.object({
 	refresh: z.string().min(1),
 	expires: z.number(),
 	idToken: z.string().optional(),
+	scope: z.string().optional(),
 	multiAccount: z.boolean().optional(),
 });
 

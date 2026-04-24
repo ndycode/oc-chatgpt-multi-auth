@@ -11,21 +11,21 @@ import {
 } from "../lib/request/helpers/model-map.js";
 import { resolveUnsupportedCodexFallbackModel } from "../lib/request/fetch-helpers.js";
 
-describe("GPT-5.5 release activation", () => {
-	it("maps GPT-5.5 aliases to the exact 20260423 release ids", () => {
-		expect(MODEL_MAP["gpt-5.5"]).toBe("gpt-5.5-20260423");
-		expect(MODEL_MAP["gpt-5.5-pro"]).toBe("gpt-5.5-pro-20260423");
-		expect(getNormalizedModel("gpt-5.5")).toBe("gpt-5.5-20260423");
-		expect(getNormalizedModel("gpt-5.5-pro-high")).toBe("gpt-5.5-pro-20260423");
+describe("GPT-5.5 activation", () => {
+	it("maps GPT-5.5 aliases to the public Codex model ids", () => {
+		expect(MODEL_MAP["gpt-5.5"]).toBe("gpt-5.5");
+		expect(MODEL_MAP["gpt-5.5-pro"]).toBe("gpt-5.5-pro");
+		expect(getNormalizedModel("gpt-5.5")).toBe("gpt-5.5");
+		expect(getNormalizedModel("gpt-5.5-pro-high")).toBe("gpt-5.5-pro");
 		expect(isKnownModel("gpt-5.5")).toBe(true);
 		expect(isKnownModel("gpt-5.5-pro-xhigh")).toBe(true);
 	});
 
-	it("normalizes provider-prefixed release aliases", () => {
-		expect(normalizeModel("openai/gpt-5.5")).toBe("gpt-5.5-20260423");
-		expect(normalizeModel("openai/gpt-5.5-high")).toBe("gpt-5.5-20260423");
+	it("normalizes provider-prefixed model aliases", () => {
+		expect(normalizeModel("openai/gpt-5.5")).toBe("gpt-5.5");
+		expect(normalizeModel("openai/gpt-5.5-high")).toBe("gpt-5.5");
 		expect(normalizeModel("openai/gpt-5.5-pro-high")).toBe(
-			"gpt-5.5-pro-20260423",
+			"gpt-5.5-pro",
 		);
 	});
 
@@ -41,12 +41,12 @@ describe("GPT-5.5 release activation", () => {
 
 	it("routes GPT-5.5 prompts through the existing GPT-5.4 prompt families", () => {
 		expect(getModelFamily("gpt-5.5")).toBe("gpt-5.4");
-		expect(getModelFamily("gpt-5.5-20260423")).toBe("gpt-5.4");
+		expect(getModelFamily("gpt-5.5-high")).toBe("gpt-5.4");
 		expect(getModelFamily("gpt-5.5-pro")).toBe("gpt-5.4-pro");
-		expect(getModelFamily("gpt-5.5-pro-20260423")).toBe("gpt-5.4-pro");
+		expect(getModelFamily("gpt-5.5-pro-high")).toBe("gpt-5.4-pro");
 	});
 
-	it("falls back from GPT-5.5 Pro to the canonical GPT-5.5 release when entitlement fallback is enabled", () => {
+	it("falls back from GPT-5.5 Pro to GPT-5.5 when entitlement fallback is enabled", () => {
 		const fallback = resolveUnsupportedCodexFallbackModel({
 			requestedModel: "gpt-5.5-pro",
 			errorBody: {
@@ -61,7 +61,7 @@ describe("GPT-5.5 release activation", () => {
 			fallbackToGpt52OnUnsupportedGpt53: false,
 		});
 
-		expect(fallback).toBe("gpt-5.5-20260423");
+		expect(fallback).toBe("gpt-5.5");
 	});
 
 	it("falls back from GPT-5.5 to GPT-5.4 when GPT-5.5 is unsupported for ChatGPT accounts", () => {
@@ -69,9 +69,9 @@ describe("GPT-5.5 release activation", () => {
 			requestedModel: "gpt-5.5-medium",
 			errorBody: {
 				detail:
-					"The 'gpt-5.5-20260423' model is not supported when using Codex with a ChatGPT account.",
+					"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
 			},
-			attemptedModels: ["gpt-5.5-20260423"],
+			attemptedModels: ["gpt-5.5"],
 			fallbackOnUnsupportedCodexModel: true,
 			fallbackToGpt52OnUnsupportedGpt53: false,
 		});

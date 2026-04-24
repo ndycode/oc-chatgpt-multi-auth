@@ -145,6 +145,7 @@ Failed to access Codex API
 1. Token expired
 2. Not authenticated yet
 3. Invalid credentials
+4. Stored OAuth grant is missing the connector scopes required by the current Codex auth flow
 
 **Solutions:**
 
@@ -152,6 +153,8 @@ Failed to access Codex API
    ```bash
    opencode auth login
    ```
+
+   Re-auth is required for accounts created before `api.connectors.read` and `api.connectors.invoke` were requested; stale account records are marked inactive until they are refreshed through login.
 
 2. **Check auth file exists:**
    ```bash
@@ -365,7 +368,7 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    ```
 4. Default fallback chain (when policy is `fallback` and not overridden):
    - `gpt-5.5 -> gpt-5.4`
-   - `gpt-5.5-pro -> gpt-5.5-20260423`
+   - `gpt-5.5-pro -> gpt-5.5`
    - `gpt-5.4-pro -> gpt-5.4` (if `gpt-5.4-pro` is selected manually)
    - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
    - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (if Spark IDs are selected manually)
@@ -378,7 +381,7 @@ resolvedConfig: { reasoningEffort: 'low', ... }  ← Should show your options
    "fallbackOnUnsupportedCodexModel": true,
    "unsupportedCodexFallbackChain": {
       "gpt-5.5": ["gpt-5.4"],
-      "gpt-5.5-pro": ["gpt-5.5-20260423"],
+      "gpt-5.5-pro": ["gpt-5.5"],
       "gpt-5.4-pro": ["gpt-5.4"],
       "gpt-5-codex": ["gpt-5.2-codex"],
       "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
@@ -611,7 +614,7 @@ opencode auth login
 <details>
 <summary><b>Docker / WSL2 / Remote Development</b></summary>
 
-OAuth callback requires browser to reach `localhost` on the machine running OpenCode.
+OAuth callback requires browser to reach `localhost` on the machine running OpenCode. The plugin listens on both `127.0.0.1:1455` and `[::1]:1455` so Windows/macOS/Linux dual-stack localhost resolution can complete the redirect.
 
 **WSL2:**
 - Use VS Code's port forwarding, or

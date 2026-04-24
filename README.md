@@ -15,7 +15,7 @@ Use your ChatGPT Plus/Pro subscription inside OpenCode with OAuth login, GPT-5/C
 ## What This Project Does
 
 - Adds an OpenCode plugin that authenticates with ChatGPT Plus/Pro through official OAuth
-- Ships ready-to-use GPT-5.5 release templates, explicit `gpt-5.5-medium` / `gpt-5.5-high` selectors, `gpt-5-codex`, and related GPT-5 families
+- Ships ready-to-use GPT-5.5 templates, explicit `gpt-5.5-medium` / `gpt-5.5-high` selectors, `gpt-5-codex`, and related GPT-5 families
 - Routes requests through a stateless Codex-compatible request pipeline with automatic token refresh
 - Supports multi-account rotation, per-project account storage, and guided onboarding commands
 

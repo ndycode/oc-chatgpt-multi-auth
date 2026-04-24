@@ -3,8 +3,8 @@ import { TOOL_REMAP_MESSAGE } from "../prompts/codex.js";
 import { renderCodexOpenCodeBridge } from "../prompts/codex-opencode-bridge.js";
 import { getOpenCodeCodexPrompt } from "../prompts/opencode-codex.js";
 import {
-	GPT_55_PRO_RELEASE_ID,
-	GPT_55_RELEASE_ID,
+	GPT_55_MODEL_ID,
+	GPT_55_PRO_MODEL_ID,
 	getNormalizedModel,
 } from "./helpers/model-map.js";
 import {
@@ -84,12 +84,12 @@ export function normalizeModel(model: string | undefined): string {
 
 	// 4. GPT-5.5 Pro (release model)
 	if (/\bgpt(?:-| )5\.5(?:-| )pro(?:\b|[- ])/.test(normalized)) {
-		return GPT_55_PRO_RELEASE_ID;
+		return GPT_55_PRO_MODEL_ID;
 	}
 
 	// 5. GPT-5.5 (general purpose release)
 	if (/\bgpt(?:-| )5\.5(?:\b|[- ])/.test(normalized)) {
-		return GPT_55_RELEASE_ID;
+		return GPT_55_MODEL_ID;
 	}
 
 	// 6. GPT-5.4 Pro (first-class model)
@@ -170,7 +170,7 @@ export function normalizeModel(model: string | undefined): string {
 
 	// 18. GPT-5 family (any variant) - default to 5.5 latest general model
 	if (normalized.includes("gpt-5") || normalized.includes("gpt 5")) {
-		return GPT_55_RELEASE_ID;
+		return GPT_55_MODEL_ID;
 	}
 
 	// Default fallback
@@ -499,7 +499,7 @@ export function getReasoningConfig(
 		normalizedName.includes("gpt 5.2 codex");
 
 	// GPT-5.4/5.5 Pro support xhigh but not "none".
-	const isGpt55Pro = canonicalModelName === GPT_55_PRO_RELEASE_ID;
+	const isGpt55Pro = canonicalModelName === GPT_55_PRO_MODEL_ID;
 	const isProFamily =
 		normalizedName.includes("gpt-5.4-pro") ||
 		normalizedName.includes("gpt 5.4 pro") ||
@@ -512,7 +512,7 @@ export function getReasoningConfig(
 	const isGpt54Nano = canonicalModelName === "gpt-5.4-nano";
 
 	// GPT-5.4/5.5 general purpose family
-	const isGpt55General = canonicalModelName === GPT_55_RELEASE_ID;
+	const isGpt55General = canonicalModelName === GPT_55_MODEL_ID;
 	const isGpt54General =
 		(normalizedName.includes("gpt-5.4") || normalizedName.includes("gpt 5.4")) &&
 		!isProFamily &&
@@ -524,8 +524,8 @@ export function getReasoningConfig(
 		(normalizedName.includes("gpt-5.2") || normalizedName.includes("gpt 5.2")) &&
 		!isGpt52Codex;
 	const canonicalSupportsXhigh =
-		canonicalModelName === GPT_55_RELEASE_ID ||
-		canonicalModelName === GPT_55_PRO_RELEASE_ID ||
+		canonicalModelName === GPT_55_MODEL_ID ||
+		canonicalModelName === GPT_55_PRO_MODEL_ID ||
 		canonicalModelName === "gpt-5.4" ||
 		canonicalModelName === "gpt-5.4-mini" ||
 		canonicalModelName === "gpt-5.4-nano" ||

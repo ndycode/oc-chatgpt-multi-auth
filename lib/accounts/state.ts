@@ -25,6 +25,7 @@ import {
 	sanitizeEmail,
 	shouldUpdateAccountIdFromToken,
 } from "../auth/token-utils.js";
+import { getMissingRequiredOAuthScopes, hasRequiredOAuthScopes } from "../auth/scopes.js";
 import { getHealthTracker, getTokenTracker } from "../rotation.js";
 
 export interface ManagedAccount {
@@ -40,6 +41,7 @@ export interface ManagedAccount {
 	enabled?: boolean;
 	access?: string;
 	expires?: number;
+	oauthScope?: string;
 	addedAt: number;
 	lastUsed: number;
 	lastSwitchReason?: "rate-limit" | "initial" | "rotation";
@@ -69,6 +71,18 @@ function initFamilyState(defaultValue: number): Record<ModelFamily, number> {
 	) as Record<ModelFamily, number>;
 }
 
+function appendReauthNote(accountNote: string | undefined, missingScopes: string[]): string {
+	const suffix = `Re-auth required for missing OAuth scope(s): ${missingScopes.join(", ")}.`;
+	if (!accountNote) return suffix;
+	if (accountNote.includes(suffix)) return accountNote;
+	return `${accountNote} ${suffix}`;
+}
+
+function getAuthScope(auth: OAuthAuthDetails | undefined): string | undefined {
+	const scope = (auth as (OAuthAuthDetails & { scope?: unknown }) | undefined)?.scope;
+	return typeof scope === "string" && scope.trim() ? scope : undefined;
+}
+
 export class AccountState {
 	accounts: ManagedAccount[] = [];
 	cursorByFamily: Record<ModelFamily, number> = initFamilyState(0);
@@ -90,6 +104,7 @@ export class AccountState {
 	): void {
 		const fallbackAccountId = extractAccountId(authFallback?.access);
 		const fallbackAccountEmail = sanitizeEmail(extractAccountEmail(authFallback?.access));
+		const fallbackOAuthScope = getAuthScope(authFallback);
 
 		if (stored && stored.accounts.length > 0) {
 			const baseNow = nowMs();
@@ -98,6 +113,8 @@ export class AccountState {
 					if (!account.refreshToken || typeof account.refreshToken !== "string") {
 						return null;
 					}
+
+					const accountOAuthScope = account.oauthScope;
 
 					const matchesFallback =
 						!!authFallback &&
@@ -108,6 +125,9 @@ export class AccountState {
 
 					const refreshToken =
 						matchesFallback && authFallback ? authFallback.refresh : account.refreshToken;
+					const oauthScope =
+						matchesFallback && fallbackOAuthScope ? fallbackOAuthScope : accountOAuthScope;
+					const missingOAuthScopes = getMissingRequiredOAuthScopes(oauthScope);
 
 					return {
 						index,
@@ -118,16 +138,19 @@ export class AccountState {
 						accountIdSource: account.accountIdSource,
 						accountLabel: account.accountLabel,
 						accountTags: account.accountTags,
-						accountNote: account.accountNote,
+						accountNote: missingOAuthScopes.length > 0
+							? appendReauthNote(account.accountNote, missingOAuthScopes)
+							: account.accountNote,
 						email: matchesFallback
 							? fallbackAccountEmail ?? sanitizeEmail(account.email)
 							: sanitizeEmail(account.email),
 						refreshToken,
-						enabled: account.enabled !== false,
+						enabled: account.enabled !== false && missingOAuthScopes.length === 0,
 						access:
 							matchesFallback && authFallback ? authFallback.access : account.accessToken,
 						expires:
 							matchesFallback && authFallback ? authFallback.expires : account.expiresAt,
+						oauthScope,
 						addedAt: clampNonNegativeInt(account.addedAt, baseNow),
 						lastUsed: clampNonNegativeInt(account.lastUsed, 0),
 						lastSwitchReason: account.lastSwitchReason,
@@ -147,7 +170,7 @@ export class AccountState {
 						(!!fallbackAccountEmail && account.email === fallbackAccountEmail),
 				);
 
-			if (authFallback && !hasMatchingFallback) {
+			if (authFallback && !hasMatchingFallback && hasRequiredOAuthScopes(fallbackOAuthScope)) {
 				const now = nowMs();
 				this.accounts.push({
 					index: this.accounts.length,
@@ -159,6 +182,7 @@ export class AccountState {
 					enabled: true,
 					access: authFallback.access,
 					expires: authFallback.expires,
+					oauthScope: fallbackOAuthScope,
 					addedAt: now,
 					lastUsed: now,
 					lastSwitchReason: "initial",
@@ -181,7 +205,7 @@ export class AccountState {
 			return;
 		}
 
-		if (authFallback) {
+		if (authFallback && hasRequiredOAuthScopes(fallbackOAuthScope)) {
 			const now = nowMs();
 			this.accounts = [
 				{
@@ -194,6 +218,7 @@ export class AccountState {
 					enabled: true,
 					access: authFallback.access,
 					expires: authFallback.expires,
+					oauthScope: fallbackOAuthScope,
 					addedAt: now,
 					lastUsed: 0,
 					lastSwitchReason: "initial",
@@ -351,6 +376,10 @@ export class AccountState {
 		account.refreshToken = auth.refresh;
 		account.access = auth.access;
 		account.expires = auth.expires;
+		const scope = getAuthScope(auth);
+		if (scope) {
+			account.oauthScope = scope;
+		}
 		if (previousRefreshToken !== account.refreshToken) {
 			this.authFailuresByRefreshToken.delete(previousRefreshToken);
 		}
@@ -371,7 +400,8 @@ export class AccountState {
 			access: account.access ?? "",
 			refresh: account.refreshToken,
 			expires: account.expires ?? 0,
-		};
+			scope: account.oauthScope,
+		} as Auth;
 	}
 
 	markSwitched(

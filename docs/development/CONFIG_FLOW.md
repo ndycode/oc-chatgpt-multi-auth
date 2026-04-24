@@ -98,7 +98,7 @@ Example shape:
       },
       "models": {
         "gpt-5.4": {
-          "name": "GPT 5.4 (OAuth)",
+          "name": "GPT 5.5 (OAuth)",
           "variants": {
             "medium": { "reasoningEffort": "medium" },
             "high": { "reasoningEffort": "high" }
@@ -149,7 +149,7 @@ At runtime, OpenCode passes `provider.openai.options` and `provider.openai.model
 
 Examples:
 
-- `openai/gpt-5.5-medium` normalizes to `gpt-5.5-20260423`
+- `openai/gpt-5.5-medium` normalizes to `gpt-5.5`
 - `openai/gpt-5.4-mini-xhigh` normalizes to `gpt-5.4-mini`
 - legacy aliases such as `gpt-5-mini` normalize to `gpt-5.4-mini`
 

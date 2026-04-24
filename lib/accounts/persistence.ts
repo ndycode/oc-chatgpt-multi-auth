@@ -51,6 +51,7 @@ export class AccountPersistence {
 				refreshToken: account.refreshToken,
 				accessToken: account.access,
 				expiresAt: account.expires,
+				oauthScope: account.oauthScope,
 				enabled: account.enabled === false ? false : undefined,
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,

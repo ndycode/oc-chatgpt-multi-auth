@@ -349,12 +349,12 @@ describe('Fetch Helpers Module', () => {
 		it('returns unsupported model info from top-level detail payload', () => {
 			const info = getUnsupportedCodexModelInfo({
 				detail:
-					"The 'gpt-5.5-20260423' model is not supported when using Codex with a ChatGPT account.",
+					"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
 			});
 
 			expect(info.isUnsupported).toBe(true);
-			expect(info.message).toContain('gpt-5.5-20260423');
-			expect(info.unsupportedModel).toBe('gpt-5.5-20260423');
+			expect(info.message).toContain('gpt-5.5');
+			expect(info.unsupportedModel).toBe('gpt-5.5');
 		});
 
 		it('resolves Spark fallback chain to canonical gpt-5-codex first', () => {
@@ -457,7 +457,7 @@ describe('Fetch Helpers Module', () => {
 			expect(fallback).toBeUndefined();
 		});
 
-		it('falls back from gpt-5.5-pro to the canonical GPT-5.5 release when fallback policy is enabled', () => {
+		it('falls back from gpt-5.5-pro to GPT-5.5 when fallback policy is enabled', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.5-pro',
 				errorBody: {
@@ -471,20 +471,20 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBe('gpt-5.5-20260423');
+			expect(fallback).toBe('gpt-5.5');
 		});
 
-		it('falls back from the canonical GPT-5.5 release to gpt-5.4 when GPT-5.5 is unsupported', () => {
+		it('falls back from GPT-5.5 to gpt-5.4 when GPT-5.5 is unsupported', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.5-medium',
 				errorBody: {
 					error: {
 						code: 'model_not_supported_with_chatgpt_account',
 						message:
-							"The 'gpt-5.5-20260423' model is not supported when using Codex with a ChatGPT account.",
+							"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
 					},
 				},
-				attemptedModels: ['gpt-5.5-20260423'],
+				attemptedModels: ['gpt-5.5'],
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
@@ -493,24 +493,24 @@ describe('Fetch Helpers Module', () => {
 
 		it('does not fallback from GPT-5.5 when gpt-5.4 was already attempted', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
-				requestedModel: 'gpt-5.5-20260423',
+				requestedModel: 'gpt-5.5',
 				errorBody: {
 					error: {
 						code: 'model_not_supported_with_chatgpt_account',
 						message:
-							"The 'gpt-5.5-20260423' model is not supported when using Codex with a ChatGPT account.",
+							"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
 					},
 				},
-				attemptedModels: ['gpt-5.5-20260423', 'gpt-5.4'],
+				attemptedModels: ['gpt-5.5', 'gpt-5.4'],
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
 			expect(fallback).toBeUndefined();
 		});
 
-		it('does not fallback from gpt-5.5-pro when the canonical GPT-5.5 release was already attempted', () => {
+		it('does not fallback from gpt-5.5-pro when GPT-5.5 was already attempted', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
-				requestedModel: 'gpt-5.5-pro-20260423',
+				requestedModel: 'gpt-5.5-pro',
 				errorBody: {
 					error: {
 						code: 'model_not_supported_with_chatgpt_account',
@@ -518,7 +518,7 @@ describe('Fetch Helpers Module', () => {
 							"The 'gpt-5.5-pro' model is not supported when using Codex with a ChatGPT account.",
 					},
 				},
-				attemptedModels: ['gpt-5.5-pro-20260423', 'gpt-5.5-20260423'],
+				attemptedModels: ['gpt-5.5-pro', 'gpt-5.5'],
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
@@ -998,7 +998,7 @@ describe('Fetch Helpers Module', () => {
 				expect(getInstructionsSpy).not.toHaveBeenCalled();
 			});
 
-			it('normalizes GPT-5.5 preset ids to the canonical release id in native mode', async () => {
+			it('normalizes GPT-5.5 preset ids to the canonical model id in native mode', async () => {
 				const { transformRequestForCodex } = await import('../lib/request/fetch-helpers.js');
 				const getInstructionsSpy = vi.spyOn(codexPrompts, 'getCodexInstructions');
 				const requestBody = {
@@ -1016,7 +1016,7 @@ describe('Fetch Helpers Module', () => {
 				);
 
 				expect(result).toBeDefined();
-				expect(result?.body.model).toBe('gpt-5.5-20260423');
+				expect(result?.body.model).toBe('gpt-5.5');
 				expect(getInstructionsSpy).not.toHaveBeenCalled();
 			});
 
