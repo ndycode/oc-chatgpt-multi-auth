@@ -212,6 +212,12 @@ import {
 	createToolRegistry,
 	type ToolContext,
 } from "./lib/tools/index.js";
+import { createUsageAccountFingerprint } from "./lib/codex-usage.js";
+import {
+	clearTuiQuotaSnapshot,
+	parseTuiQuotaSnapshotFromHeaders,
+	writeTuiQuotaSnapshot,
+} from "./lib/tui-quota-cache.js";
 
 /**
  * OpenAI Codex OAuth authentication plugin for opencode
@@ -586,6 +592,44 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                         // Ignore when TUI is not available.
                 }
         };
+
+		type TuiQuotaAccount = Parameters<typeof createUsageAccountFingerprint>[0] & {
+			index: number;
+			email?: string;
+			accountLabel?: string;
+		};
+
+		const clearPromptQuotaCache = async (): Promise<void> => {
+			try {
+				await clearTuiQuotaSnapshot();
+			} catch (error) {
+				logDebug(
+					`[${PLUGIN_NAME}] Failed to clear TUI quota cache: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		};
+
+		const recordPromptQuotaHeaders = async (
+			response: Response,
+			account: TuiQuotaAccount,
+			accountCount: number,
+		): Promise<void> => {
+			try {
+				const snapshot = parseTuiQuotaSnapshotFromHeaders(response.headers, {
+					fingerprint: createUsageAccountFingerprint(account),
+					accountIndex: account.index + 1,
+					accountCount,
+					accountEmail: account.email?.trim() || undefined,
+					accountLabel: formatAccountLabel(account, account.index),
+				});
+				if (!snapshot) return;
+				await writeTuiQuotaSnapshot(snapshot);
+			} catch (error) {
+				logDebug(
+					`[${PLUGIN_NAME}] Failed to record TUI quota headers: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		};
 
 		const resolveActiveIndex = (
 				storage: {
@@ -1290,6 +1334,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                 }
 
                                 await saveAccounts(storage);
+								await clearPromptQuotaCache();
 
                                 // Reload manager from disk so we don't overwrite newer rotated
                                 // refresh tokens with stale in-memory state.
@@ -2100,6 +2145,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								latencyMs: fetchLatencyMs,
 								headers: Object.fromEntries(response.headers.entries()),
 							});
+							void recordPromptQuotaHeaders(response, account, accountCount);
 
 								if (!response.ok) {
 									const contextOverflowResult = await handleContextOverflow(response, model);
