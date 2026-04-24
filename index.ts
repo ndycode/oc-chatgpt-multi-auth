@@ -649,27 +649,22 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return;
 		}
 
+		const hasUsableTokens = (
+			account: (typeof storage.accounts)[number] | undefined,
+		): boolean =>
+			typeof account?.accessToken === "string" &&
+			account.accessToken.trim().length > 0 &&
+			typeof account?.refreshToken === "string" &&
+			account.refreshToken.trim().length > 0 &&
+			typeof account?.expiresAt === "number" &&
+			Number.isFinite(account.expiresAt);
+
 		const activeIndex = resolveActiveIndex(storage, "codex");
-		const candidate =
-			storage.accounts[activeIndex] ??
-			storage.accounts.find(
-				(account) =>
-					typeof account?.accessToken === "string" &&
-					account.accessToken.trim().length > 0 &&
-					typeof account?.refreshToken === "string" &&
-					account.refreshToken.trim().length > 0 &&
-					typeof account?.expiresAt === "number" &&
-					Number.isFinite(account.expiresAt),
-			);
-		if (
-			!candidate ||
-			typeof candidate.accessToken !== "string" ||
-			candidate.accessToken.trim().length === 0 ||
-			typeof candidate.refreshToken !== "string" ||
-			candidate.refreshToken.trim().length === 0 ||
-			typeof candidate.expiresAt !== "number" ||
-			!Number.isFinite(candidate.expiresAt)
-		) {
+		const activeAccount = storage.accounts[activeIndex];
+		const candidate = hasUsableTokens(activeAccount)
+			? activeAccount
+			: storage.accounts.find(hasUsableTokens);
+		if (!candidate || !hasUsableTokens(candidate)) {
 			return;
 		}
 

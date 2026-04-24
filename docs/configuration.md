@@ -251,6 +251,7 @@ override any config with env vars:
 | `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback` | enable generic unsupported-model fallback policy |
 | `CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL=1` | legacy fallback toggle (prefer policy variable above) |
 | `CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=0` | disable only the legacy `gpt-5.3-codex -> gpt-5.2-codex` edge |
+| `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` | disable automatic `gpt-5.5 -> gpt-5.4` fallback during rollout |
 | `CODEX_AUTH_ACCOUNT_ID=acc_xxx` | force specific workspace id |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=120000` | override fetch timeout |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=60000` | override SSE stall timeout |
