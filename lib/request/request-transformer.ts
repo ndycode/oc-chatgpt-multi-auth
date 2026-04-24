@@ -589,7 +589,7 @@ export function getReasoningConfig(
 		!isCodexMax &&
 		!isCodexMini;
 
-	// GPT-5.5/5.4/5.2 general, GPT-5.4 Mini, GPT-5.5/5.4 Pro,
+	// GPT-5.5/5.4/5.2 general, GPT-5.4 Mini, GPT-5.4 Pro,
 	// legacy GPT-5.2/5.3 Codex aliases, and Codex Max support xhigh reasoning
 	const supportsXhigh =
 		isGpt55General ||
@@ -669,12 +669,12 @@ export function getReasoningConfig(
 		effort = "low";
 	}
 
-	// GPT-5.4/5.5 Pro only support medium/high/xhigh reasoning.
+	// GPT-5.4 Pro only supports medium/high/xhigh reasoning.
 	// originalRequestedEffort is a non-sensitive model setting string, not a token.
 	// Logging this coercion does not introduce new redaction or filesystem-race risk.
 	if (isProFamily && (effort === "low" || effort === "minimal")) {
 		logWarn(
-			`GPT-5.4/5.5 Pro supports medium/high/xhigh only; coercing '${originalRequestedEffort}' to 'medium'`,
+			`GPT-5.4 Pro supports medium/high/xhigh only; coercing '${originalRequestedEffort}' to 'medium'`,
 		);
 		effort = "medium";
 	}

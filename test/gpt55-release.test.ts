@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getModelFamily } from "../lib/prompts/codex.js";
 import {
 	normalizeModel,
@@ -12,6 +12,10 @@ import {
 import { resolveUnsupportedCodexFallbackModel } from "../lib/request/fetch-helpers.js";
 
 describe("GPT-5.5 activation", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	it("maps GPT-5.5 aliases to the public Codex model id", () => {
 		expect(MODEL_MAP["gpt-5.5"]).toBe("gpt-5.5");
 		expect(MODEL_MAP["gpt-5-xhigh"]).toBe("gpt-5.5");
@@ -84,26 +88,36 @@ describe("GPT-5.5 activation", () => {
 	});
 
 	it("disables GPT-5.5 auto-fallback when CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1 is set", () => {
-		const previous = process.env.CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK;
-		process.env.CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK = "1";
-		try {
-			const fallback = resolveUnsupportedCodexFallbackModel({
-				requestedModel: "gpt-5.5-medium",
-				errorBody: {
-					detail:
-						"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
-				},
-				attemptedModels: ["gpt-5.5"],
-				fallbackOnUnsupportedCodexModel: false,
-				fallbackToGpt52OnUnsupportedGpt53: false,
-			});
-			expect(fallback).toBeUndefined();
-		} finally {
-			if (previous === undefined) {
-				delete process.env.CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK;
-			} else {
-				process.env.CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK = previous;
-			}
-		}
+		vi.stubEnv("CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK", "1");
+
+		const fallback = resolveUnsupportedCodexFallbackModel({
+			requestedModel: "gpt-5.5-medium",
+			errorBody: {
+				detail:
+					"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+			},
+			attemptedModels: ["gpt-5.5"],
+			fallbackOnUnsupportedCodexModel: false,
+			fallbackToGpt52OnUnsupportedGpt53: false,
+		});
+
+		expect(fallback).toBeUndefined();
+	});
+
+	it("keeps explicit fallback enabled when the GPT-5.5 auto-fallback opt-out is set", () => {
+		vi.stubEnv("CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK", "1");
+
+		const fallback = resolveUnsupportedCodexFallbackModel({
+			requestedModel: "gpt-5.5-medium",
+			errorBody: {
+				detail:
+					"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+			},
+			attemptedModels: ["gpt-5.5"],
+			fallbackOnUnsupportedCodexModel: true,
+			fallbackToGpt52OnUnsupportedGpt53: false,
+		});
+
+		expect(fallback).toBe("gpt-5.4");
 	});
 });
