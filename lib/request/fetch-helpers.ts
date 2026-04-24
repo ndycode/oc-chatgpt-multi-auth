@@ -506,9 +506,6 @@ export async function transformRequestForCodex(
 		const requestTransformMode = options?.requestTransformMode ?? "legacy";
 
 		if (requestTransformMode === "native") {
-			const normalizedModel = normalizeModel(originalModel);
-			body.model = normalizedModel;
-
 			logRequest(LOG_STAGES.BEFORE_TRANSFORM, {
 				url,
 				originalModel,
@@ -519,6 +516,9 @@ export async function transformRequestForCodex(
 				requestTransformMode,
 				body: body as unknown as Record<string, unknown>,
 			});
+
+			const normalizedModel = normalizeModel(originalModel);
+			body.model = normalizedModel;
 
 			logRequest(LOG_STAGES.AFTER_TRANSFORM, {
 				url,

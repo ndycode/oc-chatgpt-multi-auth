@@ -33,7 +33,7 @@ By default, the installer writes a full catalog config so you get both:
 - modern base model entries such as `gpt-5.5` for `--variant` workflows
 - explicit preset entries such as `gpt-5.5-medium` / `gpt-5.5-high` so the full shipped catalog is visible directly in pickers
 
-Tested live on OpenCode `1.14.22`: use explicit GPT-5.5 selectors like `openai/gpt-5.5-medium` or `openai/gpt-5.5-high` for real-session verification. Bare `openai/gpt-5.5 --variant=...` can still depend on the OpenCode release.
+Tested live on OpenCode `1.14.22`: use explicit GPT-5.5 selectors like `openai/gpt-5.5-medium` or `openai/gpt-5.5-high` for real-session verification. Bare `openai/gpt-5.5 --variant=...` may or may not work depending on your OpenCode release.
 
 If you prefer the compact variant-only config on OpenCode `v1.0.210+`, use:
 
