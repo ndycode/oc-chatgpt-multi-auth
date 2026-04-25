@@ -8,9 +8,9 @@ generated: 2026-04-25T12:45:33+08:00
 
 Current code-health evidence:
 
-- `index.ts` is 3694 lines but no longer owns inline tool bodies.
-- `lib/storage.ts` is a 79-line facade.
-- `lib/accounts.ts` is a 366-line facade/orchestrator.
+- `index.ts` spans 3694 lines but no longer owns inline tool bodies.
+- `lib/storage.ts` serves as a 79-line facade.
+- `lib/accounts.ts` functions as a 366-line facade/orchestrator.
 - `lib/tools/index.ts` maps exactly 21 tool factories.
 - Largest remaining concentration is the request layer.
 

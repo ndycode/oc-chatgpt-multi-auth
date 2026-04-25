@@ -6,8 +6,8 @@ Deduplication policy:
 
 - Prefer current-source findings over historical claims.
 - Collapse repeated old monolith claims into one resolved architecture row.
-- Collapse destructive-export claims into one resolved tool/storage row.
-- Collapse config continuity claims into one resolved config row.
+- Aggregate destructive-export claims into one resolved tool/storage row.
+- Consolidate config continuity claims into one resolved config row.
 
 Dedup result:
 

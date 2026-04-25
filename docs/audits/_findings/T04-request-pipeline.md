@@ -9,6 +9,7 @@ generated: 2026-04-25T12:45:33+08:00
 Current contract:
 
 - `transformRequestBody` forces `store: false`.
+- `transformRequestBody` forces `stream: true` so callers can rely on the SSE response path.
 - `reasoning.encrypted_content` is preserved in `include`.
 - URL/header/error mapping lives in `lib/request/fetch-helpers.ts`.
 - SSE handling lives in `lib/request/response-handler.ts`.

@@ -21,7 +21,7 @@ export function createCodexHelpTool(ctx: ToolContext): ToolDefinition {
 				.string()
 				.optional()
 				.describe(
-					"Optional topic: setup, switch, health, backup, dashboard, metrics.",
+					"Optional topic: setup, switch, health, backup, dashboard.",
 				),
 		},
 		async execute({ topic }) {

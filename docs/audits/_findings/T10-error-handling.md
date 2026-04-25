@@ -9,6 +9,7 @@ generated: 2026-04-25T12:45:33+08:00
 Resolved in this cleanup:
 
 - `codex-help` no longer treats substring topic matches as valid topics.
+- `codex-help` advertised topics now match the section keys exposed by `lib/tools/codex-help.ts`.
 - `codex-export` no longer opts into overwrite by default.
 - `codex-remove` no-op guidance includes the required confirmation argument.
 

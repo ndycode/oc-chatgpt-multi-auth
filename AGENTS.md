@@ -10,7 +10,7 @@ OpenCode plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backe
 ## STRUCTURE
 ```
 ./
-├── index.ts              # plugin entry (context wiring + 7-step fetch pipeline)
+├── index.ts              # plugin entry (context wiring + 5-stage fetch pipeline)
 ├── lib/                  # core logic (see lib/AGENTS.md)
 ├── test/                 # vitest suites (see test/AGENTS.md)
 ├── scripts/              # install + build helpers
@@ -23,7 +23,7 @@ OpenCode plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backe
 ## WHERE TO LOOK
 | Task | Location | Notes |
 | --- | --- | --- |
-| Plugin orchestration | `index.ts` | 7-step request pipeline, tool registration |
+| Plugin orchestration | `index.ts` | 5-stage request pipeline: URL rewrite, body transform, OAuth headers, SSE conversion, error handling |
 | Tool registry | `lib/tools/index.ts` + `lib/tools/codex-*.ts` | 21 registered `codex-*` tools |
 | OAuth flow + PKCE | `lib/auth/auth.ts` | token refresh, JWT decode |
 | OAuth callback server | `lib/auth/server.ts` | binds port 1455 |

@@ -4,10 +4,10 @@
 
 Feature ideas that fit the current structure:
 
-1. Add `codex-export format=json` once there is a shared tool JSON-output helper.
-2. Add a package-smoke script that runs `npm pack`, installs the tarball in a temp project, imports the ESM entry, and runs installer dry-run.
-3. Add `codex-doctor exportPath=<file>` for sanitized support bundles.
-4. Add a current-structure docs generator if the audit corpus keeps changing with large refactors.
+1. Provide `codex-export format=json` once there is a shared tool JSON-output helper.
+2. Create a package-smoke script that runs `npm pack`, installs the tarball in a temp project, imports the ESM entry, and runs installer dry-run.
+3. Support `codex-doctor exportPath=<file>` for sanitized support bundles.
+4. Generate current-structure docs if the audit corpus keeps changing with large refactors.
 
 Deferred:
 

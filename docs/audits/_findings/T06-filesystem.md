@@ -9,10 +9,10 @@ generated: 2026-04-25T12:45:33+08:00
 Current filesystem ownership:
 
 - `lib/storage/paths.ts` resolves config roots.
-- `lib/storage/load-save.ts` owns account load/save and transactions.
-- `lib/storage/atomic-write.ts` owns atomic write primitives.
-- `lib/storage/worktree-lock.ts` owns lock behavior.
-- `lib/storage/export-import.ts` owns import/export safety.
+- `lib/storage/load-save.ts` handles account load/save and transactions.
+- `lib/storage/atomic-write.ts` implements atomic write primitives.
+- `lib/storage/worktree-lock.ts` coordinates lock behavior.
+- `lib/storage/export-import.ts` validates import/export safety.
 
 Resolved:
 

@@ -180,6 +180,27 @@ describe("runtime documentation parity", () => {
 		}
 	});
 
+	it("keeps codex-help advertised topics aligned with implemented sections", () => {
+		const helpSource = readRepoFile("lib/tools/codex-help.ts");
+		const descriptionMatch = helpSource.match(/Optional topic: ([^.]+)\./);
+		expect(descriptionMatch).not.toBeNull();
+		const advertisedTopics = (descriptionMatch?.[1] ?? "")
+			.split(",")
+			.map((topic) => topic.trim())
+			.filter(Boolean)
+			.sort();
+		const sectionTopics = Array.from(
+			helpSource.matchAll(/key:\s*"([^"]+)"/g),
+			(match) => match[1],
+		).sort();
+
+		expect(advertisedTopics).toEqual(sectionTopics);
+		expect(advertisedTopics).not.toContain("metrics");
+		expect(readRepoFile("docs/audits/11-dx-cli-docs.md")).toContain(
+			"no longer advertises a `metrics` topic without a matching help section",
+		);
+	});
+
 	it("keeps the documented docs layout aligned with the live docs tree", () => {
 		const docsFiles = collectRepoFiles("docs");
 		const requiredDocs = [

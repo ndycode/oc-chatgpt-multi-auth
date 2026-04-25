@@ -4,11 +4,11 @@
 
 Current high-value coverage:
 
-- `test/index.test.ts` covers tool registration and extracted tool behavior through plugin wiring.
-- `test/tools-codex-*.test.ts` covers focused tool regressions.
-- `test/storage.test.ts` covers non-destructive export defaults.
-- `test/doc-parity.test.ts` now covers config contract, tool registry count, and stale audit anchors.
-- `test/contracts/*` pins Codex response shapes.
+- Tool registration and extracted tool behavior are exercised through `test/index.test.ts`.
+- Focused tool regressions are validated in `test/tools-codex-*.test.ts`.
+- Non-destructive export defaults are checked in `test/storage.test.ts`.
+- `test/doc-parity.test.ts` now asserts the config contract, tool registry count, and stale audit anchors.
+- Response shapes are pinned in `test/contracts/*`.
 
 Remaining gaps:
 

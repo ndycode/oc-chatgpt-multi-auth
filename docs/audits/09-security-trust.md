@@ -13,6 +13,6 @@ Current posture:
 
 Residual trust notes:
 
-- Users who do not opt into the native keychain still rely on local JSON storage.
+- JSON storage is the default backend; native keychain storage is an explicit opt-in via `CODEX_KEYCHAIN=1`.
 - Request body logging remains explicitly opt-in and can contain sensitive payloads.
 - Keep docs and examples clear that `store: false` plus `reasoning.encrypted_content` is required for stateless continuity.

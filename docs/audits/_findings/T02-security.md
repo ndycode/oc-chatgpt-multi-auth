@@ -16,4 +16,4 @@ Current security-relevant state:
 
 No Critical credential-exposure finding was introduced by this cleanup.
 
-Residual note: JSON storage remains available for users who do not opt into the native keychain. That is expected product behavior, not a current audit blocker.
+Residual note: JSON storage is the default backend; users may opt into native keychain storage via `CODEX_KEYCHAIN=1` for enhanced local security. That is expected product behavior, not a current audit blocker.

@@ -5,6 +5,7 @@
 Resolved in this cleanup:
 
 - `codex-help` topic filtering is exact.
+- `codex-help` no longer advertises a `metrics` topic without a matching help section.
 - `codex-export` defaults to non-destructive overwrite behavior at the tool layer.
 - `codex-remove` guidance includes `confirm=true`.
 - The minimal config example includes `reasoning.encrypted_content`.
