@@ -28,7 +28,8 @@ export default defineConfig({
         // Per-file coverage floor for the production source tree. Set below the
         // global average so legitimate low-coverage utility files do not block
         // work, while still catching regressions where a single file drops
-        // sharply. Raise these once individual modules stabilise.
+        // sharply. Track increases in
+        // https://github.com/ndycode/oc-codex-multi-auth/issues/149.
         'lib/**/*.ts': {
           statements: 70,
           branches: 70,

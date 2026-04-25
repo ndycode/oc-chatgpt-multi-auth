@@ -27,4 +27,4 @@ Local checks completed during the refresh:
 | `node --input-type=module -e 'await import("oc-codex-multi-auth"); await import("oc-codex-multi-auth/tui");'` | Passed; main default export resolved as a function and TUI export exposed `default` plus `shouldRefreshQuotaForEvent` |
 | `node node_modules\oc-codex-multi-auth\scripts\install-oc-codex-multi-auth.js --dry-run --no-cache-clear` | Passed against a temp HOME; only dry-run writes/removals were reported |
 
-Coverage note: the previous 80% global branch and 70% `index.ts` branch thresholds were aspirational and failed against the refreshed baseline. The executable gate now keeps 80% global floors for statements/functions/lines, 70% global branch coverage, and calibrated legacy `index.ts` floors while tracking branch-coverage increases as follow-up work.
+Coverage note: the previous 80% global branch and 70% `index.ts` branch thresholds were aspirational and failed against the refreshed baseline. The executable gate now keeps 80% global floors for statements/functions/lines, 70% global branch coverage, and calibrated legacy `index.ts` floors while tracking branch-coverage increases in issue #149.
