@@ -1,12 +1,12 @@
 # lib/tools/
 
-Per-tool modules for the 18 `codex-*` tools registered by the plugin.
+Per-tool modules for the 21 `codex-*` tools registered by the plugin.
 
-## Status — RC-1 complete
+## Status
 
-All 18 inline tools from `index.ts` have been extracted here. `index.ts`
-now builds a `ToolContext` and passes it to `createToolRegistry(ctx)` from
-`./index.ts` which wires every `codex-*` tool.
+All current tools live here. `index.ts` builds a `ToolContext` and passes it
+to `createToolRegistry(ctx)` from `./index.ts`, which wires every `codex-*`
+tool into the OpenCode plugin surface.
 
 ## Layout
 
@@ -33,6 +33,9 @@ lib/tools/
   codex-refresh.ts
   codex-export.ts
   codex-import.ts
+  codex-diag.ts
+  codex-diff.ts
+  codex-keychain.ts
 ```
 
 ## Factory pattern

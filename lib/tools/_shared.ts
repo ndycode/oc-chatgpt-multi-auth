@@ -1,7 +1,7 @@
 /**
  * Shared helpers re-exported for codex-* tool modules.
  *
- * As RC-1 extracts the 18 inline tools from `index.ts` into per-file modules
+ * Shared helpers for per-file `lib/tools/*` modules
  * under `lib/tools/<name>.ts`, each tool will import its pure, closure-free
  * helpers from this barrel. Helpers that depend on the plugin closure
  * (e.g. `resolveUiRuntime`, `cachedAccountManager`, `formatCommandAccountLabel`)

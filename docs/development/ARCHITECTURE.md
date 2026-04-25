@@ -1,13 +1,13 @@
 # Plugin Architecture & Technical Decisions
 
-> Reflects the codebase as of v6.0.0. Post-refactor structure after Phase 2 architecture work (see `docs/audits/07-refactoring-plan.md`). Individual section version markers refer to the release that introduced a feature and are retained for historical context only.
+> Reflects the codebase as of the 2026-04-25 current-structure audit. Individual section version markers refer to the release that introduced a feature and are retained for historical context only.
 
 This document explains the technical design decisions, architecture, and implementation details of the OpenAI Codex OAuth plugin for OpenCode.
 
 ## Module Layout (v6.0.0)
 
 ```
-index.ts              # plugin entry (~3200 lines): fetch pipeline + tool registration
+index.ts              # plugin entry (~3700 lines): context wiring + fetch pipeline
 lib/
 ├── accounts/         # state, persistence, rotation, rate-limits, recovery
 ├── auth/             # OAuth flow, PKCE, callback server
@@ -15,11 +15,11 @@ lib/
 ├── recovery/         # session recovery (tool_result_missing, thinking blocks)
 ├── request/          # transformer, fetch-helpers, response-handler
 ├── storage/          # atomic writes, migrations, paths, flagged, backup/export/import
-├── tools/            # 19 OpenCode tools (codex-list, codex-switch, codex-doctor, ...)
+├── tools/            # 21 OpenCode tools (codex-list, codex-switch, codex-doctor, ...)
 └── ui/               # terminal UI runtime, theme, formatting, beginner checklist
 ```
 
-The single `index.ts` of earlier releases has been split: account management lives under `lib/accounts/`, storage under `lib/storage/`, and every `codex-*` tool is its own file under `lib/tools/`. `index.ts` now holds the plugin loader, request pipeline wiring, and tool registration only.
+The single `index.ts` of earlier releases has been split: account management lives under `lib/accounts/`, storage under `lib/storage/`, and every registered `codex-*` tool is its own file under `lib/tools/`. `index.ts` now holds the plugin loader, request pipeline wiring, context construction, and registry attachment.
 
 ## Table of Contents
 - [Architecture Overview](#architecture-overview)
