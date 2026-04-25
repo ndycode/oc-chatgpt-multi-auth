@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -34,6 +34,113 @@ function collectRepoFiles(relativeDir: string): string[] {
 
 	visit(root);
 	return results.sort();
+}
+
+function collectCurrentDocumentationFiles(): string[] {
+	return [
+		"AGENTS.md",
+		"README.md",
+		"CONTRIBUTING.md",
+		"SECURITY.md",
+		"CODE_OF_CONDUCT.md",
+		"lib/AGENTS.md",
+		"lib/tools/AGENTS.md",
+		"config/README.md",
+		"skills/oc-codex-setup/SKILL.md",
+		"test/AGENTS.md",
+		"test/README.md",
+		...collectRepoFiles("docs").filter((relativePath) =>
+			/\.(?:md|yml)$/.test(relativePath),
+		),
+	].sort();
+}
+
+function repoPathExists(relativePath: string): boolean {
+	try {
+		const stats = statSync(path.resolve(testDir, "..", relativePath));
+		return stats.isFile() || stats.isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function repoPathPatternExists(relativePath: string): boolean {
+	if (!relativePath.includes("*")) {
+		return repoPathExists(relativePath);
+	}
+
+	const repoFiles = [
+		...collectRepoFiles("config"),
+		...collectRepoFiles("docs"),
+		...collectRepoFiles("lib"),
+		...collectRepoFiles("scripts"),
+		...collectRepoFiles("skills"),
+		...collectRepoFiles("test"),
+	];
+	const escaped = relativePath
+		.split("*")
+		.map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+		.join("[^/]*");
+	const pattern = new RegExp(`^${escaped}$`);
+	return repoFiles.some((repoFile) => pattern.test(repoFile));
+}
+
+function normalizeRepoPathReference(rawValue: string): string | null {
+	const repoRootFiles = new Set([
+		"AGENTS.md",
+		"CHANGELOG.md",
+		"CODE_OF_CONDUCT.md",
+		"CONTRIBUTING.md",
+		"LICENSE",
+		"README.md",
+		"SECURITY.md",
+		"eslint.config.js",
+		"index.ts",
+		"package.json",
+		"package-lock.json",
+		"tsconfig.json",
+		"tui.ts",
+		"vitest.config.ts",
+	]);
+	const repoPrefixes = [
+		".github/",
+		"assets/",
+		"config/",
+		"docs/",
+		"lib/",
+		"scripts/",
+		"skills/",
+		"test/",
+	];
+
+	let value = rawValue
+		.trim()
+		.replace(/^["'`]+|["'`]+$/g, "")
+		.replaceAll("\\", "/")
+		.replace(/^@\//, "")
+		.replace(/^@\./, ".")
+		.replace(/^@/, "")
+		.replace(/^[./]+/, "");
+
+	if (
+		value.length === 0 ||
+		value.includes("<") ||
+		value.includes(">") ||
+		/^(?:https?:|mailto:|#|~\/|[A-Z_]+=)/.test(value) ||
+		value.startsWith("dist/")
+	) {
+		return null;
+	}
+
+	value = value
+		.replace(/#.*$/, "")
+		.replace(/:\d+(?:-\d+)?(?::\d+)?$/, "")
+		.replace(/[),.;]+$/, "");
+
+	if (repoRootFiles.has(value) || repoPrefixes.some((prefix) => value.startsWith(prefix))) {
+		return value;
+	}
+	return null;
 }
 
 describe("runtime documentation parity", () => {
@@ -296,6 +403,77 @@ describe("runtime documentation parity", () => {
 			for (const pattern of stalePatterns) {
 				if (pattern.test(fileContents)) {
 					hits.push(`${relativePath}: ${pattern.source}`);
+				}
+			}
+		}
+
+		expect(hits).toEqual([]);
+	});
+
+	it("keeps current documentation free of stale structure anchors", () => {
+		const stalePatterns: Array<[RegExp, string]> = [
+			[/7[- ]step/i, "old fetch-pipeline count"],
+			[/AUTH_FLOW\.md/, "removed auth-flow doc"],
+			[/(^|[^/])lib\/oauth-success\.html/, "nonexistent OAuth HTML source path"],
+			[/request-transformer\.ts:\d+/, "stale request-transformer line anchor"],
+			[/fetch-helpers\.ts:\d+/, "stale fetch-helpers line anchor"],
+			[/tmp\/(?:codex|opencode)\//, "non-repo temp source path"],
+			[/\b19 OpenCode tools\b/, "old tool count"],
+			[/\b19 `codex-\*` tools\b/, "old tool count"],
+		];
+		const hits: string[] = [];
+
+		for (const relativePath of collectCurrentDocumentationFiles()) {
+			const fileContents = readRepoFile(relativePath);
+			for (const [pattern, label] of stalePatterns) {
+				if (pattern.test(fileContents)) {
+					hits.push(`${relativePath}: ${label}`);
+				}
+			}
+		}
+
+		expect(hits).toEqual([]);
+	});
+
+	it("keeps repo-local path references in current documentation resolvable", () => {
+		const hits: string[] = [];
+
+		for (const relativePath of collectCurrentDocumentationFiles()) {
+			const fileContents = readRepoFile(relativePath);
+			const references = [
+				...Array.from(fileContents.matchAll(/`([^`\n]+)`/g), (match) => match[1]),
+				...Array.from(
+					fileContents.matchAll(/\[[^\]]+\]\(([^)]+)\)/g),
+					(match) => match[1],
+				),
+			];
+
+			for (const reference of references) {
+				const normalized = normalizeRepoPathReference(reference);
+				if (normalized && !repoPathPatternExists(normalized)) {
+					hits.push(`${relativePath}: ${reference}`);
+				}
+			}
+		}
+
+		expect(hits).toEqual([]);
+	});
+
+	it("keeps npm scripts mentioned in current documentation aligned with package.json", () => {
+		const packageJson = JSON.parse(readRepoFile("package.json")) as {
+			scripts?: Record<string, string>;
+		};
+		const scriptNames = new Set(Object.keys(packageJson.scripts ?? {}));
+		const hits: string[] = [];
+
+		for (const relativePath of collectCurrentDocumentationFiles()) {
+			const fileContents = readRepoFile(relativePath);
+			for (const match of fileContents.matchAll(
+				/npm(?:\.cmd)?\s+run\s+(?:-[^\s`]+\s+)*([a-zA-Z0-9:_-]+)/g,
+			)) {
+				const scriptName = match[1];
+				if (!scriptNames.has(scriptName)) {
+					hits.push(`${relativePath}: npm run ${scriptName}`);
 				}
 			}
 		}

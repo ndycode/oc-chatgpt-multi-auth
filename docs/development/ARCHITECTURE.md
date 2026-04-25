@@ -7,7 +7,7 @@ This document explains the technical design decisions, architecture, and impleme
 ## Module Layout (v6.0.0)
 
 ```
-index.ts              # plugin entry (~3700 lines): context wiring + fetch pipeline
+index.ts              # plugin entry: context wiring + fetch pipeline
 lib/
 ├── accounts/         # state, persistence, rotation, rate-limits, recovery
 ├── auth/             # OAuth flow, PKCE, callback server
@@ -116,7 +116,7 @@ The plugin uses **`store: false`** (stateless mode) because:
    {"detail":"Store must be set to false"}
    ```
 
-2. **Codex CLI Behavior** (`tmp/codex/codex-rs/core/src/client.rs:215-232`):
+2. **Codex CLI Behavior** (external Codex CLI `codex-rs/core/src/client.rs`):
    ```rust
    // Codex CLI uses store:false for ChatGPT OAuth
    let azure_workaround = self.provider.is_azure_responses_endpoint();
@@ -210,7 +210,7 @@ const body = {
 
 ### The Solution
 
-**Filter AI SDK Constructs + Strip IDs** (`lib/request/request-transformer.ts:114-135`):
+**Filter AI SDK Constructs + Strip IDs** (`lib/request/request-transformer.ts`, `filterInput`):
 ```typescript
 export function filterInput(input: InputItem[]): InputItem[] {
   return input
@@ -253,7 +253,7 @@ console.log(`[openai-codex-plugin] Successfully removed all ${originalIds.length
 console.warn(`[openai-codex-plugin] WARNING: ${remainingIds.length} IDs still present after filtering:`, remainingIds);
 ```
 
-**Source**: `lib/request/request-transformer.ts:287-301`
+**Source**: `lib/request/request-transformer.ts` (`transformRequestBody` debug logging)
 
 ---
 
@@ -289,7 +289,7 @@ Client → [Request with encrypted content, no IDs] → Server
          Server → [Response + new encrypted reasoning] → Client
 ```
 
-**Codex CLI equivalent** (`tmp/codex/codex-rs/core/src/client.rs:190-194`):
+**Codex CLI equivalent** (external Codex CLI `codex-rs/core/src/client.rs`):
 ```rust
 let include: Vec<String> = if reasoning.is_some() {
     vec!["reasoning.encrypted_content".to_string()]
@@ -298,7 +298,7 @@ let include: Vec<String> = if reasoning.is_some() {
 };
 ```
 
-**Source**: `lib/request/request-transformer.ts:303`
+**Source**: `lib/request/request-transformer.ts` (`resolveInclude` and `transformRequestBody`)
 
 ---
 
@@ -331,7 +331,7 @@ let include: Vec<String> = if reasoning.is_some() {
    - Preserve host-provided prompt_cache_key session headers when present
 ~~~
 
-**Source**: lib/request/fetch-helpers.ts:379-454, lib/request/request-transformer.ts:843-1015
+**Source**: `lib/request/fetch-helpers.ts` and `lib/request/request-transformer.ts`
 
 ---
 
@@ -569,7 +569,7 @@ Operational implications:
 **Prompt Caching**: Uses `promptCacheKey` for session-based caching
 **Result**: Reduced token usage on subsequent turns
 
-**Source**: `tmp/opencode/packages/opencode/src/provider/transform.ts:90-92`
+**Source**: external OpenCode provider transform implementation
 
 ---
 

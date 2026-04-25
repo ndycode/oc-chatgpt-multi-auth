@@ -122,7 +122,7 @@ Tests SSE to JSON conversion:
 - Status preservation
 
 ### fetch-helpers.test.ts
-Tests focused helpers used in the 7-step fetch flow:
+Tests focused helpers used in the 5-stage fetch pipeline:
 - URL rewriting
 - Header construction
 - Body normalization
