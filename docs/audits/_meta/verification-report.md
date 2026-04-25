@@ -10,7 +10,7 @@ Local checks completed during the refresh:
 | `npm.cmd test -- test/index.test.ts test/doc-parity.test.ts test/storage.test.ts` | Passed |
 | `npm.cmd test -- test/doc-parity.test.ts test/index.test.ts` | Passed |
 | `npm.cmd test -- test/install-oc-codex-multi-auth.test.ts --reporter verbose` | Passed |
-| `npm.cmd run lint` | Passed with warnings only from generated coverage HTML assets |
+| `npm.cmd run lint` | Passed |
 | `npm.cmd run typecheck` | Passed |
 | `npm.cmd test` | Passed: 83 files, 2357 passed, 1 skipped |
 | `npm.cmd run test:coverage` | Passed: statements 80.38%, branches 71.6%, functions 89%, lines 81.92% |
