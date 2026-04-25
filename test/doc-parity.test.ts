@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -15,6 +15,25 @@ function readRepoFile(relativePath: string): string {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new Error(`Failed to read ${relativePath}: ${message}`);
 	}
+}
+
+function collectRepoFiles(relativeDir: string): string[] {
+	const root = path.resolve(testDir, "..", relativeDir);
+	const results: string[] = [];
+
+	function visit(dir: string): void {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const fullPath = path.join(dir, entry.name);
+			if (entry.isDirectory()) {
+				visit(fullPath);
+				continue;
+			}
+			results.push(path.relative(path.resolve(testDir, ".."), fullPath).replaceAll("\\", "/"));
+		}
+	}
+
+	visit(root);
+	return results.sort();
 }
 
 describe("runtime documentation parity", () => {
@@ -80,5 +99,107 @@ describe("runtime documentation parity", () => {
 				expect(fileContents).toContain(fragment);
 			}
 		}
+	});
+
+	it("keeps shipped config examples aligned with the stateless Codex contract", () => {
+		const configExpectations: Array<[string, string[]]> = [
+			[
+				"config/minimal-opencode.json",
+				[
+					"\"store\": false",
+					"\"reasoning.encrypted_content\"",
+				],
+			],
+			[
+				"config/opencode-modern.json",
+				[
+					"\"store\": false",
+					"\"reasoning.encrypted_content\"",
+				],
+			],
+			[
+				"config/opencode-legacy.json",
+				[
+					"\"store\": false",
+					"\"reasoning.encrypted_content\"",
+				],
+			],
+		];
+
+		for (const [relativePath, fragments] of configExpectations) {
+			const fileContents = readRepoFile(relativePath);
+			for (const fragment of fragments) {
+				expect(fileContents).toContain(fragment);
+			}
+		}
+	});
+
+	it("keeps the documented tool layout aligned with the live registry", () => {
+		const toolFiles = readdirSync(path.resolve(testDir, "..", "lib/tools"))
+			.filter((name) => /^codex-[a-z-]+\.ts$/.test(name))
+			.map((name) => name.replace(/\.ts$/, ""))
+			.sort();
+		const registryContents = readRepoFile("lib/tools/index.ts");
+		const registeredTools = Array.from(
+			registryContents.matchAll(/"(codex-[a-z-]+)":\s*createCodex/g),
+			(match) => match[1],
+		).sort();
+
+		expect(registeredTools).toEqual(toolFiles);
+		expect(registeredTools).toHaveLength(21);
+
+		const docsExpectations: Array<[string, string[]]> = [
+			[
+				"docs/development/ARCHITECTURE.md",
+				[
+					"21 OpenCode tools",
+					"every registered `codex-*` tool is its own file under `lib/tools/`",
+				],
+			],
+			[
+				"docs/development/TESTING.md",
+				[
+					"Confirm commands exist in `lib/tools/index.ts`",
+					"test/tools-codex-*.test.ts",
+				],
+			],
+			[
+				"lib/tools/AGENTS.md",
+				[
+					"21 `codex-*` tools",
+					"codex-keychain.ts",
+				],
+			],
+		];
+
+		for (const [relativePath, fragments] of docsExpectations) {
+			const fileContents = readRepoFile(relativePath);
+			for (const fragment of fragments) {
+				expect(fileContents).toContain(fragment);
+			}
+		}
+	});
+
+	it("keeps regenerated audit docs free of stale pre-split anchors", () => {
+		const stalePatterns = [
+			/d92a8/i,
+			/5975-line/i,
+			/1296-line/i,
+			/18 inline/i,
+			/index\.ts:5995/i,
+			/index\.ts:4992/i,
+		];
+		const hits: string[] = [];
+
+		for (const relativePath of collectRepoFiles("docs/audits")) {
+			const fileContents = readRepoFile(relativePath);
+			for (const pattern of stalePatterns) {
+				if (pattern.test(fileContents)) {
+					hits.push(`${relativePath}: ${pattern.source}`);
+				}
+			}
+		}
+
+		expect(hits).toEqual([]);
 	});
 });

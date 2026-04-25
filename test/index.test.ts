@@ -1736,6 +1736,14 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("codex-export");
 		});
 
+		it("matches topics exactly instead of by substring", async () => {
+			const result = await plugin.tool["codex-help"].execute({ topic: "s" });
+			expect(result).toContain("Unknown topic");
+			expect(result).toContain("Available topics");
+			expect(result).not.toContain("Quickstart");
+			expect(result).not.toContain("Daily account operations");
+		});
+
 		it("handles unknown topics", async () => {
 			const result = await plugin.tool["codex-help"].execute({ topic: "unknown-topic" });
 			expect(result).toContain("Unknown topic");
@@ -1985,7 +1993,7 @@ describe("OpenAIOAuthPlugin", () => {
 			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
 			const result = await plugin.tool["codex-remove"].execute({ confirm: true });
 			expect(result).toContain("Missing account number");
-			expect(result).toContain("codex-remove index=2");
+			expect(result).toContain("codex-remove index=2 confirm=true");
 		});
 
 		it("returns error for invalid index", async () => {
@@ -2069,7 +2077,7 @@ describe("OpenAIOAuthPlugin", () => {
 				path: "/tmp/backup.json",
 			});
 			expect(result).toContain("Exported");
-			expect(storageModule.exportAccounts).toHaveBeenCalledWith("/tmp/backup.json", true);
+			expect(storageModule.exportAccounts).toHaveBeenCalledWith("/tmp/backup.json", false);
 		});
 
 		it("exports to timestamped path when path is omitted", async () => {
@@ -2081,7 +2089,7 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(storageModule.createTimestampedBackupPath).toHaveBeenCalledWith();
 			expect(storageModule.exportAccounts).toHaveBeenCalledWith(
 				"/tmp/codex-backup-20260101-000000.json",
-				true,
+				false,
 			);
 		});
 
@@ -2091,7 +2099,18 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-export"].execute({ timestamped: false });
 			expect(result).toContain("codex-backup.json");
 			expect(storageModule.createTimestampedBackupPath).not.toHaveBeenCalled();
-			expect(storageModule.exportAccounts).toHaveBeenCalledWith("codex-backup.json", true);
+			expect(storageModule.exportAccounts).toHaveBeenCalledWith("codex-backup.json", false);
+		});
+
+		it("passes explicit force=true when the caller opts into overwrite", async () => {
+			mockStorage.accounts = [{ refreshToken: "r1" }];
+			const storageModule = await import("../lib/storage.js");
+			const result = await plugin.tool["codex-export"].execute({
+				path: "/tmp/backup.json",
+				force: true,
+			});
+			expect(result).toContain("Exported");
+			expect(storageModule.exportAccounts).toHaveBeenCalledWith("/tmp/backup.json", true);
 		});
 	});
 
