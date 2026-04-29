@@ -547,6 +547,20 @@ describe('Request Transformer Module', () => {
 			expect(result![1]).not.toHaveProperty('id');
 		});
 
+		it('should default missing function_call arguments to an empty JSON object', () => {
+			const input: InputItem[] = [
+				{ type: 'function_call', role: 'assistant', call_id: 'call_missing', name: 'read_file' },
+				{ type: 'function_call', role: 'assistant', call_id: 'call_null', name: 'list_files', arguments: null },
+				{ type: 'function_call', role: 'assistant', call_id: 'call_present', name: 'write_file', arguments: '{"path":"README.md"}' },
+			];
+
+			const result = filterInput(input);
+
+			expect(result![0].arguments).toBe('{}');
+			expect(result![1].arguments).toBe('{}');
+			expect(result![2].arguments).toBe('{"path":"README.md"}');
+		});
+
 		it('should return undefined for undefined input', () => {
 			expect(filterInput(undefined)).toBeUndefined();
 		});
