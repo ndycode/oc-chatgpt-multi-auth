@@ -741,12 +741,21 @@ export function filterInput(
 		})
 		.map((item) => {
 			// Strip IDs from all items (Codex API stateless mode)
+			let normalizedItem = item;
 			if (item.id) {
 				const { id: _omit, ...itemWithoutId } = item;
 				void _omit;
-				return itemWithoutId as InputItem;
+				normalizedItem = itemWithoutId as InputItem;
 			}
-			return item;
+
+			if (
+				normalizedItem.type === "function_call" &&
+				(normalizedItem.arguments === undefined || normalizedItem.arguments === null)
+			) {
+				return { ...normalizedItem, arguments: "{}" } as InputItem;
+			}
+
+			return normalizedItem;
 		});
 }
 
