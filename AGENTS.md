@@ -1,126 +1,106 @@
 # PROJECT KNOWLEDGE BASE
 
-Generated: 2026-04-25
-Source baseline: 3331324cb14d2b80dd8dfb424619870a88476706
+Generated: 2026-05-03
 Branch: main
+Package version: 6.1.8
 
 ## OVERVIEW
-OpenCode plugin: intercepts OpenAI SDK calls, routes through ChatGPT Codex backend with multi-account OAuth rotation.
+
+`oc-codex-multi-auth` is an OpenCode plugin for ChatGPT Plus/Pro OAuth, Codex/GPT-5 request routing, multi-account rotation, account switching, health checks, quota status, diagnostics, and recovery tools. The npm bin is an installer that manages OpenCode provider/TUI config; OpenCode loads `index.ts` as the provider plugin and `tui.ts` as the prompt quota status plugin. Runtime account state stays local under `~/.opencode` with per-project pools enabled by default.
 
 ## STRUCTURE
-```
+
+```text
 ./
-├── index.ts              # plugin entry (context wiring + 5-stage fetch pipeline)
-├── lib/                  # core logic (see lib/AGENTS.md)
+├── index.ts              # OpenCode provider plugin entry: auth loader, fetch pipeline, tool registry context
+├── tui.ts                # OpenCode TUI plugin: prompt quota status and quota details
+├── lib/                  # core runtime logic (see lib/AGENTS.md)
 ├── test/                 # vitest suites (see test/AGENTS.md)
-├── scripts/              # install + build helpers
-├── config/               # opencode.json examples (legacy/modern)
-├── docs/                 # architecture + user docs
+├── scripts/              # installer, build, audit, and validation helpers
+├── config/               # opencode.json examples (modern/full/legacy/minimal)
+├── docs/                 # public docs, architecture, audits, maintainer guides
+├── skills/               # repo-local setup skill
 ├── assets/               # static assets
+├── .codex-plugin/        # plugin metadata for Codex skill/plugin tooling
 └── dist/                 # build output (generated, do not edit)
 ```
 
 ## WHERE TO LOOK
+
 | Task | Location | Notes |
 | --- | --- | --- |
-| Plugin orchestration | `index.ts` | 5-stage request pipeline: URL rewrite, body transform, OAuth headers, SSE conversion, error handling |
+| Installer behavior | `scripts/install-oc-codex-multi-auth.js`, `scripts/install-oc-codex-multi-auth-core.js` | npm bin, config merge, cache cleanup, TUI config enablement |
+| Plugin orchestration | `index.ts` | OAuth loader, request pipeline, metrics, recovery, `ToolContext` assembly |
+| TUI quota status | `tui.ts`, `lib/tui-status.ts`, `lib/tui-quota-cache.ts`, `lib/codex-usage.ts` | prompt quota status, quota details, shared quota cache |
 | Tool registry | `lib/tools/index.ts` + `lib/tools/codex-*.ts` | 21 registered `codex-*` tools |
-| OAuth flow + PKCE | `lib/auth/auth.ts` | token refresh, JWT decode |
-| OAuth callback server | `lib/auth/server.ts` | binds port 1455 |
-| Multi-account rotation | `lib/accounts.ts` | health scoring, cooldown, selection |
-| Account storage | `lib/storage.ts` + `lib/storage/` | V3 facade, per-project/global paths, keychain, import/export |
-| Request transformation | `lib/request/request-transformer.ts` | model normalization, prompt injection |
-| Headers + rate limits | `lib/request/fetch-helpers.ts` | Codex headers, error mapping |
-| SSE to JSON | `lib/request/response-handler.ts` | stream parsing |
-| Prompt templates | `lib/prompts/codex.ts` | model-family detection, GitHub ETag cache |
-| Config parsing | `lib/config.ts` | CODEX_MODE, plugin options |
-| Session recovery | `lib/recovery/` | conversation state persistence |
-| Graceful shutdown | `lib/shutdown.ts` | cleanup on process exit |
-| Health monitoring | `lib/health.ts` | account health status |
+| OAuth flow + PKCE | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts` | browser/device/manual login, token refresh, workspace selection |
+| OAuth scopes | `lib/auth/scopes.ts` | connector scope validation and re-auth checks |
+| Multi-account rotation | `lib/accounts.ts`, `lib/accounts/`, `lib/rotation.ts` | health scoring, cooldowns, token bucket, recovery |
+| Account storage | `lib/storage.ts`, `lib/storage/` | V3 facade, per-project/global paths, keychain, backup/import/export |
+| Request transformation | `lib/request/request-transformer.ts` | model normalization, prompt injection, stateless compatibility |
+| Headers + rate limits | `lib/request/fetch-helpers.ts` | Codex headers, error mapping, fallback, token refresh |
+| Retry budgets | `lib/request/retry-budget.ts`, `lib/request/rate-limit-backoff.ts` | bounded retry classes, exponential backoff |
+| SSE to JSON | `lib/request/response-handler.ts` | stream parsing and empty-response detection |
+| Prompt templates | `lib/prompts/codex.ts`, `lib/prompts/opencode-codex.ts`, `lib/prompts/codex-opencode-bridge.ts` | model-family detection, Codex prompt cache, bridge prompts |
+| Config parsing | `lib/config.ts`, `lib/schemas.ts` | plugin config and environment overrides |
+| Session recovery | `lib/recovery/`, `lib/recovery.ts` | recoverable error handling and auto-resume |
+| Health monitoring | `lib/health.ts`, `lib/parallel-probe.ts` | account health status and concurrent probes |
 | Circuit breaker | `lib/circuit-breaker.ts` | failure isolation |
-| Tests | `test/` | vitest globals, coverage threshold gate |
+| Public architecture | `docs/architecture.md` | user-facing architecture overview |
+| Maintainer architecture | `docs/development/ARCHITECTURE.md` | current subsystem map and invariants |
+| Discoverability guide | `docs/development/GITHUB_DISCOVERABILITY.md` | repo description/topics/search wording |
+| Tests | `test/` | Vitest, property tests, docs parity, installer, tool modules, TUI quota |
 
 ## CONVENTIONS
-- Source: root `index.ts` + `lib/`; `dist/` is generated output.
+
+- Source: root `index.ts`, `tui.ts`, `lib/`, and `scripts/`; `dist/` is generated output.
 - ESLint flat config: `no-explicit-any` enforced, unused args prefixed `_`.
-- Tests relax lint rules (see `eslint.config.js`).
-- Build cleans `dist/`, then emits `dist/lib/oauth-success.html` from the TypeScript source via `scripts/copy-oauth-success.js`.
 - ESM only (`"type": "module"`), Node >= 18.
+- Canonical package/plugin name is `oc-codex-multi-auth`.
+- The npm bin is an installer, not a long-running runtime command.
+- OpenCode loads the provider plugin and TUI plugin from built package exports.
+- Default installer mode writes compact modern OpenCode config; `--full` adds explicit selector IDs; `--legacy` writes legacy explicit-only config.
+- Runtime requests preserve Codex stateless requirements: `store: false` and `reasoning.encrypted_content`.
+- Per-project account storage is enabled by default.
+- Optional OS keychain backend is opt-in with `CODEX_KEYCHAIN=1`.
 
 ## ANTI-PATTERNS (THIS PROJECT)
+
 - Do not edit `dist/` or `tmp*` directories.
-- Do not use `as any`, `@ts-ignore`, `@ts-expect-error`.
+- Do not use `as any`, `@ts-ignore`, or `@ts-expect-error`.
 - Do not open public security issues; see `SECURITY.md`.
-- Do not hardcode ports other than 1455 for OAuth server.
+- Do not hardcode ports other than OAuth callback port `1455`; use existing constants/helpers.
+- Do not remove `store: false` or `reasoning.encrypted_content` from shipped config templates.
+- Do not treat `oc-chatgpt-multi-auth` as current except in migration/cleanup logic.
+- Do not expose account emails, access tokens, refresh tokens, or raw prompt/response bodies in normal diagnostics.
+- Do not silently delete JSON credentials when keychain operations fail.
 
 ## COMMANDS
+
 ```bash
-npm run build       # clean dist + tsc + copy oauth-success.html
-npm run typecheck   # type checking only
-npm test            # vitest once
-npm run test:coverage # vitest coverage
-npm run audit:ci    # prod audit + dev allowlist
-npm run test:watch  # vitest watch mode
-npm run lint        # eslint
+npm run build            # clean dist + tsc + copy oauth-success.html
+npm run typecheck        # type checking only
+npm test                 # vitest once
+npm run test:coverage    # vitest coverage
+npm run audit:ci         # prod audit + dev allowlist
+npm run test:watch       # vitest watch mode
+npm run lint             # eslint
 ```
 
 ## NOTES
+
 - OAuth callback: `http://127.0.0.1:1455/auth/callback`.
 - ChatGPT backend requires `store: false`, include `reasoning.encrypted_content`.
-- Per-project accounts: `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json` (walks up to find project root).
+- OpenCode config: `~/.config/opencode/opencode.json`.
+- OpenCode TUI config: `~/.config/opencode/tui.json`.
+- OpenCode auth tokens: `~/.opencode/auth/openai.json`.
+- Plugin config: `~/.opencode/openai-codex-auth-config.json`.
+- Per-project accounts: `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json`.
 - Global accounts: `~/.opencode/oc-codex-multi-auth-accounts.json`.
-- Prompt templates synced from Codex CLI GitHub releases with ETag caching.
-- 5xx server errors trigger account rotation and health penalty (same as network errors).
+- Flagged accounts: `~/.opencode/oc-codex-multi-auth-flagged-accounts.json`.
+- Request logs: `~/.opencode/logs/codex-plugin/` when logging is enabled.
+- Prompt templates sync from Codex CLI GitHub releases with ETag caching.
+- 5xx server errors trigger account rotation and health penalty like network errors.
 - API deprecation/sunset headers (RFC 8594) are logged as warnings.
 - StorageError preserves original stack traces via `cause` parameter.
-- saveToDiskDebounced errors are logged but don't crash the plugin.
-
-## SKILL MAPPING (for delegate_task)
-
-Skills to load when delegating tasks in this codebase.
-
-### Core Skills (load on most tasks)
-
-| Skill | Justification |
-|-------|---------------|
-| `typescript-senior` | Strict mode, template literal types (`QuotaKey`), discriminated unions (`TokenResult`), Zod inference |
-| `node-backend` | ESM-first, `node:crypto`, Buffer API, async patterns |
-| `testing-js` | Vitest coverage gates, `vi.mock`, `vi.useFakeTimers` |
-| `mcp-builder` | Uses `@opencode-ai/plugin/tool` pattern for tool registration |
-
-### Domain-Specific Skills (load when touching these areas)
-
-| Skill | When to Load | Key Files |
-|-------|--------------|-----------|
-| `auth-patterns` | OAuth flow, PKCE, JWT, token refresh | `lib/auth/auth.ts`, `lib/refresh-queue.ts` |
-| `secrets-management` | Token storage, credential handling | `lib/storage.ts`, account JSON files |
-| `api-design` | Request transformation, headers, SSE | `lib/request/` directory |
-| `error-observability` | Circuit breaker, health scoring, logging | `lib/circuit-breaker.ts`, `lib/logger.ts`, `lib/health.ts` |
-| `git-master` | Any git operations | - |
-| `github` | PRs, GitHub API (ETag caching) | `lib/prompts/codex.ts` |
-
-### Situational Skills
-
-| Skill | When to Load |
-|-------|--------------|
-| `clean-architecture` | Refactoring, new module design |
-| `property-based-testing` | Testing rotation logic, rate-limit edge cases |
-
-### Quick Reference
-
-```typescript
-// Auth work
-delegate_task(category="...", load_skills=["typescript-senior", "node-backend", "auth-patterns", "secrets-management"])
-
-// Request pipeline work  
-delegate_task(category="...", load_skills=["typescript-senior", "node-backend", "api-design", "error-observability"])
-
-// Testing
-delegate_task(category="...", load_skills=["typescript-senior", "node-backend", "testing-js"])
-
-// Plugin architecture
-delegate_task(category="...", load_skills=["typescript-senior", "node-backend", "mcp-builder"])
-
-// Git/GitHub operations
-delegate_task(category="quick", load_skills=["git-master", "github"])
-```
+- `saveToDiskDebounced` errors are logged but do not crash the plugin.

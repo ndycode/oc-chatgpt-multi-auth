@@ -14,27 +14,29 @@ This file describes how docs are organized in this repository.
 
 ```text
 docs/
-├── _config.yml                 # docs site config
-├── DOCUMENTATION.md            # this repository documentation map
-├── README.md                   # docs portal / navigation
-├── index.md                    # documentation landing page
-├── getting-started.md          # install + first-run guide
-├── configuration.md            # full config reference
-├── troubleshooting.md          # operational debugging guide
-├── faq.md                      # short common answers
-├── privacy.md                  # data handling notes
-├── OPENCODE_PR_PROPOSAL.md     # upstream OpenCode proposal notes
+├── _config.yml                         # docs site config
+├── DOCUMENTATION.md                    # this repository documentation map
+├── README.md                           # docs portal / navigation
+├── index.md                            # documentation landing page
+├── architecture.md                     # public architecture overview
+├── getting-started.md                  # install + first-run guide
+├── configuration.md                    # full config reference
+├── troubleshooting.md                  # operational debugging guide
+├── faq.md                              # short common answers
+├── privacy.md                          # data handling notes
+├── OPENCODE_PR_PROPOSAL.md             # upstream OpenCode proposal notes
 ├── development/
-│   ├── ARCHITECTURE.md         # technical design and current module/docs layout
-│   ├── CONFIG_FIELDS.md        # config field semantics
-│   ├── CONFIG_FLOW.md          # config resolution internals
-│   ├── TESTING.md              # testing strategy and commands
-│   └── TUI_PARITY_CHECKLIST.md # auth dashboard UI parity checks
+│   ├── ARCHITECTURE.md                 # technical design and current module/docs layout
+│   ├── GITHUB_DISCOVERABILITY.md       # repository description, topics, and search terms
+│   ├── CONFIG_FIELDS.md                # config field semantics
+│   ├── CONFIG_FLOW.md                  # config resolution internals
+│   ├── TESTING.md                      # testing strategy and commands
+│   └── TUI_PARITY_CHECKLIST.md         # auth dashboard UI parity checks
 └── audits/
     ├── INDEX.md
     ├── 01-executive-summary.md ... 16-verdict.md
-    ├── _findings/              # T01 through T16 detailed findings
-    └── _meta/                  # audit rubric, ledger, environment, verification
+    ├── _findings/                      # T01 through T16 detailed findings
+    └── _meta/                          # audit rubric, ledger, environment, verification
 ```
 
 ## config/ (copy-paste templates)
@@ -48,4 +50,4 @@ docs/
 
 - `dist/` is build output and not a documentation source of truth.
 - `tmp*` files are release scratch artifacts and not part of user docs.
-- For user-facing guidance, start with `README.md` or `docs/getting-started.md`.
+- For user-facing guidance, start with `README.md`, `docs/getting-started.md`, or `docs/architecture.md`.

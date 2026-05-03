@@ -1,4 +1,4 @@
 theme: jekyll-theme-hacker
 title: oc-codex-multi-auth
-description: Use your ChatGPT Plus/Pro subscription inside OpenCode with OAuth login and GPT-5/Codex presets
+description: OpenCode plugin for ChatGPT Plus/Pro OAuth, Codex/GPT-5 routing, multi-account rotation, account switching, health checks, diagnostics, quota status, and recovery tools
 show_downloads: true

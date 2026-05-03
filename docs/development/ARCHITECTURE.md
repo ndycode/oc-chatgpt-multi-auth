@@ -1,25 +1,102 @@
-# Plugin Architecture & Technical Decisions
+# Architecture
 
-> Reflects the codebase as of the 2026-04-25 current-structure audit. Individual section version markers refer to the release that introduced a feature and are retained for historical context only.
+Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, ChatGPT Plus/Pro OAuth flow, Codex/GPT-5 request bridge, multi-account rotation, `codex-*` tool registry, TUI quota status plugin, and local storage model.
 
-This document explains the technical design decisions, architecture, and implementation details of the OpenAI Codex OAuth plugin for OpenCode.
+> Reflects the codebase as of the current `main` branch. Historical audit section markers are retained in the docs tree for traceability, but this file is the current maintainer architecture source.
 
-## Module Layout (v6.0.0)
+---
 
+## Design Goals
+
+1. Make OpenCode ChatGPT OAuth setup short and repeatable (`npx -y oc-codex-multi-auth@latest`).
+2. Keep OpenCode as the host runtime while the plugin owns only the OAuth-backed Codex routing layer.
+3. Preserve Codex backend invariants: `stream: true`, `store: false`, and `reasoning.encrypted_content`.
+4. Make multi-account state visible through account switching, health checks, diagnostics, quota status, and recovery commands.
+5. Keep account storage local by default, with explicit export/import and optional OS keychain migration.
+6. Keep the broad OpenCode tool surface modular: every registered `codex-*` tool is its own file under `lib/tools/`.
+7. Keep public docs search-friendly without overstating support, affiliation, or production/commercial use.
+
+---
+
+## System Diagram
+
+```text
+Install / refresh
+  |
+  | npx -y oc-codex-multi-auth@latest [--modern|--full|--legacy]
+  v
+scripts/install-oc-codex-multi-auth.js
+  |- delegates to scripts/install-oc-codex-multi-auth-core.js
+  |- writes ~/.config/opencode/opencode.json
+  |- writes ~/.config/opencode/tui.json
+  |- merges config/opencode-modern.json or config/opencode-legacy.json
+  |- normalizes old package/plugin entries
+  |- clears OpenCode plugin cache
+
+OpenCode runtime
+  |
+  | loads plugin package
+  v
+index.ts
+  |- auth loader: browser callback, device code, manual URL paste
+  |- account manager + V3 storage + optional keychain
+  |- custom provider fetch pipeline
+  |- runtime metrics, retry budgets, circuit breaker, recovery hooks
+  |- ToolContext construction
+  v
+lib/tools/index.ts
+  |- registers 21 OpenCode tools
+  |- each tool delegates to lib/tools/codex-*.ts
+
+Request path
+  |
+  | OpenCode OpenAI SDK request
+  v
+lib/request/fetch-helpers.ts + lib/request/request-transformer.ts
+  |- rewrite URL to Codex/ChatGPT backend
+  |- native mode: preserve host payload shape
+  |- legacy mode: apply compatibility rewrites
+  |- force store:false and include reasoning.encrypted_content
+  |- select/refresh account, attach OAuth headers
+  v
+ChatGPT-backed Codex endpoint
+  |
+  v
+lib/request/response-handler.ts
+  |- SSE parsing
+  |- error mapping
+  |- quota/rate-limit/header extraction
+
+OpenCode TUI runtime
+  |
+  v
+tui.ts
+  |- reads account/quota snapshots
+  |- refreshes compact usage state when possible
+  |- renders prompt quota status and details
 ```
-index.ts              # plugin entry: context wiring + fetch pipeline
-lib/
-├── accounts/         # state, persistence, rotation, rate-limits, recovery
-├── auth/             # OAuth flow, PKCE, callback server
-├── prompts/          # Codex bridge + tool-remap prompts, ETag cache
-├── recovery/         # session recovery (tool_result_missing, thinking blocks)
-├── request/          # transformer, fetch-helpers, response-handler
-├── storage/          # atomic writes, migrations, paths, flagged, backup/export/import
-├── tools/            # 21 OpenCode tools (codex-list, codex-switch, codex-doctor, ...)
-└── ui/               # terminal UI runtime, theme, formatting, beginner checklist
-```
 
-The single `index.ts` of earlier releases has been split: account management lives under `lib/accounts/`, storage under `lib/storage/`, and every registered `codex-*` tool is its own file under `lib/tools/`. `index.ts` now holds the plugin loader, request pipeline wiring, context construction, and registry attachment.
+---
+
+## Core Subsystems
+
+| Subsystem | Key files | Responsibility |
+| --- | --- | --- |
+| Installer CLI | `scripts/install-oc-codex-multi-auth.js`, `scripts/install-oc-codex-multi-auth-core.js` | npm bin, config merge, cache cleanup, modern/full/legacy catalog selection, TUI plugin enablement |
+| OpenCode plugin entry | `index.ts` | auth loader, runtime wiring, custom fetch pipeline, account manager lifecycle, `ToolContext`, OpenCode plugin export |
+| TUI plugin entry | `tui.ts`, `lib/tui-status.ts`, `lib/tui-quota-cache.ts`, `lib/codex-usage.ts` | prompt quota status, account-aware quota snapshots, usage refresh, details rendering |
+| Auth flow | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts`, `lib/auth/scopes.ts` | PKCE OAuth, callback server, device/manual login, workspace/account selection, scope validation |
+| Account manager | `lib/accounts.ts`, `lib/accounts/` | account state facade, persistence, rotation, recovery, rate-limit tracking, workspace identity preservation |
+| Storage | `lib/storage.ts`, `lib/storage/` | V3 JSON storage, atomic writes, migrations, per-project paths, backups, import/export, keychain opt-in, flagged accounts |
+| Request bridge | `lib/request/fetch-helpers.ts`, `lib/request/request-transformer.ts`, `lib/request/response-handler.ts`, `lib/request/retry-budget.ts`, `lib/request/rate-limit-backoff.ts` | URL/body/header shaping, Codex invariants, SSE conversion, retry budgets, backoff, error mapping |
+| Model/prompt mapping | `lib/prompts/codex.ts`, `lib/prompts/opencode-codex.ts`, `lib/prompts/codex-opencode-bridge.ts`, `lib/request/helpers/model-map.ts` | model-family detection, Codex instructions cache, OpenCode prompt adaptation, fallback aliases |
+| Tool registry | `lib/tools/index.ts`, `lib/tools/codex-*.ts` | 21 OpenCode tools for setup, account switching, status, health, diagnostics, backup, keychain, and recovery |
+| Runtime support | `lib/runtime.ts`, `lib/circuit-breaker.ts`, `lib/proactive-refresh.ts`, `lib/parallel-probe.ts`, `lib/recovery/`, `lib/shutdown.ts` | pure runtime helpers, failure isolation, refresh scheduling, health probing, session recovery, cleanup |
+| UI helpers | `lib/ui/` | terminal formatting, auth menu, select/confirm prompts, theme/color handling, beginner checklist |
+| Config templates | `config/opencode-modern.json`, `config/opencode-legacy.json`, `config/minimal-opencode.json`, `config/README.md` | copy-paste OpenCode provider templates and model catalog guidance |
+| Tests | `test/` | Vitest suites for auth, request transforms, storage, rotation, tools, TUI quota, installer, docs parity, and release regressions |
+
+---
 
 ## Documentation Layout
 
@@ -30,6 +107,7 @@ docs/
 ├── index.md                  # docs landing page
 ├── README.md                 # docs portal navigation
 ├── DOCUMENTATION.md          # repository documentation map
+├── architecture.md           # public architecture overview
 ├── getting-started.md        # install, auth, and first-run guide
 ├── configuration.md          # public config reference
 ├── troubleshooting.md        # operational failure modes and fixes
@@ -39,6 +117,7 @@ docs/
 ├── _config.yml               # docs site config
 ├── development/              # maintainer architecture and validation docs
 │   ├── ARCHITECTURE.md
+│   ├── GITHUB_DISCOVERABILITY.md
 │   ├── CONFIG_FIELDS.md
 │   ├── CONFIG_FLOW.md
 │   ├── TESTING.md
@@ -50,564 +129,148 @@ docs/
     └── _meta/                # audit rubric, ledger, environment, verification
 ```
 
-## Table of Contents
-- [Architecture Overview](#architecture-overview)
-- [Stateless vs Stateful Mode](#stateless-vs-stateful-mode)
-- [Message ID Handling](#message-id-handling)
-- [Reasoning Content Flow](#reasoning-content-flow)
-- [Request Pipeline](#request-pipeline)
-- [Comparison with Codex CLI](#comparison-with-codex-cli)
-- [Design Rationale](#design-rationale)
-- [TUI Parity Checklist](./TUI_PARITY_CHECKLIST.md)
-
----
-
-## Architecture Overview
-
-```
-┌─────────────┐
-│  OpenCode   │  TUI/Desktop client
-└──────┬──────┘
-       │
-       │ streamText() with AI SDK
-       │
-       ▼
-┌──────────────────────────────┐
-│  OpenCode Provider System    │
-│  - Loads plugin               │
-│  - Calls plugin.auth.loader() │
-│  - Passes provider config     │
-└──────┬───────────────────────┘
-       │
-       │ Custom fetch()
-       │
-       ▼
-┌──────────────────────────────┐
-│  This Plugin                 │
-│  - OAuth authentication      │
-│  - Request transformation    │
-│  - store:false handling      │
-│  - Codex bridge prompts      │
-└──────┬───────────────────────┘
-       │
-       │ HTTP POST with OAuth
-       │
-       ▼
-┌──────────────────────────────┐
-│  OpenAI Codex API            │
-│  (ChatGPT Backend)           │
-│  - Requires OAuth            │
-│  - Supports store:false      │
-│  - Returns SSE stream        │
-└──────────────────────────────┘
-```
-
----
-
-## Stateless vs Stateful Mode
-
-### Why store:false?
-
-The plugin uses **`store: false`** (stateless mode) because:
-
-1. **ChatGPT Backend Requirement** (confirmed via testing):
-   ```json
-   // Attempt with store:true → 400 Bad Request
-   {"detail":"Store must be set to false"}
-   ```
-
-2. **Codex CLI Behavior** (external Codex CLI `codex-rs/core/src/client.rs`):
-   ```rust
-   // Codex CLI uses store:false for ChatGPT OAuth
-   let azure_workaround = self.provider.is_azure_responses_endpoint();
-   store: azure_workaround,  // false for ChatGPT, true for Azure
-   ```
-
-**Key Points**:
-1. ✅ **ChatGPT backend REQUIRES store:false** (not optional)
-2. ✅ **Codex CLI uses store:false for ChatGPT**
-3. ✅ **Azure requires store:true** (different endpoint, not supported by this plugin)
-4. ✅ **Stateless mode = no server-side conversation storage**
-
-### How Context Works with store:false
-
-**Question**: If there's no server storage, how does the LLM remember previous turns?
-
-**Answer**: Full message history is sent in every request:
-
-```typescript
-// Turn 3 request contains ALL previous messages:
-input: [
-  { role: "developer", content: "..." },      // System prompts
-  { role: "user", content: "write test.txt" },     // Turn 1 user
-  { type: "function_call", name: "write", ... },   // Turn 1 tool call
-  { type: "function_call_output", ... },           // Turn 1 tool result
-  { role: "assistant", content: "Done!" },         // Turn 1 response
-  { role: "user", content: "read it" },            // Turn 2 user
-  { type: "function_call", name: "read", ... },    // Turn 2 tool call
-  { type: "function_call_output", ... },           // Turn 2 tool result
-  { role: "assistant", content: "Contents..." },   // Turn 2 response
-  { role: "user", content: "what did you write?" } // Turn 3 user (current)
-]
-// Legacy mode strips IDs and item_reference; native mode preserves host payload shape
-```
-
-**Context is maintained through**:
-- ✅ Full message history (LLM sees all previous messages)
-- ✅ Full tool call history (LLM sees what it did)
-- ✅ `reasoning.encrypted_content` (preserves reasoning between turns)
-
-**Source**: Verified via `ENABLE_PLUGIN_REQUEST_LOGGING=1 CODEX_PLUGIN_LOG_BODIES=1` logs
-
-### Store Comparison
-
-| Aspect | store:false (This Plugin) | store:true (Azure Only) |
-|--------|---------------------------|-------------------------|
-| **ChatGPT Support** | ✅ Required | ❌ Rejected by API |
-| **Message History** | ✅ Sent in each request (no IDs) | Stored on server |
-| **Message IDs** | ❌ Must strip all | ✅ Required |
-| **AI SDK Compat** | ✅ Native mode preserves host payload; legacy mode filters unsupported `item_reference` + IDs | ✅ Works natively |
-| **Context** | Full history + encrypted reasoning | Server-stored conversation |
-| **Codex CLI Parity** | ✅ Perfect match | ❌ Different mode |
-
-**Decision**: Use **`store:false`** (only option for ChatGPT backend).
-
----
-
-## Message ID Handling & AI SDK Compatibility (Legacy Mode)
-
-> This section documents `requestTransformMode: "legacy"` behavior. Native mode bypasses this rewrite path.
-
-### The Problem
-
-**OpenCode/AI SDK sends two incompatible constructs**:
-```typescript
-// Multi-turn request from OpenCode
-const body = {
-  input: [
-    { type: "message", role: "developer", content: [...] },
-    { type: "message", role: "user", content: [...], id: "msg_abc" },
-    { type: "item_reference", id: "rs_xyz" },  // ← AI SDK construct
-    { type: "function_call", id: "fc_123" }
-  ]
-};
-```
-
-**Two issues**:
-1. `item_reference` - AI SDK construct for server state lookup (not in Codex API spec)
-2. Message IDs - Cause "item not found" with `store: false`
-
-**ChatGPT Backend Requirement** (confirmed via testing):
-```json
-{"detail":"Store must be set to false"}
-```
-
-**Errors that occurred**:
-```
-❌ "Item with id 'msg_abc' not found. Items are not persisted when `store` is set to false."
-❌ "Missing required parameter: 'input[3].id'" (when item_reference has no ID)
-```
-
-### The Solution
-
-**Filter AI SDK Constructs + Strip IDs** (`lib/request/request-transformer.ts`, `filterInput`):
-```typescript
-export function filterInput(input: InputItem[]): InputItem[] {
-  return input
-    .filter((item) => {
-      // Remove AI SDK constructs not supported by Codex API
-      if (item.type === "item_reference") {
-        return false;  // AI SDK only - references server state
-      }
-      return true;  // Keep all other items
-    })
-    .map((item) => {
-      // Strip IDs from all items (stateless mode)
-      if (item.id) {
-        const { id, ...itemWithoutId } = item;
-        return itemWithoutId as InputItem;
-      }
-      return item;
-    });
-}
-```
-
-**Why this approach?**
-1. ✅ **Filter `item_reference`** - Not in Codex API, AI SDK-only construct
-2. ✅ **Keep all messages** - LLM needs full conversation history for context
-3. ✅ **Strip ALL IDs** - Matches Codex CLI stateless behavior
-4. ✅ **Future-proof** - No ID pattern matching, handles any ID format
-
-### Debug Logging
-
-The plugin logs ID filtering for debugging:
-
-```typescript
-// Before filtering
-console.log(`[openai-codex-plugin] Filtering ${originalIds.length} message IDs from input:`, originalIds);
-
-// After filtering
-console.log(`[openai-codex-plugin] Successfully removed all ${originalIds.length} message IDs`);
-
-// Or warning if IDs remain
-console.warn(`[openai-codex-plugin] WARNING: ${remainingIds.length} IDs still present after filtering:`, remainingIds);
-```
-
-**Source**: `lib/request/request-transformer.ts` (`transformRequestBody` debug logging)
-
----
-
-## Reasoning Content Flow
-
-### Context Preservation Without Storage
-
-**Challenge**: How to maintain context across turns when `store:false` means no server-side storage?
-
-**Solution**: Use `reasoning.encrypted_content`
-
-```typescript
-body.include = modelConfig.include || ["reasoning.encrypted_content"];
-```
-
-**How it works**:
-1. **Turn 1**: Model generates reasoning, encrypted content returned
-2. **Client**: Stores encrypted content locally
-3. **Turn 2**: Client sends encrypted content back in request
-4. **Server**: Decrypts content to restore reasoning context
-5. **Model**: Has full context without server-side storage
-
-**Flow Diagram**:
-```
-Turn 1:
-Client → [Request without IDs] → Server
-         Server → [Response + encrypted reasoning] → Client
-         Client stores encrypted content locally
-
-Turn 2:
-Client → [Request with encrypted content, no IDs] → Server
-         Server decrypts reasoning context
-         Server → [Response + new encrypted reasoning] → Client
-```
-
-**Codex CLI equivalent** (external Codex CLI `codex-rs/core/src/client.rs`):
-```rust
-let include: Vec<String> = if reasoning.is_some() {
-    vec!["reasoning.encrypted_content".to_string()]
-} else {
-    vec![]
-};
-```
-
-**Source**: `lib/request/request-transformer.ts` (`resolveInclude` and `transformRequestBody`)
-
 ---
 
 ## Request Pipeline
 
-### Transformation Steps
+High-level provider fetch flow:
 
-~~~text
-1. Parse OpenCode request body
-   - Preserve the original payload shape before any optional rewrites
-
-2. Request transform mode gate
-   - native (default): keep host payload unchanged
-   - legacy: fetch Codex instructions and apply compatibility transforms
-
-3. Legacy-mode transforms (when enabled)
-   - Normalize model aliases to canonical Codex IDs
-   - Filter unsupported AI SDK constructs (item_reference)
-   - Strip IDs for stateless compatibility (store: false)
-   - Apply bridge or tool-remap prompt logic (codexMode)
-   - Normalize orphaned tool outputs and inject missing outputs
-
-4. Common post-processing
-   - Resolve reasoning + verbosity settings
-   - Ensure include contains reasoning.encrypted_content
-   - Force store: false and stream: true for ChatGPT backend
-
-5. Header shaping
-   - Add OAuth/account headers
-   - Preserve host-provided prompt_cache_key session headers when present
-~~~
-
-**Source**: `lib/request/fetch-helpers.ts` and `lib/request/request-transformer.ts`
+1. Parse OpenCode request URL and body.
+2. Resolve plugin config from defaults, `~/.opencode/openai-codex-auth-config.json`, and environment overrides.
+3. Choose request transform mode:
+   - `native` keeps OpenCode payloads unchanged except required Codex invariants.
+   - `legacy` fetches Codex/OpenCode prompts and applies compatibility rewrites.
+4. Enforce ChatGPT-backed Codex invariants:
+   - `stream: true`
+   - `store: false`
+   - `include: ["reasoning.encrypted_content"]` or equivalent inclusion
+5. Normalize model aliases and fallback candidates.
+6. Resolve account/workspace selection with health, cooldown, token bucket, and explicit `CODEX_AUTH_ACCOUNT_ID` constraints.
+7. Refresh tokens through the queued refresh path when needed.
+8. Attach OAuth/Codex headers and forward the request.
+9. Parse SSE responses, quota headers, retryable errors, and unsupported-model details.
+10. Update runtime metrics, account health, TUI quota cache, and persisted storage.
 
 ---
 
-## Comparison with Codex CLI
+## Stateless Codex Contract
 
-### What We Match
+The ChatGPT-backed Codex path rejects server-side storage for this plugin's request shape, so the runtime keeps requests stateless with `store: false`.
 
-| Feature | Codex CLI | This Plugin | Match? |
-|---------|-----------|-------------|--------|
-| **OAuth Flow** | ✅ PKCE + ChatGPT login | ✅ Same | ✅ |
-| **store Parameter** | `false` (ChatGPT) | `false` | ✅ |
-| **Message IDs** | Stripped in stateless | Stripped | ✅ |
-| **reasoning.encrypted_content** | ✅ Included | ✅ Included | ✅ |
-| **Model Normalization** | "gpt-5" / "gpt-5-codex" / "codex-mini-latest" | Same | ✅ |
-| **Reasoning Effort** | medium (default) | opinionated defaults by model family (for example GPT-5.3/5.2 Codex prefer `xhigh`) | ⚠️ (intentional) |
-| **Text Verbosity** | model-dependent defaults | config-driven (default: medium) | ✅ |
+Context is preserved through:
 
-### What We Add
+- full message history supplied by OpenCode
+- tool call and tool output history in that message history
+- `reasoning.encrypted_content` returned by the backend and sent back on later turns
 
-| Feature | Codex CLI | This Plugin | Why? |
-|---------|-----------|-------------|------|
-| **Codex-OpenCode Bridge** | N/A (native) | ✅ Legacy-mode prompt injection | OpenCode -> Codex behavioral translation when legacy mode is enabled |
-| **OpenCode Prompt Filtering** | N/A | ✅ Legacy-mode prompt filtering | Removes OpenCode prompts and keeps env/AGENTS context in legacy mode |
-| **Orphan Tool Output Handling** | ✅ Drop orphans | ✅ Convert to messages | Preserve context + avoid 400s |
-| **Usage-limit messaging** | CLI prints status | ✅ Friendly error summary | Surface 5h/weekly windows in OpenCode |
-| **Per-Model Options** | CLI flags | ✅ Config file | Better UX in OpenCode |
-| **Custom Model Names** | No | ✅ Display names | UI convenience |
+Legacy mode exists for compatibility with older OpenCode/AI SDK payload behavior. It removes unsupported `item_reference` items and message IDs that cannot be looked up when `store: false` is active. Native mode is the default and preserves the host payload shape as much as possible.
 
 ---
 
-## Design Rationale
+## Tool Registry Architecture
 
-### Why Not store:true?
+The plugin exposes 21 OpenCode tools through `lib/tools/index.ts`. `index.ts` builds one `ToolContext` from plugin-closure state and helper functions, then passes it to `createToolRegistry(ctx)`.
 
-**Pros of store:true**:
-- ✅ No ID filtering needed
-- ✅ Server manages conversation
-- ✅ Potentially more robust
+Why this shape exists:
 
-**Cons of store:true**:
-- ❌ Diverges from Codex CLI behavior
-- ❌ Requires conversation ID management
-- ❌ More complex error handling
-- ❌ Unknown server-side storage limits
+- per-tool modules keep `index.ts` from absorbing every command implementation
+- mutable refs let tools invalidate or replace account-manager state without global singletons
+- shared helpers keep formatting, routing visibility, and beginner diagnostics consistent
+- schema helpers stay close to each tool to avoid leaking bundled `zod` type identities across module boundaries
 
-**Decision**: Use `store:false` for Codex parity and simplicity.
+Tool groups:
 
-### Why Complete ID Removal (Legacy Mode)?
-
-**Alternative**: Filter specific ID patterns (`rs_*`, `msg_*`, etc.)
-
-**Problem**:
-- ID patterns may change
-- New ID types could be added
-- Partial filtering is brittle
-
-**Solution**: Remove **ALL** IDs
-
-**Rationale**:
-- Matches Codex CLI behavior exactly
-- Future-proof against ID format changes
-- Simpler implementation (no pattern matching)
-- Clearer semantics (stateless = no IDs)
-
-### Why Codex-OpenCode Bridge?
-
-**Problem**: OpenCode's system prompts are optimized for OpenCode's tool set and behavior patterns.
-
-**Solution**: Replace OpenCode prompts with Codex-specific instructions.
-
-**Benefits**:
-- ✅ Explains tool name differences (apply_patch intent → patch/edit)
-- ✅ Documents available tools
-- ✅ Maintains OpenCode working style
-- ✅ Preserves Codex best practices
-- ✅ 90% reduction in prompt tokens
-
-**Source**: `lib/prompts/codex-opencode-bridge.ts`
-
-### Why Per-Model Config Options?
-
-**Alternative**: Single global config
-
-**Problem**:
-- `gpt-5-codex` optimal settings differ from `gpt-5.4` or `gpt-5.4-mini`
-- Users want quick switching between quality levels
-- No way to save "presets"
-
-**Solution**: Per-model options in config
-
-**Benefits**:
-- ✅ Save multiple configurations
-- ✅ Quick switching (no CLI args)
-- ✅ Descriptive names ("Fast", "Balanced", "Max Quality")
-- ✅ Persistent across sessions
-
-**Source**: `config/opencode-legacy.json` (legacy) or `config/opencode-modern.json` (variants)
+| Group | Tools |
+| --- | --- |
+| Setup and help | `codex-setup`, `codex-help`, `codex-next` |
+| Daily account use | `codex-list`, `codex-switch`, `codex-status`, `codex-limits`, `codex-dashboard` |
+| Account metadata | `codex-label`, `codex-tag`, `codex-note`, `codex-remove`, `codex-refresh` |
+| Diagnostics | `codex-health`, `codex-metrics`, `codex-doctor`, `codex-diag`, `codex-diff` |
+| Backup/secrets | `codex-export`, `codex-import`, `codex-keychain` |
 
 ---
 
-## Error Handling
+## Storage Model
 
-### Common Errors
+Canonical OpenCode plugin state lives under `~/.opencode`, while OpenCode config lives under `~/.config/opencode`.
 
-#### 1. "Item with id 'X' not found"
-**Cause**: Message ID leaked through filtering
-**Fix**: Improved `filterInput()` removes ALL IDs
-**Prevention**: Debug logging catches remaining IDs
+| File | Purpose |
+| --- | --- |
+| `~/.config/opencode/opencode.json` | OpenCode provider/plugin config managed by installer |
+| `~/.config/opencode/tui.json` | OpenCode TUI plugin config managed by installer |
+| `~/.opencode/auth/openai.json` | OpenCode auth token file |
+| `~/.opencode/openai-codex-auth-config.json` | plugin runtime config |
+| `~/.opencode/oc-codex-multi-auth-accounts.json` | global V3 account pool |
+| `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json` | project-scoped V3 account pool |
+| `~/.opencode/oc-codex-multi-auth-flagged-accounts.json` | flagged/deactivated account metadata |
+| `~/.opencode/backups/` | account backup/export target |
+| `~/.opencode/logs/codex-plugin/` | request/debug logs when enabled |
 
-#### 2. Token Expiration
-**Cause**: OAuth access token expired
-**Fix**: `shouldRefreshToken()` checks expiration
-**Prevention**: Auto-refresh before requests
+Storage invariants:
 
-#### 3. "store: false" Validation Error (Azure)
-**Cause**: Azure doesn't support stateless mode
-**Workaround**: Codex CLI uses `store: true` for Azure only
-**This Plugin**: Only supports ChatGPT OAuth (no Azure)
+1. V1/V2 account files migrate into V3 on load/save paths.
+2. Per-project storage is enabled by default and keyed by detected project identity.
+3. JSON files are written atomically where supported.
+4. Optional keychain storage is opt-in via `CODEX_KEYCHAIN=1`.
+5. Import supports dry-run preview and creates pre-import backups when existing accounts are present.
 
 ---
 
-## Multi-Account Rotation
+## TUI Quota Status Flow
 
-### Health-Based Account Selection
+`tui.ts` is loaded by OpenCode's TUI plugin system after the installer writes `~/.config/opencode/tui.json`.
 
-The plugin tracks account health and uses intelligent rotation:
+1. Resolve the active account fingerprint from stored accounts.
+2. Read OpenCode KV quota state and the shared quota cache.
+3. Refresh usage data when enough time has passed and the active account is eligible.
+4. Render compact prompt status only inside active sessions.
+5. Expose quota details without leaking account tokens.
 
-```
-Account Selection Flow:
-1. Score = (health × 2) + (tokens × 5) + (freshness × 0.1)
-2. Select account with highest score
-3. Consume token from bucket
-4. On success: health +1
-5. On rate limit: health -10, mark rate-limited
-6. On failure: health -20
-7. Passive recovery: +2 health/hour
+The request path also writes quota snapshots from response headers, so the TUI can reflect the account/workspace used by the latest request.
+
+---
+
+## Model Catalog and Fallback Notes
+
+The default installer writes the modern OpenCode template:
+
+- 9 base model families in the picker
+- 36 effective variants through OpenCode's variant selector
+- `store: false`
+- `reasoning.encrypted_content`
+- large context/output metadata for supported model families
+
+`--full` adds explicit selector IDs for scripts, and `--legacy` writes the explicit-only template for older OpenCode versions.
+
+Unsupported-model behavior is strict by default. Fallback can be enabled through config or environment variables, with GPT-5.5 rollout fallback handled separately where documented.
+
+---
+
+## Invariants
+
+1. OAuth callback port remains `1455`.
+2. Dist output is generated; source of truth is `index.ts`, `tui.ts`, `lib/`, `scripts/`, `config/`, and `docs/`.
+3. The canonical package and plugin entry is `oc-codex-multi-auth`.
+4. The installer should normalize stale `oc-chatgpt-multi-auth` entries rather than preserve duplicates.
+5. ChatGPT-backed Codex requests use `store: false`.
+6. `reasoning.encrypted_content` must stay available for multi-turn continuity.
+7. Account emails and tokens must not be exposed in diagnostic payloads or response headers.
+8. Keychain failures must not silently delete JSON credentials.
+9. Tool additions require a per-file factory, registry wiring, and focused test/docs updates.
+10. Docs, package metadata, GitHub About text, and plugin metadata should lead with OpenCode, ChatGPT OAuth, Codex/GPT-5 routing, multi-account rotation, account switching, health checks, diagnostics, and recovery tools.
+
+---
+
+## Verification
+
+Recommended local validation for architecture/docs/metadata changes:
+
+```bash
+npm test -- test/doc-parity.test.ts
+npm run typecheck
+npm run lint
+npm run build
+git diff --check
 ```
 
-### Token Bucket Rate Limiting
-
-Client-side rate limiting prevents hitting API limits:
-
-| Parameter | Value |
-|-----------|-------|
-| Max tokens | 50 |
-| Regeneration | 6 tokens/min |
-| Consume per request | 1 token |
-
-### Reason-Aware Backoff
-
-Different rate limit reasons use different backoff multipliers:
-
-| Reason | Multiplier | Description |
-|--------|------------|-------------|
-| `quota` | 3.0× | Daily quota exhausted |
-| `tokens` | 1.5× | Token limit hit |
-| `concurrent` | 0.5× | Concurrent request limit |
-| `unknown` | 1.0× | Default |
-
-### RefreshQueue
-
-Prevents race conditions when multiple concurrent requests try to refresh the same token:
-
-```typescript
-// Without RefreshQueue: N concurrent requests = N refresh attempts
-// With RefreshQueue: N concurrent requests = 1 refresh, N-1 await
-
-const queue = getRefreshQueue();
-const tokens = await queue.queuedRefresh(refreshToken, async () => {
-  return await actualRefresh(refreshToken);
-});
-```
-
-**Source**: `lib/refresh-queue.ts`, `lib/rotation.ts`
-
----
-
-## Beginner Operations & Safety Layer
-
-The plugin now includes a beginner-focused operational layer in `index.ts` and `lib/ui/beginner.ts`:
-
-1. **Startup preflight summary**
-   - Runs once per plugin loader lifecycle.
-   - Computes account readiness (`healthy`, `blocked`, `rate-limited`) and surfaces a single next action.
-   - Emits both toast + log summary.
-
-2. **Checklist and wizard flow**
-   - `codex-setup` renders a checklist (`add account`, `set active`, `verify health`, `label accounts`, `learn commands`).
-   - `codex-setup --wizard` launches an interactive menu when terminal supports TTY interaction.
-   - Wizard gracefully falls back to checklist output when menus are unavailable.
-
-3. **Doctor + next-action diagnostics**
-   - `codex-doctor` maps runtime/account states into severity findings (`ok`, `warning`, `error`) with specific action text.
-   - `codex-doctor --fix` performs safe remediation:
-     - refreshes tokens using queued refresh,
-     - persists refreshed credentials,
-     - switches active account to healthiest eligible account when beneficial.
-   - `codex-next` returns exactly one recommended next action.
-
-4. **Interactive index selection**
-   - `codex-switch`, `codex-label`, and `codex-remove` accept optional `index`.
-   - In interactive terminals, missing index opens a picker menu.
-   - In non-interactive contexts, commands return explicit usage guidance.
-
----
-
-## Account Metadata + Backup Safety
-
-Storage schema now supports account metadata fields used by operational tooling:
-
-- `accountLabel` (existing)
-- `accountTags` (new): normalized lowercase tag array for grouping/filtering
-- `accountNote` (new): short reminder text
-
-Operational implications:
-
-1. `codex-list` supports tag filtering (`tag`) and shows tags in account labels.
-2. `codex-tag` and `codex-note` update metadata with persistence + manager cache reload.
-3. Export/import flow hardening:
-   - `codex-export` can auto-generate timestamped paths (`createTimestampedBackupPath()`),
-   - `codex-import` supports `dryRun` via `previewImportAccounts()`,
-   - non-dry-run imports create timestamped pre-import backups before applying changes when existing accounts are present.
-
----
-
-## Performance Considerations
-
-### Token Usage
-
-**Codex Bridge Prompt**: ~550 tokens (~90% reduction vs full OpenCode prompt)
-**Benefit**: Faster inference, lower costs
-
-### Request Optimization
-
-**Prompt Caching**: Uses `promptCacheKey` for session-based caching
-**Result**: Reduced token usage on subsequent turns
-
-**Source**: external OpenCode provider transform implementation
-
----
-
-## Future Improvements
-
-### Potential Enhancements
-
-1. **Azure Support**: Add `store: true` mode with ID management
-2. **Version Detection**: Adapt to OpenCode/AI SDK version changes
-3. **Config Validation**: Warn about unsupported options
-4. **Test Coverage**: Unit tests for all transformation functions
-5. **Performance Metrics**: Log token usage and latency
-
-## Terminal UI Runtime (Codex TUI v2)
-
-The plugin now supports a Codex-style terminal presentation layer for both interactive menus and text tool outputs.
-
-- Default: enabled (`codexTuiV2: true`)
-- Opt-out: `codexTuiV2: false` or `CODEX_TUI_V2=0`
-- Color profile selection:
-  - `codexTuiColorProfile: "truecolor" | "ansi256" | "ansi16"`
-  - `CODEX_TUI_COLOR_PROFILE`
-- Glyph mode selection:
-  - `codexTuiGlyphMode: "ascii" | "unicode" | "auto"`
-  - `CODEX_TUI_GLYPHS`
-
-Legacy output remains unchanged when V2 is disabled.
-
-### Breaking Changes to Watch
-
-1. **AI SDK Updates**: Changes to `.responses()` method
-2. **OpenCode Changes**: New message ID formats
-3. **Codex API Changes**: New request parameters
-
----
-
-## See Also
-- [CONFIG_FLOW.md](./CONFIG_FLOW.md) - Configuration system guide
-- [TUI_PARITY_CHECKLIST.md](./TUI_PARITY_CHECKLIST.md) - Auth dashboard and interaction parity checklist
-- [Codex CLI Source](https://github.com/openai/codex) - Official implementation
-- [OpenCode Source](https://github.com/sst/opencode) - OpenCode implementation
+Use `npm test` when source behavior changes or when documentation edits touch tested runtime contracts.

@@ -315,6 +315,7 @@ describe("runtime documentation parity", () => {
 			"docs/DOCUMENTATION.md",
 			"docs/README.md",
 			"docs/index.md",
+			"docs/architecture.md",
 			"docs/getting-started.md",
 			"docs/configuration.md",
 			"docs/troubleshooting.md",
@@ -322,6 +323,7 @@ describe("runtime documentation parity", () => {
 			"docs/privacy.md",
 			"docs/OPENCODE_PR_PROPOSAL.md",
 			"docs/development/ARCHITECTURE.md",
+			"docs/development/GITHUB_DISCOVERABILITY.md",
 			"docs/development/CONFIG_FIELDS.md",
 			"docs/development/CONFIG_FLOW.md",
 			"docs/development/TESTING.md",
@@ -351,7 +353,9 @@ describe("runtime documentation parity", () => {
 			[
 				"docs/DOCUMENTATION.md",
 				[
+					"architecture.md",
 					"OPENCODE_PR_PROPOSAL.md",
+					"GITHUB_DISCOVERABILITY.md",
 					"development/",
 					"audits/",
 					"_findings/",
@@ -456,9 +460,12 @@ describe("runtime documentation parity", () => {
 	it("keeps package metadata aligned with shipped source and install surfaces", () => {
 		const packageJson = JSON.parse(readRepoFile("package.json")) as {
 			bin?: Record<string, string>;
+			description?: string;
 			exports?: Record<string, { import?: string; types?: string }>;
 			files?: string[];
+			keywords?: string[];
 			scripts?: Record<string, string>;
+			version?: string;
 		};
 		const requiredPackageFiles = [
 			"dist/",
@@ -469,12 +476,35 @@ describe("runtime documentation parity", () => {
 			"LICENSE",
 		];
 
+		expect(packageJson.description).toContain("OpenCode plugin");
+		expect(packageJson.description).toContain("ChatGPT Plus/Pro OAuth");
+		expect(packageJson.description).toContain("account switching");
+		for (const keyword of [
+			"opencode-plugin",
+			"codex-oauth",
+			"account-switching",
+			"account-health",
+			"quota-management",
+			"diagnostics",
+			"recovery-tools",
+		]) {
+			expect(packageJson.keywords).toContain(keyword);
+		}
+
 		for (const entry of requiredPackageFiles) {
 			expect(packageJson.files).toContain(entry);
 			if (entry !== "dist/") {
 				expect(repoPathExists(entry.replace(/\/$/, ""))).toBe(true);
 			}
 		}
+
+		const pluginJson = JSON.parse(readRepoFile(".codex-plugin/plugin.json")) as {
+			description?: string;
+			version?: string;
+		};
+		expect(pluginJson.version).toBe(packageJson.version);
+		expect(pluginJson.description).toContain("OpenCode");
+		expect(pluginJson.description).toContain("multi-account rotation");
 
 		const installerPath = packageJson.bin?.["oc-codex-multi-auth"];
 		expect(installerPath).toBe("scripts/install-oc-codex-multi-auth.js");
