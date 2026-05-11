@@ -172,7 +172,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `unsupportedCodexPolicy` | `strict` | unsupported-model behavior: `strict` (return entitlement error) or `fallback` (retry with configured fallback chain) |
 | `fallbackOnUnsupportedCodexModel` | `false` | legacy fallback toggle mapped to `unsupportedCodexPolicy` (prefer using `unsupportedCodexPolicy`) |
 | `fallbackToGpt52OnUnsupportedGpt53` | `true` | legacy compatibility toggle for the `gpt-5.3-codex -> gpt-5.2-codex` edge when generic fallback is enabled |
-| `unsupportedCodexFallbackChain` | `{}` | optional per-model fallback-chain override (map of `model -> [fallback1, fallback2, ...]`; default includes `gpt-5.5 -> gpt-5.4`). `gpt-5.5` auto-fallback is on by default during the rollout; set `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` to opt out. GPT-5.5 Pro is not mapped: it is ChatGPT-only per OpenAI's 2026-04-23 launch. |
+| `unsupportedCodexFallbackChain` | `{}` | optional per-model fallback-chain override (map of `model -> [fallback1, fallback2, ...]`; default includes `gpt-5.5` and `gpt-5-codex` through the GPT-5.4 family). `gpt-5.5` and canonical Codex auto-fallbacks are on by default for common entitlement gates; set `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` or `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` to opt out. GPT-5.5 Pro is not mapped: it is ChatGPT-only per OpenAI's 2026-04-23 launch. |
 | `sessionRecovery` | `true` | auto-recover from common api errors |
 | `autoResume` | `true` | auto-resume after thinking block recovery |
 | `tokenRefreshSkewMs` | `60000` | refresh tokens this many ms before expiry |
@@ -191,12 +191,13 @@ this mode is intended for beginners who prefer quick failures + clearer recovery
 
 ### Unsupported-Model Behavior and Fallback Chain
 
-by default the plugin is strict (`unsupportedCodexPolicy: "strict"`). it returns entitlement errors directly for unsupported models.
+by default the plugin is strict (`unsupportedCodexPolicy: "strict"`) except for common default-selector entitlement gates. it returns other entitlement errors directly for unsupported models.
 
 set `unsupportedCodexPolicy: "fallback"` to enable model fallback after account/workspace attempts are exhausted.
 
 defaults when fallback policy is enabled and `unsupportedCodexFallbackChain` is empty:
-- `gpt-5.5 -> gpt-5.4`
+- `gpt-5.5 -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
+- `gpt-5-codex -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
 - `gpt-5.4-pro -> gpt-5.4` (if `gpt-5.4-pro` is selected manually)
 - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
 - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (applies if you manually select Spark model IDs)
@@ -211,9 +212,10 @@ custom chain example:
   "unsupportedCodexPolicy": "fallback",
   "fallbackOnUnsupportedCodexModel": true,
   "unsupportedCodexFallbackChain": {
-    "gpt-5.5": ["gpt-5.4"],
+    "gpt-5.5": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+    "gpt-5.4": ["gpt-5.4-mini", "gpt-5.4-nano"],
     "gpt-5.4-pro": ["gpt-5.4"],
-    "gpt-5-codex": ["gpt-5.2-codex"],
+    "gpt-5-codex": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
     "gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
     "gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"]
   }
@@ -255,6 +257,7 @@ override any config with env vars:
 | `CODEX_AUTH_FALLBACK_UNSUPPORTED_MODEL=1` | legacy fallback toggle (prefer policy variable above) |
 | `CODEX_AUTH_FALLBACK_GPT53_TO_GPT52=0` | disable only the legacy `gpt-5.3-codex -> gpt-5.2-codex` edge |
 | `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` | disable automatic `gpt-5.5 -> gpt-5.4` fallback during rollout |
+| `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` | disable automatic canonical Codex/GPT-5.4-family fallback |
 | `CODEX_AUTH_ACCOUNT_ID=acc_xxx` | force specific workspace id |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=120000` | override fetch timeout |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=60000` | override SSE stall timeout |

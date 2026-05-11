@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { MODEL_MAP, getNormalizedModel, isKnownModel } from "../lib/request/helpers/model-map.js";
+import { resolveUnsupportedCodexFallbackModel } from "../lib/request/fetch-helpers.js";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -138,13 +139,49 @@ describe("Model Map Module", () => {
 	      expect(MODEL_MAP["gpt-5.3-codex-xhigh"]).toBe("gpt-5-codex");
 	    });
 
-	    it("contains GPT-5.3 codex spark models", () => {
-	      expect(MODEL_MAP["gpt-5.3-codex-spark"]).toBe("gpt-5-codex");
+    it("contains GPT-5.3 codex spark models", () => {
+      expect(MODEL_MAP["gpt-5.3-codex-spark"]).toBe("gpt-5-codex");
 	      expect(MODEL_MAP["gpt-5.3-codex-spark-low"]).toBe("gpt-5-codex");
 	      expect(MODEL_MAP["gpt-5.3-codex-spark-medium"]).toBe("gpt-5-codex");
 	      expect(MODEL_MAP["gpt-5.3-codex-spark-high"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-spark-xhigh"]).toBe("gpt-5-codex");
-	    });
+      expect(MODEL_MAP["gpt-5.3-codex-spark-xhigh"]).toBe("gpt-5-codex");
+    });
+
+    it("keeps legacy Codex normalization aligned with canonical fallback", () => {
+      const normalizedCodex = getNormalizedModel("gpt-5.2-codex");
+      expect(normalizedCodex).toBe("gpt-5-codex");
+      expect(getNormalizedModel("gpt-5.3-codex-spark")).toBe("gpt-5-codex");
+
+      const fallback = resolveUnsupportedCodexFallbackModel({
+        requestedModel: normalizedCodex,
+        errorBody: {
+          error: {
+            code: "model_not_supported_with_chatgpt_account",
+            message:
+              "The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+          },
+        },
+        attemptedModels: [normalizedCodex ?? ""],
+        fallbackOnUnsupportedCodexModel: true,
+        fallbackToGpt52OnUnsupportedGpt53: true,
+      });
+      expect(fallback).toBe("gpt-5.4");
+
+      const secondStepFallback = resolveUnsupportedCodexFallbackModel({
+        requestedModel: fallback,
+        errorBody: {
+          error: {
+            code: "model_not_supported_with_chatgpt_account",
+            message:
+              "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+          },
+        },
+        attemptedModels: [normalizedCodex ?? "", fallback],
+        fallbackOnUnsupportedCodexModel: false,
+        fallbackToGpt52OnUnsupportedGpt53: true,
+      });
+      expect(secondStepFallback).toBe("gpt-5.4-mini");
+    });
 
     it("contains GPT-5.1 codex-mini models", () => {
       expect(MODEL_MAP["gpt-5.1-codex-mini"]).toBe("gpt-5.1-codex-mini");

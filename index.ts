@@ -2631,7 +2631,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 										: waitMs > 0
 											? `All ${count} account(s) are rate-limited. Try again in ${waitLabel} or add another account with \`opencode auth login\`.`
 											: wasEntitlementExhaustion
-												? `All ${count} account(s) returned 'model not supported' for the requested model.${entitlementDetail} If this is a GPT-5.5 request during the rollout period, set \`unsupportedCodexPolicy: "fallback"\` (or \`CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback\`) to auto-fallback to gpt-5.4. See \`codex-health\` for per-account details.`
+												? `All ${count} account(s) returned 'model not supported' for the requested model.${entitlementDetail} Codex model access is account/workspace gated; default gpt-5.5/gpt-5-codex selectors auto-fallback through the GPT-5.4 family when possible. Set \`unsupportedCodexPolicy: "fallback"\` for the full manual fallback chain, or see \`codex-health\` for per-account details.`
 												: `All ${count} account(s) failed (server errors or auth issues). Check account health with \`codex-health\`.`;
 								runtimeMetrics.failedRequests++;
 								runtimeMetrics.lastError = message;

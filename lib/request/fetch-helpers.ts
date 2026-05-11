@@ -54,13 +54,48 @@ const CHATGPT_CODEX_UNSUPPORTED_MODEL_PATTERN =
 const NORMALIZED_UNSUPPORTED_MODEL_PATTERN =
 	/the model ['"]([^'"]+)['"] is not currently available for this chatgpt account/i;
 export const DEFAULT_UNSUPPORTED_CODEX_FALLBACK_CHAIN: Record<string, string[]> = {
-	[GPT_55_MODEL_ID]: ["gpt-5.4"],
+	[GPT_55_MODEL_ID]: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+	"gpt-5.4": ["gpt-5.4-mini", "gpt-5.4-nano"],
+	"gpt-5.4-mini": ["gpt-5.4-nano"],
 	"gpt-5.4-pro": ["gpt-5.4"],
+	"gpt-5-codex": ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"],
+	// Legacy selectors normalize to `gpt-5-codex` before lookup during the
+	// request path. Keep these historical entries for direct helper callers and
+	// custom-chain documentation; the canonical `gpt-5-codex` edge above is the
+	// runtime path for default OpenCode selectors.
 	"gpt-5.3-codex-spark": ["gpt-5-codex", "gpt-5.3-codex", "gpt-5.2-codex"],
 	"gpt-5.3-codex": ["gpt-5-codex", "gpt-5.2-codex"],
 	"gpt-5.2-codex": ["gpt-5-codex"],
 	"gpt-5.1-codex": ["gpt-5-codex"],
 };
+
+const DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV: Record<string, string> = {
+	[GPT_55_MODEL_ID]: "CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK",
+	"gpt-5-codex": "CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK",
+};
+
+const DEFAULT_AUTO_FALLBACK_CONTINUATION_MODELS = new Set([
+	"gpt-5.4",
+	"gpt-5.4-mini",
+]);
+
+function resolveAutoFallbackEntryModel(
+	currentModel: string,
+	attempted: Set<string>,
+): string | undefined {
+	if (DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV[currentModel] !== undefined) {
+		return currentModel;
+	}
+	if (!DEFAULT_AUTO_FALLBACK_CONTINUATION_MODELS.has(currentModel)) {
+		return undefined;
+	}
+	for (const model of attempted) {
+		if (DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV[model] !== undefined) {
+			return model;
+		}
+	}
+	return undefined;
+}
 
 export interface UnsupportedCodexModelInfo {
 	isUnsupported: boolean;
@@ -210,25 +245,32 @@ export function resolveUnsupportedCodexFallbackModel(
 	const currentModel = requestedModel ?? unsupported.unsupportedModel;
 	if (!currentModel) return undefined;
 
-	// During the GPT-5.5 rollout period, the backend gates `gpt-5.5` per-account
-	// even though the plugin maps every GPT-5.5 alias to it. Without a scoped
-	// auto-fallback, every one of the pooled accounts returns
-	// `model_not_supported_with_chatgpt_account` and rotation exhausts the pool
-	// with a misleading "server errors or auth issues" message. Gate this to
-	// gpt-5.5 only so legacy families keep their opt-in behavior.
-	const isGpt55AutoFallbackOptOut =
-		process.env.CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK === "1";
-	const shouldAutoFallbackForGpt55 =
-		!isGpt55AutoFallbackOptOut && currentModel === GPT_55_MODEL_ID;
-
-	if (!options.fallbackOnUnsupportedCodexModel && !shouldAutoFallbackForGpt55) {
-		return undefined;
-	}
-
 	const attempted = new Set<string>();
 	for (const model of options.attemptedModels ?? []) {
 		const normalized = canonicalizeModelName(model);
 		if (normalized) attempted.add(normalized);
+	}
+
+	// The backend gates some public selector ids per account/workspace. When the
+	// selected id is a default UI selector, auto-fallback prevents exhausting every
+	// pooled account with the same unsupported-model response. Continuation models
+	// such as `gpt-5.4` only auto-fallback when the attempted set proves the chain
+	// started from a default entry point; direct user selection remains strict.
+	const autoFallbackEntryModel = resolveAutoFallbackEntryModel(
+		currentModel,
+		attempted,
+	);
+	const autoFallbackOptOutEnv = autoFallbackEntryModel
+		? DEFAULT_AUTO_FALLBACK_ENTRY_OPT_OUT_ENV[autoFallbackEntryModel]
+		: undefined;
+	const shouldAutoFallbackForDefaultSelector =
+		!!autoFallbackOptOutEnv && process.env[autoFallbackOptOutEnv] !== "1";
+
+	if (
+		!options.fallbackOnUnsupportedCodexModel &&
+		!shouldAutoFallbackForDefaultSelector
+	) {
+		return undefined;
 	}
 
 	const chain = normalizeFallbackChain(options.customChain);

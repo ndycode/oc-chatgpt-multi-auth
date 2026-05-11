@@ -423,6 +423,229 @@ describe('Fetch Helpers Module', () => {
 			expect(legacyEdgeFallback).toBeUndefined();
 		});
 
+		it('falls back from canonical gpt-5-codex to gpt-5.4 when fallback policy is enabled', () => {
+			const fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5-codex',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5-codex'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(fallback).toBe('gpt-5.4');
+		});
+
+		it('continues canonical Codex fallback to mini and nano when larger fallbacks are also unsupported', () => {
+			const errorBody = {
+				error: {
+					code: 'model_not_supported_with_chatgpt_account',
+					message:
+						"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+				},
+			};
+
+			const miniFallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.4',
+				errorBody,
+				attemptedModels: ['gpt-5-codex', 'gpt-5.4'],
+				fallbackOnUnsupportedCodexModel: false,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(miniFallback).toBe('gpt-5.4-mini');
+
+			const nanoFallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.4-mini',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5-codex', 'gpt-5.4', 'gpt-5.4-mini'],
+				fallbackOnUnsupportedCodexModel: false,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(nanoFallback).toBe('gpt-5.4-nano');
+		});
+
+		it('keeps directly selected GPT-5.4 family models strict when fallback policy is disabled', () => {
+			const miniFallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.4',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.4'],
+				fallbackOnUnsupportedCodexModel: false,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(miniFallback).toBeUndefined();
+
+			const nanoFallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.4-mini',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.4-mini'],
+				fallbackOnUnsupportedCodexModel: false,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(nanoFallback).toBeUndefined();
+		});
+
+		it('covers legacy gpt-5.3-codex multi-hop through blocked canonical Codex', () => {
+			const canonicalFallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.3-codex',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.3-codex'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(canonicalFallback).toBe('gpt-5-codex');
+
+			const gpt54Fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: canonicalFallback,
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.3-codex', 'gpt-5-codex'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(gpt54Fallback).toBe('gpt-5.4');
+		});
+
+		it('covers legacy gpt-5.1-codex multi-hop through blocked canonical Codex', () => {
+			const canonicalFallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.1-codex',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.1-codex' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.1-codex'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(canonicalFallback).toBe('gpt-5-codex');
+
+			const gpt54Fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: canonicalFallback,
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.1-codex', 'gpt-5-codex'],
+				fallbackOnUnsupportedCodexModel: true,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(gpt54Fallback).toBe('gpt-5.4');
+		});
+
+		it('auto-fallbacks canonical gpt-5-codex even when fallback policy is disabled', () => {
+			const fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5-codex',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5-codex'],
+				fallbackOnUnsupportedCodexModel: false,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(fallback).toBe('gpt-5.4');
+		});
+
+		it('honors the default selector auto-fallback opt-out', () => {
+			const previous = process.env.CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK;
+			try {
+				process.env.CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK = '1';
+				const codexFallback = resolveUnsupportedCodexFallbackModel({
+					requestedModel: 'gpt-5-codex',
+					errorBody: {
+						error: {
+							code: 'model_not_supported_with_chatgpt_account',
+							message:
+								"The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+						},
+					},
+					attemptedModels: ['gpt-5-codex'],
+					fallbackOnUnsupportedCodexModel: false,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				});
+				expect(codexFallback).toBeUndefined();
+
+				const gpt54Fallback = resolveUnsupportedCodexFallbackModel({
+					requestedModel: 'gpt-5.4',
+					errorBody: {
+						error: {
+							code: 'model_not_supported_with_chatgpt_account',
+							message:
+								"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+						},
+					},
+					attemptedModels: ['gpt-5-codex', 'gpt-5.4'],
+					fallbackOnUnsupportedCodexModel: false,
+					fallbackToGpt52OnUnsupportedGpt53: true,
+				});
+				expect(gpt54Fallback).toBeUndefined();
+			} finally {
+				if (previous === undefined) {
+					delete process.env.CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK;
+				} else {
+					process.env.CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK = previous;
+				}
+			}
+		});
+
+		it('keeps manual gpt-5.4-pro strict when fallback policy is disabled', () => {
+			const fallback = resolveUnsupportedCodexFallbackModel({
+				requestedModel: 'gpt-5.4-pro',
+				errorBody: {
+					error: {
+						code: 'model_not_supported_with_chatgpt_account',
+						message:
+							"The 'gpt-5.4-pro' model is not supported when using Codex with a ChatGPT account.",
+					},
+				},
+				attemptedModels: ['gpt-5.4-pro'],
+				fallbackOnUnsupportedCodexModel: false,
+				fallbackToGpt52OnUnsupportedGpt53: true,
+			});
+			expect(fallback).toBeUndefined();
+		});
+
 		it('falls back from gpt-5.4-pro to gpt-5.4 when fallback policy is enabled', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.4-pro',
@@ -495,7 +718,7 @@ describe('Fetch Helpers Module', () => {
 			expect(fallback).toBe('gpt-5.4');
 		});
 
-		it('does not fallback from GPT-5.5 when gpt-5.4 was already attempted', () => {
+		it('continues GPT-5.5 fallback when gpt-5.4 was already attempted', () => {
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.5',
 				errorBody: {
@@ -509,12 +732,12 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBeUndefined();
+			expect(fallback).toBe('gpt-5.4-mini');
 		});
 
-		it('does not loop through gpt-5.5-pro once gpt-5.4 has been attempted', () => {
+		it('continues through gpt-5.5-pro fallback once gpt-5.4 has been attempted', () => {
 			// Pro canonicalizes to gpt-5.5, so once gpt-5.4 is in attemptedModels the
-			// chain has no further targets and the rotation returns undefined.
+			// chain continues to the smaller GPT-5.4 family fallbacks.
 			const fallback = resolveUnsupportedCodexFallbackModel({
 				requestedModel: 'gpt-5.5-pro',
 				errorBody: {
@@ -528,7 +751,7 @@ describe('Fetch Helpers Module', () => {
 				fallbackOnUnsupportedCodexModel: true,
 				fallbackToGpt52OnUnsupportedGpt53: true,
 			});
-			expect(fallback).toBeUndefined();
+			expect(fallback).toBe('gpt-5.4-mini');
 		});
 	});
 

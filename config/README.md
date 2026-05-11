@@ -75,17 +75,21 @@ A barebones debug template is available at [`minimal-opencode.json`](./minimal-o
 
 ## Unsupported-model behavior
 
-Current defaults are strict entitlement handling:
-- `unsupportedCodexPolicy: "strict"` returns entitlement errors directly
-- set `unsupportedCodexPolicy: "fallback"` (or `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback`) to enable automatic fallback retries
+Current defaults are strict entitlement handling except for default public selectors that are commonly entitlement-gated:
+- `gpt-5.5` and canonical `gpt-5-codex` can auto-fallback through `gpt-5.4`, `gpt-5.4-mini`, then `gpt-5.4-nano` when the backend reports the selected model is not supported for the active account/workspace
+- `unsupportedCodexPolicy: "strict"` returns other entitlement errors directly
+- set `unsupportedCodexPolicy: "fallback"` (or `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=fallback`) to enable the full fallback chain for manual/legacy selectors
 - `fallbackToGpt52OnUnsupportedGpt53: true` keeps the legacy `gpt-5.3-codex -> gpt-5.2-codex` edge inside fallback mode
-- `gpt-5.5 -> gpt-5.4` is included by default for accounts/workspaces that do not yet expose GPT-5.5
 - user-typed `gpt-5.5-pro*` is canonicalized to `gpt-5.5` before fallback because GPT-5.5 Pro is ChatGPT-only, not a Codex-routable model
+- legacy Codex selectors such as `gpt-5.2-codex`, `gpt-5.3-codex`, and `gpt-5.3-codex-spark` normalize to canonical `gpt-5-codex`; if that canonical Codex model is gated, the default auto-fallback can retry through the GPT-5.4 family
+- set `CODEX_AUTH_DISABLE_GPT55_AUTO_FALLBACK=1` to disable GPT-5.5 auto-fallback
+- set `CODEX_AUTH_DISABLE_CODEX_AUTO_FALLBACK=1` to disable canonical Codex/GPT-5.4-family auto-fallback
 - `gpt-5.4-pro -> gpt-5.4` remains available for older manual configs
 - `unsupportedCodexFallbackChain` lets you override fallback order per model
 
-Default fallback chain (when policy is `fallback`):
-- `gpt-5.5 -> gpt-5.4`
+Default fallback chain (auto-fallback for `gpt-5.5`/`gpt-5-codex` through the GPT-5.4 family; full chain when policy is `fallback`):
+- `gpt-5.5 -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
+- `gpt-5-codex -> gpt-5.4 -> gpt-5.4-mini -> gpt-5.4-nano`
 - `gpt-5.4-pro -> gpt-5.4` (if you manually select `gpt-5.4-pro`)
 - `gpt-5.3-codex -> gpt-5-codex -> gpt-5.2-codex`
 - `gpt-5.3-codex-spark -> gpt-5-codex -> gpt-5.3-codex -> gpt-5.2-codex` (only relevant if Spark IDs are added manually)
