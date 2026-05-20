@@ -13,6 +13,43 @@ const STALE_MANAGED_MODEL_KEYS = new Set([
 	"gpt-5.3-codex",
 	"gpt-5.4",
 ]);
+const STANDALONE_COMMANDS = new Set(["doctor", "status", "list", "limits", "dashboard", "health", "diag"]);
+const INSTALLER_COMMANDS = new Set(["install"]);
+
+function splitCommandArgv(argv) {
+	const [first, ...rest] = argv;
+	if (!first) return { kind: "install", argv };
+	if (INSTALLER_COMMANDS.has(first)) return { kind: "install", argv: rest };
+	if (STANDALONE_COMMANDS.has(first)) return { kind: "standalone", command: first, argv: rest };
+	if (first.startsWith("-")) return { kind: "install", argv };
+	return { kind: "unknown", command: first, argv: rest };
+}
+
+function parseStandaloneArgs(argv) {
+	const options = {
+		json: false,
+		includeSensitive: false,
+		deep: false,
+		fix: false,
+		tag: undefined,
+		configPath: undefined,
+		help: false,
+	};
+	for (let index = 0; index < argv.length; index += 1) {
+		const arg = argv[index];
+		if (arg === "--json") options.json = true;
+		else if (arg === "--include-sensitive") options.includeSensitive = true;
+		else if (arg === "--deep") options.deep = true;
+		else if (arg === "--fix") options.fix = true;
+		else if (arg === "--tag") options.tag = argv[++index];
+		else if (arg.startsWith("--tag=")) options.tag = arg.slice("--tag=".length);
+		else if (arg === "--config-path") options.configPath = argv[++index];
+		else if (arg.startsWith("--config-path=")) options.configPath = arg.slice("--config-path=".length);
+		else if (arg === "--help" || arg === "-h") options.help = true;
+		else throw new Error(`Unknown option for standalone command: ${arg}`);
+	}
+	return options;
+}
 
 function getManagedPackageNames() {
 	return [PACKAGE_NAME, ...LEGACY_PACKAGE_NAMES];
@@ -37,7 +74,17 @@ export function isDirectRunPath(argvPath, modulePath, resolveRealPath = realpath
 }
 
 function printHelp() {
-	console.log(`Usage: ${PACKAGE_NAME} [--modern|--full|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
+	console.log(`Usage: ${PACKAGE_NAME} [command] [options]\n\n` +
+		"Commands:\n" +
+		"  install             Install/update OpenCode config (default with no command)\n" +
+		"  doctor              Run local account/config diagnostics\n" +
+		"  status              Show account/config status\n" +
+		"  list                List configured accounts\n" +
+		"  limits              Show stored rate-limit state\n" +
+		"  dashboard           Print dashboard guidance\n" +
+		"  health              Check local token/account health\n" +
+		"  diag                Alias for doctor --deep\n\n" +
+		`Installer usage: ${PACKAGE_NAME} [--modern|--full|--legacy] [--dry-run] [--no-cache-clear]\n\n` +
 		"Default behavior:\n" +
 		"  - Installs/updates global config at ~/.config/opencode/opencode.json\n" +
 		"  - Enables the prompt status bar TUI plugin at ~/.config/opencode/tui.json\n" +
@@ -171,6 +218,183 @@ function mergeTuiConfig(existingConfig) {
 
 function formatJson(obj) {
 	return `${JSON.stringify(obj, null, 2)}\n`;
+}
+
+function getStandaloneStoragePath(options, env = process.env) {
+	if (options.configPath) return resolve(options.configPath);
+	return join(resolveHomeDirectory(env), ".opencode", "oc-codex-multi-auth-accounts.json");
+}
+
+async function readStandaloneStorage(path) {
+	try {
+		const raw = await readFile(path, "utf-8");
+		const parsed = JSON.parse(raw);
+		return {
+			storage: parsed && typeof parsed === "object" ? normalizeStandaloneStorage(parsed) : null,
+			error: null,
+		};
+	} catch (error) {
+		if (error?.code === "ENOENT") return { storage: null, error: null };
+		return { storage: null, error: formatErrorForLog(error) };
+	}
+}
+
+function normalizeStandaloneIdentityPart(value) {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function sameStandaloneIdentity(left, right) {
+	const normalizedLeft = normalizeStandaloneIdentityPart(left);
+	const normalizedRight = normalizeStandaloneIdentityPart(right);
+	return !!normalizedLeft && !!normalizedRight && normalizedLeft === normalizedRight;
+}
+
+function isStandaloneOrgTokenDuplicate(left, right) {
+	const leftOrganizationId = normalizeStandaloneIdentityPart(left?.organizationId);
+	const rightOrganizationId = normalizeStandaloneIdentityPart(right?.organizationId);
+	if (leftOrganizationId && rightOrganizationId && leftOrganizationId !== rightOrganizationId) return false;
+	const leftOrgLike = !!leftOrganizationId || left?.accountIdSource === "org";
+	const rightOrgLike = !!rightOrganizationId || right?.accountIdSource === "org";
+	const leftTokenLike = !leftOrganizationId && left?.accountIdSource === "token";
+	const rightTokenLike = !rightOrganizationId && right?.accountIdSource === "token";
+	if (!((leftOrgLike && rightTokenLike) || (rightOrgLike && leftTokenLike))) return false;
+	return sameStandaloneIdentity(left?.email, right?.email) ||
+		sameStandaloneIdentity(left?.refreshToken, right?.refreshToken);
+}
+
+function mergeStandaloneAccounts(target, source) {
+	const targetOrgLike = !!normalizeStandaloneIdentityPart(target?.organizationId) || target?.accountIdSource === "org";
+	const sourceOrgLike = !!normalizeStandaloneIdentityPart(source?.organizationId) || source?.accountIdSource === "org";
+	if (targetOrgLike || !sourceOrgLike) {
+		return {
+			...source,
+			...target,
+			organizationId: target.organizationId ?? source.organizationId,
+			accountId: target.accountId ?? source.accountId,
+			accountIdSource: target.accountIdSource ?? source.accountIdSource,
+			accountLabel: target.accountLabel ?? source.accountLabel,
+			email: target.email ?? source.email,
+		};
+	}
+	return mergeStandaloneAccounts(source, target);
+}
+
+function normalizeStandaloneStorage(storage) {
+	if (!Array.isArray(storage.accounts)) return storage;
+	const accounts = [...storage.accounts];
+	const removed = new Set();
+	for (let i = 0; i < accounts.length; i += 1) {
+		if (removed.has(i)) continue;
+		for (let j = i + 1; j < accounts.length; j += 1) {
+			if (removed.has(j) || !isStandaloneOrgTokenDuplicate(accounts[i], accounts[j])) continue;
+			const leftOrgLike = !!normalizeStandaloneIdentityPart(accounts[i]?.organizationId) ||
+				accounts[i]?.accountIdSource === "org";
+			const targetIndex = leftOrgLike ? i : j;
+			const sourceIndex = targetIndex === i ? j : i;
+			accounts[targetIndex] = mergeStandaloneAccounts(accounts[targetIndex], accounts[sourceIndex]);
+			removed.add(sourceIndex);
+			if (sourceIndex === i) break;
+		}
+	}
+	const normalizedAccounts = accounts.filter((_, index) => !removed.has(index));
+	return {
+		...storage,
+		accounts: normalizedAccounts,
+		activeIndex: Math.max(0, Math.min(storage.activeIndex ?? 0, Math.max(0, normalizedAccounts.length - 1))),
+	};
+}
+
+function maskValue(value, includeSensitive) {
+	if (includeSensitive || typeof value !== "string" || value.length <= 8) return value;
+	return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function summarizeStandaloneAccounts(storage, includeSensitive, tag) {
+	const accounts = Array.isArray(storage?.accounts) ? storage.accounts : [];
+	const normalizedTag = typeof tag === "string" ? tag.trim().toLowerCase() : "";
+	return accounts
+		.map((account, index) => ({ account, index }))
+		.filter(({ account }) => !normalizedTag ||
+			(Array.isArray(account?.accountTags) &&
+				account.accountTags.some((entry) => String(entry).toLowerCase() === normalizedTag)))
+		.map(({ account, index }) => ({
+			index,
+			label: account?.accountLabel ?? `Account ${index + 1}`,
+			email: maskValue(account?.email, includeSensitive),
+			accountId: maskValue(account?.accountId, includeSensitive),
+			accountIdSource: account?.accountIdSource,
+			enabled: account?.enabled !== false,
+			hasRefreshToken: typeof account?.refreshToken === "string" && account.refreshToken.length > 0,
+			hasAccessToken: typeof account?.accessToken === "string" && account.accessToken.length > 0,
+			expiresAt: account?.expiresAt,
+			expired: typeof account?.expiresAt === "number" ? account.expiresAt <= Date.now() : undefined,
+			tags: Array.isArray(account?.accountTags) ? account.accountTags : [],
+			note: account?.accountNote,
+			rateLimitResetTimes: account?.rateLimitResetTimes ?? {},
+		}));
+}
+
+function printStandaloneResult(command, payload, json) {
+	if (json) {
+		console.log(JSON.stringify(payload, null, 2));
+		return;
+	}
+	console.log(`oc-codex-multi-auth ${command}`);
+	if (payload.message) console.log(payload.message);
+	console.log(`Storage: ${payload.storagePath}`);
+	console.log(`Accounts: ${payload.totalAccounts}`);
+	if (Array.isArray(payload.accounts)) {
+		for (const account of payload.accounts) {
+			console.log(`- [${account.index}] ${account.label} enabled=${account.enabled} refresh=${account.hasRefreshToken} access=${account.hasAccessToken}`);
+		}
+	}
+	if (payload.error) console.log(`Error: ${payload.error}`);
+	if (payload.nextAction) console.log(`Next: ${payload.nextAction}`);
+}
+
+export async function runStandaloneCommand(command, argv = [], options = {}) {
+	const parsed = parseStandaloneArgs(argv);
+	if (command === "diag") {
+		command = "doctor";
+		parsed.deep = true;
+	}
+	if (parsed.help) {
+		printHelp();
+		return { exitCode: 0, action: "help" };
+	}
+	const { env = process.env } = options;
+	const storagePath = getStandaloneStoragePath(parsed, env);
+	const { storage, error } = await readStandaloneStorage(storagePath);
+	const accounts = summarizeStandaloneAccounts(storage, parsed.includeSensitive, parsed.tag);
+	const totalAccounts = Array.isArray(storage?.accounts) ? storage.accounts.length : 0;
+	const payload = {
+		command,
+		storagePath,
+		totalAccounts,
+		shownAccounts: accounts.length,
+		activeIndex: typeof storage?.activeIndex === "number" ? storage.activeIndex : 0,
+		activeIndexByFamily: storage?.activeIndexByFamily ?? {},
+		accounts,
+		error,
+	};
+	if (command === "dashboard") {
+		payload.message = "Standalone dashboard server is not launched by this safe CLI; use status/list/limits/health or OpenCode codex-dashboard.";
+		payload.nextAction = "Run oc-codex-multi-auth status or open OpenCode and call codex-dashboard.";
+	} else if (command === "doctor") {
+		payload.message = error ? "Storage could not be parsed." : totalAccounts > 0 ? "Local diagnostics completed." : "No accounts configured.";
+		payload.deep = parsed.deep;
+		payload.fixApplied = parsed.fix ? false : undefined;
+		payload.nextAction = totalAccounts > 0 ? "Run oc-codex-multi-auth health --json for scriptable checks." : "Run opencode auth login.";
+	} else if (command === "limits") {
+		payload.rateLimits = accounts.map((account) => ({ index: account.index, rateLimitResetTimes: account.rateLimitResetTimes }));
+	} else if (command === "health") {
+		payload.healthyCount = accounts.filter((account) => account.enabled && account.hasRefreshToken).length;
+		payload.unhealthyCount = accounts.filter((account) => !account.enabled || !account.hasRefreshToken).length;
+	} else if (command === "status") {
+		payload.message = totalAccounts > 0 ? "Account storage loaded." : "No accounts configured.";
+	}
+	printStandaloneResult(command, payload, parsed.json);
+	return { exitCode: error ? 1 : 0, action: command, storagePath };
 }
 
 // Top-level keys inside `provider.openai` that the installer owns absolutely.
@@ -443,7 +667,15 @@ async function clearCache(paths, dryRun, skipCacheClear) {
 }
 
 export async function runInstaller(argv = process.argv.slice(2), options = {}) {
-	const parsed = parseCliArgs(argv);
+	const split = splitCommandArgv(argv);
+	if (split.kind === "standalone") {
+		return runStandaloneCommand(split.command, split.argv, options);
+	}
+	if (split.kind === "unknown") {
+		printHelp();
+		throw new Error(`Unknown command: ${split.command}`);
+	}
+	const parsed = parseCliArgs(split.argv);
 	if (parsed.wantsHelp) {
 		printHelp();
 		return { exitCode: 0, action: "help" };
@@ -575,6 +807,8 @@ export const __test = {
 	mergeOpenaiProvider,
 	mergeTuiConfig,
 	parseCliArgs,
+	runStandaloneCommand,
+	splitCommandArgv,
 	writeFileAtomic,
 	renameWithWindowsRetry,
 	resolveHomeDirectory,

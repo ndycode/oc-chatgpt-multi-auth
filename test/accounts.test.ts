@@ -205,21 +205,20 @@ describe("AccountManager", () => {
     expect(manager.getCurrentAccount()?.refreshToken).toBe("refresh-token");
   });
 
-  it("creates a disabled fallback account with a re-auth note when fallback scopes are missing", () => {
+  it("keeps fallback account enabled when connector scopes are missing", () => {
     const auth: OAuthAuthDetails = {
       type: "oauth",
       access: "access-token",
       refresh: "refresh-token",
       expires: Date.now() + 60_000,
+      scope: "openid profile email offline_access",
     };
 
     const manager = new AccountManager(auth, null);
     expect(manager.getAccountCount()).toBe(1);
     const account = manager.getCurrentAccount();
-    expect(account?.enabled).toBe(false);
-    expect(account?.accountNote).toContain("Re-auth required");
-    expect(account?.accountNote).toContain("api.connectors.read");
-    expect(account?.accountNote).toContain("api.connectors.invoke");
+    expect(account?.enabled).toBe(true);
+    expect(account?.accountNote).toBeUndefined();
   });
 
 	it("does not duplicate the re-auth note when the same fallback account is reloaded", () => {
@@ -230,8 +229,9 @@ describe("AccountManager", () => {
       accounts: [
         {
           refreshToken: "refresh-token",
+          oauthScope: "openid profile email offline_access",
           accountNote:
-            "Re-auth required for missing OAuth scope(s): openid, profile, email, offline_access, api.connectors.read, api.connectors.invoke.",
+            "Re-auth required for missing OAuth scope(s): api.connectors.read, api.connectors.invoke.",
           addedAt: now,
           lastUsed: now,
         },
@@ -247,8 +247,10 @@ describe("AccountManager", () => {
 
     const manager = new AccountManager(auth, stored);
     const account = manager.getCurrentAccount();
-    expect(account?.enabled).toBe(false);
-		expect(account?.accountNote?.match(/Re-auth required/g)).toHaveLength(1);
+    expect(account?.enabled).toBe(true);
+		expect(account?.accountNote).toBe(
+			"Re-auth required for missing OAuth scope(s): api.connectors.read, api.connectors.invoke.",
+		);
 	});
 
 	it("keeps stored accounts enabled when OAuth scope metadata is missing", () => {

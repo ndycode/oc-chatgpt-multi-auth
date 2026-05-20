@@ -150,6 +150,82 @@ function mergeAccountRecords<T extends AccountLike>(target: T, source: T): T {
   };
 }
 
+function sameOptionalIdentity(left: string | undefined, right: string | undefined): boolean {
+  const normalizedLeft = normalizeWorkspaceIdentityPart(left);
+  const normalizedRight = normalizeWorkspaceIdentityPart(right);
+  return !!normalizedLeft && !!normalizedRight && normalizedLeft === normalizedRight;
+}
+
+function isLegacyRefreshTokenDuplicate<T extends AccountLike>(left: T, right: T): boolean {
+  const refreshToken = normalizeWorkspaceIdentityPart(left.refreshToken);
+  const leftOrganizationId = normalizeWorkspaceIdentityPart(left.organizationId);
+  const rightOrganizationId = normalizeWorkspaceIdentityPart(right.organizationId);
+  if (leftOrganizationId && rightOrganizationId && leftOrganizationId !== rightOrganizationId) {
+    return false;
+  }
+  const leftOrgLike = !!leftOrganizationId || left.accountIdSource === "org";
+  const rightOrgLike = !!rightOrganizationId || right.accountIdSource === "org";
+  const leftTokenLike = !leftOrganizationId && left.accountIdSource === "token";
+  const rightTokenLike = !rightOrganizationId && right.accountIdSource === "token";
+  if (
+    ((leftOrgLike && rightTokenLike) || (rightOrgLike && leftTokenLike)) &&
+    (sameOptionalIdentity(left.email, right.email) ||
+      (!!refreshToken && refreshToken === normalizeWorkspaceIdentityPart(right.refreshToken)))
+  ) {
+    return true;
+  }
+  if (!refreshToken || refreshToken !== normalizeWorkspaceIdentityPart(right.refreshToken)) {
+    return false;
+  }
+
+  const leftAccountId = normalizeWorkspaceIdentityPart(left.accountId);
+  const rightAccountId = normalizeWorkspaceIdentityPart(right.accountId);
+  if (leftAccountId && rightAccountId && leftAccountId !== rightAccountId) {
+    return false;
+  }
+
+  return (
+    sameOptionalIdentity(left.accountId, right.accountId) ||
+    (!leftOrganizationId && !!rightOrganizationId && !left.accountId) ||
+    (!!leftOrganizationId && !rightOrganizationId && !right.accountId)
+  );
+}
+
+function deduplicateLegacyRefreshTokenDuplicates<T extends AccountLike>(accounts: T[]): T[] {
+  const working = [...accounts];
+  const indicesToRemove = new Set<number>();
+
+  for (let i = 0; i < working.length; i += 1) {
+    if (indicesToRemove.has(i)) continue;
+    const account = working[i];
+    if (!account) continue;
+
+    for (let j = i + 1; j < working.length; j += 1) {
+      if (indicesToRemove.has(j)) continue;
+      const candidate = working[j];
+      if (!candidate || !isLegacyRefreshTokenDuplicate(account, candidate)) continue;
+
+      const accountOrgLike = !!normalizeWorkspaceIdentityPart(account.organizationId) || account.accountIdSource === "org";
+      const candidateOrgLike = !!normalizeWorkspaceIdentityPart(candidate.organizationId) || candidate.accountIdSource === "org";
+      const newestIndex = accountOrgLike && !candidateOrgLike
+        ? i
+        : candidateOrgLike && !accountOrgLike
+          ? j
+          : pickNewestAccountIndex(working, i, j);
+      const obsoleteIndex = newestIndex === i ? j : i;
+      const target = working[newestIndex];
+      const source = working[obsoleteIndex];
+      if (target && source) {
+        working[newestIndex] = mergeAccountRecords(target, source);
+      }
+      indicesToRemove.add(obsoleteIndex);
+      if (obsoleteIndex === i) break;
+    }
+  }
+
+  return working.filter((account, index) => !!account && !indicesToRemove.has(index));
+}
+
 function deduplicateAccountsByKey<T extends AccountLike>(accounts: T[]): T[] {
   const working = [...accounts];
   const keyToIndex = new Map<string, number>();
@@ -282,5 +358,5 @@ export function deduplicateAccountsByEmail<T extends { organizationId?: string; 
  * 2) Then apply legacy email dedupe only for entries that still do not have organizationId/accountId.
  */
 export function deduplicateAccountsForStorage<T extends AccountLike & { email?: string }>(accounts: T[]): T[] {
-  return deduplicateAccountsByEmail(deduplicateAccountsByKey(accounts));
+  return deduplicateAccountsByEmail(deduplicateLegacyRefreshTokenDuplicates(deduplicateAccountsByKey(accounts)));
 }

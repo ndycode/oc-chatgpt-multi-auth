@@ -3,8 +3,6 @@ export const REQUIRED_OAUTH_SCOPES = [
 	"profile",
 	"email",
 	"offline_access",
-	"api.connectors.read",
-	"api.connectors.invoke",
 ] as const;
 
 export const SCOPE = REQUIRED_OAUTH_SCOPES.join(" ");

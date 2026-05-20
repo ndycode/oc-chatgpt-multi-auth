@@ -339,8 +339,8 @@ describe("storage", () => {
           {
             accountId: "workspace-token",
             accountIdSource: "token",
-            refreshToken: "shared-refresh",
-            email: "user@example.com",
+            refreshToken: "other-refresh",
+            email: "other@example.com",
             addedAt: 101,
             lastUsed: 201,
             rateLimitResetTimes: {
@@ -365,7 +365,7 @@ describe("storage", () => {
       expect(tokenVariant?.rateLimitResetTimes?.["gpt-5.1"]).toBe(4_444);
       expect(tokenVariant?.coolingDownUntil).toBe(5_555);
       expect(tokenVariant?.cooldownReason).toBe("network-error");
-      expect(tokenVariant?.refreshToken).toBe("shared-refresh");
+      expect(tokenVariant?.refreshToken).toBe("other-refresh");
     });
 
     it("collapses same-organization records to newest during import and remaps active keys", async () => {
@@ -2214,7 +2214,7 @@ describe("storage", () => {
       await fs.rm(testWorkDir, { recursive: true, force: true });
     });
 
-    it("preserves org/token workspace variants sharing a refresh token when accountId differs", async () => {
+    it("collapses org/token duplicates for the same login identity", async () => {
       const now = Date.now();
       const storage = {
         version: 3 as const,
@@ -2243,12 +2243,10 @@ describe("storage", () => {
       await saveAccounts(storage);
 
       const loaded = await loadAccounts();
-      expect(loaded?.accounts).toHaveLength(2);
-      expect(loaded?.accounts.every((account) => account.refreshToken === "shared-refresh-kira")).toBe(true);
-      expect(loaded?.accounts.map((account) => account.accountId).sort()).toEqual([
-        "7ff374aa-1b2e-4e69-89f3-0cec62582efb",
-        "org-i1iYFgVqyAkR8CLrUKvNczIa",
-      ]);
+      expect(loaded?.accounts).toHaveLength(1);
+      expect(loaded?.accounts[0]?.refreshToken).toBe("shared-refresh-kira");
+      expect(loaded?.accounts[0]?.organizationId).toBe("org-i1iYFgVqyAkR8CLrUKvNczIa");
+      expect(loaded?.accounts[0]?.accountId).toBe("org-i1iYFgVqyAkR8CLrUKvNczIa");
     });
 
     it("retries on EPERM and succeeds on second attempt", async () => {

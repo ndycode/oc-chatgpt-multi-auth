@@ -501,10 +501,13 @@ describe("runtime documentation parity", () => {
 		const pluginJson = JSON.parse(readRepoFile(".codex-plugin/plugin.json")) as {
 			description?: string;
 			version?: string;
+			interface?: { composerIcon?: string };
 		};
 		expect(pluginJson.version).toBe(packageJson.version);
 		expect(pluginJson.description).toContain("OpenCode");
 		expect(pluginJson.description).toContain("multi-account rotation");
+		expect(pluginJson.interface?.composerIcon).toBe("./assets/icon.svg");
+		expect(repoPathExists(pluginJson.interface?.composerIcon.replace(/^\.\//, "") ?? "")).toBe(true);
 
 		const installerPath = packageJson.bin?.["oc-codex-multi-auth"];
 		expect(installerPath).toBe("scripts/install-oc-codex-multi-auth.js");
